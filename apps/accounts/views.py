@@ -9,7 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken as RefreshTokenObj
 from rest_framework_simplejwt.exceptions import TokenError
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer
-
+from rest_framework_simplejwt.views import TokenRefreshView
 from .models import LoginSecurity
 from .serializers import LoginSerializer
 
@@ -122,3 +122,25 @@ class ProfileView(APIView):
         )
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+class CustomTokenRefreshView(TokenRefreshView):
+    def post(self, request, *args, **kwargs):
+        refresh_str = request.data.get("refresh")
+        user_id = None
+        if refresh_str:
+            try:
+                token = RefreshTokenObj(refresh_str)
+                user_id = token.get("user_id")
+            except TokenError:
+                pass  # invalid token — let the real view below handle the actual error response
+
+        response = super().post(request, *args, **kwargs)
+
+        if response.status_code == 200:
+            log_activity(
+                user=None,
+                action="token_refresh",
+                target_object=str(user_id) if user_id else "unknown",
+                ip_address=get_client_ip(request),
+            )
+
+        return response
