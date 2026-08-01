@@ -46,25 +46,30 @@ def get_client_ip(request):
     return request.META.get("REMOTE_ADDR", "unknown")
 
 
+from django.db.models import Q
+
 class LoginView(APIView):
     permission_classes = []
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"]
+        identifier = serializer.validated_data["identifier"]
         password = serializer.validated_data["password"]
         ip = get_client_ip(request)
 
         generic_error = Response(
-            {"error": {"code": "INVALID_CREDENTIALS", "message": "Invalid email or password.", "field": None}},
+            {"error": {"code": "INVALID_CREDENTIALS", "message": "Invalid email/username or password.", "field": None}},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
         try:
-            user = User.objects.get(email=email)
+            user = User.objects.get(Q(email__iexact=identifier) | Q(username__iexact=identifier))
         except User.DoesNotExist:
-            log_activity(user=None, action="login_failure", target_object=email, ip_address=ip, extra={"reason": "no_account"})
+            log_activity(user=None, action="login_failure", target_object=identifier, ip_address=ip, extra={"reason": "no_account"})
+            return generic_error
+        except User.MultipleObjectsReturned:
+            log_activity(user=None, action="login_failure", target_object=identifier, ip_address=ip, extra={"reason": "ambiguous_identifier"})
             return generic_error
 
         security, _ = LoginSecurity.objects.get_or_create(user=user)
