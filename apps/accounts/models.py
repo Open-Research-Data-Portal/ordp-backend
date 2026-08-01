@@ -51,6 +51,12 @@ class UserProfile(models.Model):
     VISIBILITY_CHOICES = [
         ("public", "Everyone (Public)"), ("trusted", "Trusted Parties"), ("private", "Only Me (Private)"),
     ]
+    ROLE_CHOICES = [
+        ("public", "Public"),
+        ("researcher", "Researcher"),
+        ("checker", "Checker/Reviewer"),
+        ("admin", "Admin"),
+    ]
     # TODO: real values needed from Yodit — doc's list is incomplete (cuts off with "...")
     COLLEGE_CHOICES = [("engineering", "Engineering"), ("applied_science", "Applied Science")]
     COE_CHOICES = []  # TODO: "all 8 CoE" — none named in the doc yet
@@ -80,3 +86,21 @@ class UserProfile(models.Model):
     profile_visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="private")
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="researcher")
+
+class ActivityLog(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="activity_logs",
+    )
+    action = models.CharField(max_length=100)
+    target_object = models.CharField(max_length=255)
+    ip_address = models.GenericIPAddressField()
+    extra = models.JSONField(default=dict, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-timestamp"]

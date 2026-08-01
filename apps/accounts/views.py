@@ -25,17 +25,19 @@ from .models import LoginSecurity, UserProfile
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from .serializers import PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
-
+from .models import LoginSecurity, UserProfile, ActivityLog
 
 User = get_user_model()
 
 
 def log_activity(user, action, target_object, ip_address, extra=None):
-    """
-    STUB — swap for Elsa's real logging utility once it exists.
-    """
-    print(f"ACTIVITY user={getattr(user, 'id', 'anonymous')} action={action} target={target_object} ip={ip_address} extra={extra or {}}")
-
+    ActivityLog.objects.create(
+        user=user,
+        action=action,
+        target_object=target_object,
+        ip_address=ip_address,
+        extra=extra or {},
+    )
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
