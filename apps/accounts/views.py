@@ -1,33 +1,31 @@
-from django.shortcuts import render
-
 from django.contrib.auth import get_user_model
+from django.db.models import Q
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.tokens import RefreshToken as RefreshTokenObj
 from rest_framework_simplejwt.exceptions import TokenError
-from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer
 from rest_framework_simplejwt.views import TokenRefreshView
-from .models import LoginSecurity
-from .serializers import LoginSerializer
-
-from django.core.mail import send_mail
-from django.conf import settings
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.utils.encoding import force_bytes, force_str
-
-from .tokens import email_verification_token
-from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer
-from .models import LoginSecurity, UserProfile
-
-from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from .serializers import PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+
 from .models import LoginSecurity, UserProfile, ActivityLog
+from .serializers import (
+    LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,
+    PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+)
+from .tokens import email_verification_token
 
 User = get_user_model()
+password_reset_token = PasswordResetTokenGenerator()
 
 
 def log_activity(user, action, target_object, ip_address, extra=None):
@@ -39,14 +37,13 @@ def log_activity(user, action, target_object, ip_address, extra=None):
         extra=extra or {},
     )
 
+
 def get_client_ip(request):
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
         return x_forwarded_for.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR", "unknown")
 
-
-from django.db.models import Q
 
 class LoginView(APIView):
     permission_classes = []
@@ -100,8 +97,6 @@ class LoginView(APIView):
             )
 
         security.reset()
-
-        security.reset()
         log_activity(user=user, action="login_success", target_object=str(user.id), ip_address=ip)
 
         refresh = RefreshToken.for_user(user)
@@ -111,6 +106,8 @@ class LoginView(APIView):
             "refresh": str(refresh),
             "user": {"id": user.id, "email": user.email},
         }, status=status.HTTP_200_OK)
+
+
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -132,6 +129,8 @@ class LogoutView(APIView):
         log_activity(user=request.user, action="logout", target_object=str(request.user.id), ip_address=ip)
 
         return Response({"detail": "Successfully logged out."}, status=status.HTTP_200_OK)
+
+
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -152,6 +151,8 @@ class ProfileView(APIView):
         )
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         refresh_str = request.data.get("refresh")
@@ -176,8 +177,6 @@ class CustomTokenRefreshView(TokenRefreshView):
         return response
 
 
-
-
 class RegisterView(APIView):
     permission_classes = []
 
@@ -199,12 +198,20 @@ class RegisterView(APIView):
         token = email_verification_token.make_token(user)
         verify_link = f"{settings.FRONTEND_URL}/verify-email?uid={uid}&token={token}"
 
-        send_mail(
+        html_content = render_to_string("accounts/emails/verify_email.html", {
+            "full_name": data["full_name"],
+            "verify_link": verify_link,
+        })
+        text_content = f"Welcome to ORDP. Verify your email by visiting: {verify_link}"
+
+        email = EmailMultiAlternatives(
             subject="Verify your ORDP account",
-            message=f"Welcome to ORDP. Verify your email by visiting: {verify_link}\n\nThis link expires soon — if it does, request a new one.",
+            body=text_content,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+            to=[user.email],
         )
+        email.attach_alternative(html_content, "text/html")
+        email.send()
 
         log_activity(user=user, action="registration_requested", target_object=str(user.id), ip_address=ip)
 
@@ -242,9 +249,6 @@ class VerifyEmailView(APIView):
         log_activity(user=user, action="email_verified", target_object=str(user.id), ip_address=ip)
 
         return Response({"detail": "Email verified. You can now log in."}, status=status.HTTP_200_OK)
-password_reset_token = PasswordResetTokenGenerator()
-
-
 
 
 class PasswordResetRequestView(APIView):
@@ -253,13 +257,13 @@ class PasswordResetRequestView(APIView):
     def post(self, request):
         serializer = PasswordResetRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"]
+        email_addr = serializer.validated_data["email"]
         ip = get_client_ip(request)
 
         try:
-            user = User.objects.get(email__iexact=email)
+            user = User.objects.get(email__iexact=email_addr)
         except User.DoesNotExist:
-            # Same email either way — don't reveal whether the account exists.
+            # Same response either way — don't reveal whether the account exists.
             return Response(
                 {"detail": "If an account exists with that email, a reset link has been sent."},
                 status=status.HTTP_200_OK,
@@ -269,12 +273,19 @@ class PasswordResetRequestView(APIView):
         token = password_reset_token.make_token(user)
         reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
 
-        send_mail(
+        html_content = render_to_string("accounts/emails/password_reset_email.html", {
+            "reset_link": reset_link,
+        })
+        text_content = f"Reset your password by visiting: {reset_link}"
+
+        email = EmailMultiAlternatives(
             subject="Reset your ORDP password",
-            message=f"Reset your password by visiting: {reset_link}\n\nIf you didn't request this, ignore this email.",
+            body=text_content,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+            to=[user.email],
         )
+        email.attach_alternative(html_content, "text/html")
+        email.send()
 
         log_activity(user=user, action="password_reset_requested", target_object=str(user.id), ip_address=ip)
 
