@@ -22,6 +22,9 @@ from .tokens import email_verification_token
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer
 from .models import LoginSecurity, UserProfile
 
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from .serializers import PasswordResetRequestSerializer, PasswordResetConfirmSerializer
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
 
 User = get_user_model()
@@ -232,3 +235,78 @@ class VerifyEmailView(APIView):
         log_activity(user=user, action="email_verified", target_object=str(user.id), ip_address=ip)
 
         return Response({"detail": "Email verified. You can now log in."}, status=status.HTTP_200_OK)
+password_reset_token = PasswordResetTokenGenerator()
+
+
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+        ip = get_client_ip(request)
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            # Same email either way — don't reveal whether the account exists.
+            return Response(
+                {"detail": "If an account exists with that email, a reset link has been sent."},
+                status=status.HTTP_200_OK,
+            )
+
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = password_reset_token.make_token(user)
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+
+        send_mail(
+            subject="Reset your ORDP password",
+            message=f"Reset your password by visiting: {reset_link}\n\nIf you didn't request this, ignore this email.",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+        )
+
+        log_activity(user=user, action="password_reset_requested", target_object=str(user.id), ip_address=ip)
+
+        return Response(
+            {"detail": "If an account exists with that email, a reset link has been sent."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        ip = get_client_ip(request)
+
+        try:
+            user_id = force_str(urlsafe_base64_decode(data["uid"]))
+            user = User.objects.get(pk=user_id)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response(
+                {"error": {"code": "INVALID_LINK", "message": "This reset link is invalid.", "field": None}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not password_reset_token.check_token(user, data["token"]):
+            return Response(
+                {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This reset link is invalid or has expired.", "field": None}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.set_password(data["new_password"])
+        user.save()
+
+        for token_obj in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token_obj)
+
+        log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
+
+        return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
