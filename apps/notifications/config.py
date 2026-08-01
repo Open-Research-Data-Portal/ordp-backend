@@ -15,6 +15,8 @@ EMAIL_SUBJECTS = {
     NT.RESEARCHER_REQUEST: "New researcher access request",
     NT.CONTRIBUTOR_INVITATION: "You've been added as a contributor",
     NT.ACCESS_REQUEST: "New access request for your restricted dataset",
+    NT.RESEARCHER_APPROVED: "Your researcher access request was approved",
+    NT.RESEARCHER_REJECTED: "Your researcher access request was declined",
 }
 
 

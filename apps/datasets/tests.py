@@ -13,7 +13,7 @@ def make_researcher(username, email, completed=True):
     user = User.objects.create_user(username=username, email=email, password="pw12345!")
     profile = UserProfile.objects.create(
         user=user, full_name=username.title(), role="researcher",
-        occupation="researcher" if completed else "",
+        academia="researcher" if completed else "",
         department="Computer Science" if completed else "",
         terms_accepted=completed,
     )
@@ -31,7 +31,7 @@ class InitUploadTests(APITestCase):
         user = User.objects.create_user(username="pubuser", email="pub@aastu.edu.et", password="pw12345!")
         UserProfile.objects.create(
             user=user, full_name="Pub User", role="public",
-            occupation="student", department="CS", terms_accepted=True,
+            academia="student", department="CS", terms_accepted=True,
         )
         self.client.force_authenticate(user)
         resp = self.client.post("/api/datasets/upload/init/", {"title": "Test Dataset"})

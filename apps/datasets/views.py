@@ -8,8 +8,9 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from .services.assignment import assign_reviewer
 
-from apps.accounts.permissions import IsResearcherOrAdmin, HasCompletedProfile
+from apps.accounts.permissions import IsResearcherOrAdmin
 from apps.accounts.views import log_activity, get_client_ip
 
 from .models import Dataset
@@ -19,7 +20,7 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOrAdmin, HasCompletedProfile])
+@permission_classes([IsAuthenticated, IsResearcherOrAdmin])
 def init_upload(request):
     """Step 1: create the Dataset shell (status=draft), open a chunked-upload session."""
     serializer = InitUploadSerializer(data=request.data)
@@ -98,7 +99,7 @@ def accept_terms_and_submit(request, dataset_id):
     dataset.terms_version = settings.CURRENT_TERMS_VERSION
     dataset.status = Dataset.Status.PENDING
     dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status"])
-
+    assign_reviewer(dataset)
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
     return Response({"status": "submitted for review"}, status=200)

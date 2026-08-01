@@ -159,7 +159,12 @@ class CompleteProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(ExtendedProfileSerializer(request.user.profile).data)
+        data = ExtendedProfileSerializer(request.user.profile).data
+        from .models import ResearcherRequest
+        pending = ResearcherRequest.objects.filter(user=request.user, status="pending").exists()
+        data["researcher_request_pending"] = pending
+        data["role"] = request.user.profile.role
+        return Response(data)
 
     def patch(self, request):
         serializer = ExtendedProfileSerializer(request.user.profile, data=request.data, partial=True)

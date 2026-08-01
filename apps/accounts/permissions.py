@@ -1,28 +1,31 @@
 from rest_framework.permissions import BasePermission
-
+from .models import UserProfile
 
 class HasRole(BasePermission):
-    """
-    Base class — subclass this and set `allowed_roles` to restrict
-    a view to specific roles. Usage in a view:
-
-        class SomeView(APIView):
-            permission_classes = [IsAuthenticated, IsResearcherOrAdmin]
-    """
     allowed_roles = []
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
         try:
-            role = request.user.profile.role
-        except AttributeError:
+            profile = UserProfile.objects.get(user=request.user)
+        except UserProfile.DoesNotExist:
             return False
-        return role in self.allowed_roles
+        request.user_profile = profile 
+        return profile.role in self.allowed_roles
+
 
 
 class IsResearcherOrAdmin(HasRole):
     allowed_roles = ["researcher", "admin"]
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        profile = request.user_profile
+        if profile.role == "researcher" and not profile.terms_accepted:
+            return False
+        return True
 
 
 class IsAdminOnly(HasRole):
@@ -31,15 +34,3 @@ class IsAdminOnly(HasRole):
 
 class IsCheckerOrAdmin(HasRole):
     allowed_roles = ["checker", "admin"]
-
-class HasCompletedProfile(BasePermission):
-    REQUIRED_FIELDS = ["occupation", "department"]
-
-    def has_permission(self, request, view):
-        if not request.user or not request.user.is_authenticated:
-            return False
-        try:
-            profile = request.user.profile
-        except AttributeError:
-            return False
-        return profile.terms_accepted and all(getattr(profile, f, "") for f in self.REQUIRED_FIELDS)

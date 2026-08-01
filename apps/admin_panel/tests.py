@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 from rest_framework import status
-
+from apps.metadata.models import Category, Subject, Metadata
 from apps.accounts.models import UserProfile
 from apps.datasets.models import Dataset
 from apps.notifications.models import Notification
@@ -12,7 +12,7 @@ User = get_user_model()
 def make_user(username, email, role):
     user = User.objects.create_user(username=username, email=email, password="pw12345!")
     UserProfile.objects.create(user=user, full_name=username.title(), role=role,
-                                occupation="x", department="x", terms_accepted=True)
+                                academia="x", department="x", terms_accepted=True)
     return user
 
 
@@ -21,7 +21,14 @@ class ModerationTests(APITestCase):
         self.owner = make_user("modowner", "modowner@aastu.edu.et", "researcher")
         self.checker = make_user("checker1", "checker1@aastu.edu.et", "checker")
         self.researcher = make_user("plainresearcher", "plain@aastu.edu.et", "researcher")
-        self.dataset = Dataset.objects.create(title="Under Review", owner=self.owner, status=Dataset.Status.PENDING)
+        self.category = Category.objects.create(name="Health")
+        self.checker.profile.expertise.add(self.category)
+        self.dataset = Dataset.objects.create(
+            title="Under Review", owner=self.owner, status=Dataset.Status.PENDING,
+            assigned_reviewer=self.checker,
+        )
+        subject = Subject.objects.create(name="Public Health")
+        Metadata.objects.create(dataset=self.dataset, description="d", category=self.category, subject=subject)
 
     def test_researcher_cannot_access_moderation_queue(self):
         self.client.force_authenticate(self.researcher)
