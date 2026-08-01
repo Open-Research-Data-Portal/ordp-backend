@@ -31,3 +31,15 @@ class IsAdminOnly(HasRole):
 
 class IsCheckerOrAdmin(HasRole):
     allowed_roles = ["checker", "admin"]
+
+class HasCompletedProfile(BasePermission):
+    REQUIRED_FIELDS = ["occupation", "department"]
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        try:
+            profile = request.user.profile
+        except AttributeError:
+            return False
+        return profile.terms_accepted and all(getattr(profile, f, "") for f in self.REQUIRED_FIELDS)

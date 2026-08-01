@@ -23,6 +23,29 @@ class ProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "email", "username"]
 
 
+class ExtendedProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserProfile
+        fields = [
+            "college", "center_of_excellence", "department", "occupation", "academic_title",
+            "highest_degree", "orcid_id", "research_interests", "bio", "additional_link",
+            "profile_visibility", "terms_accepted",
+        ]
+
+    def validate_terms_accepted(self, value):
+        if not value:
+            raise serializers.ValidationError("You must accept the terms to continue.")
+        return value
+
+    def save(self, **kwargs):
+        instance = super().save(**kwargs)
+        if instance.terms_accepted and not instance.terms_accepted_at:
+            from django.utils import timezone
+            instance.terms_accepted_at = timezone.now()
+            instance.save(update_fields=["terms_accepted_at"])
+        return instance
+
+
 
 
 
