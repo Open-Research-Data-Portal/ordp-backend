@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from datetime import timedelta
-
+import uuid
 
 class LoginSecurity(models.Model):
     user = models.OneToOneField(
@@ -32,7 +32,7 @@ class LoginSecurity(models.Model):
         self.locked_until = None
         self.save()
 class UserProfile(models.Model):
-    OCCUPATION_CHOICES = [
+    ACADEMIA_CHOICES = [
         ("student", "Student"), ("researcher", "Researcher"), ("lecturer", "Lecturer"),
         ("professor", "Professor"), ("assistant_lecturer", "Assistant Lecturer"),
         ("data_scientist", "Data Scientist"), ("software_engineer", "Software Engineer"),
@@ -51,12 +51,14 @@ class UserProfile(models.Model):
     VISIBILITY_CHOICES = [
         ("public", "Everyone (Public)"), ("trusted", "Trusted Parties"), ("private", "Only Me (Private)"),
     ]
-    ROLE_CHOICES = [
-        ("public", "Public"),
-        ("researcher", "Researcher"),
-        ("checker", "Checker/Reviewer"),
-        ("admin", "Admin"),
-    ]
+    class Role(models.TextChoices):
+        PUBLIC = "public", "Public"
+        RESEARCHER = "researcher", "Researcher"
+        CHECKER = "checker", "Checker/Reviewer"
+        ADMIN = "admin", "Admin"
+
+    ROLE_CHOICES = Role.choices
+    
     # TODO: real values needed from Yodit — doc's list is incomplete (cuts off with "...")
     COLLEGE_CHOICES = [("engineering", "Engineering"), ("applied_science", "Applied Science")]
     COE_CHOICES = []  # TODO: "all 8 CoE" — none named in the doc yet
@@ -72,7 +74,7 @@ class UserProfile(models.Model):
     college = models.CharField(max_length=50, choices=COLLEGE_CHOICES, blank=True)
     center_of_excellence = models.CharField(max_length=50, choices=COE_CHOICES, blank=True)
     department = models.CharField(max_length=255)  # TODO: depends on college/CoE — needs real dependent-dropdown data
-    occupation = models.CharField(max_length=30, choices=OCCUPATION_CHOICES)
+    academia = models.CharField(max_length=30, choices=ACADEMIA_CHOICES)
     academic_title = models.CharField(max_length=10, choices=ACADEMIC_TITLE_CHOICES, blank=True, default="none")
     highest_degree = models.CharField(max_length=20, choices=DEGREE_CHOICES, blank=True)
     orcid_id = models.CharField(max_length=19, blank=True)  # format: 0000-0002-1825-0097
@@ -86,8 +88,27 @@ class UserProfile(models.Model):
     profile_visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="private")
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="researcher")
+    role = models.CharField(
+    max_length=20,
+    choices=Role.choices,
+    default=Role.PUBLIC,
+) 
+    expertise = models.ManyToManyField(
+        "metadata.Category", blank=True, related_name="reviewers"
+    )
+class ResearcherRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        APPROVED = "approved"
+        REJECTED = "rejected"
 
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="researcher_request")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    decided_at = models.DateTimeField(null=True, blank=True)
+    reason = models.TextField(blank=True)   
+    submitted_at = models.DateTimeField(auto_now_add=True)
 class ActivityLog(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

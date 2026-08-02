@@ -2,4 +2,5 @@ from django.apps import AppConfig
 
 
 class MetadataConfig(AppConfig):
-    name = 'apps.metadata'
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "apps.metadata"

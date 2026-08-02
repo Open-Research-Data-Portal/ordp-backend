@@ -152,6 +152,29 @@ class ProfileView(APIView):
 
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+from .serializers import ExtendedProfileSerializer  # add to your existing import block
+
+
+class CompleteProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        data = ExtendedProfileSerializer(request.user.profile).data
+        from .models import ResearcherRequest
+        pending = ResearcherRequest.objects.filter(user=request.user, status="pending").exists()
+        data["researcher_request_pending"] = pending
+        data["role"] = request.user.profile.role
+        return Response(data)
+
+    def patch(self, request):
+        serializer = ExtendedProfileSerializer(request.user.profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        log_activity(
+            user=request.user, action="profile_completed",
+            target_object=str(request.user.id), ip_address=get_client_ip(request),
+        )
+        return Response(serializer.data)
 
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
