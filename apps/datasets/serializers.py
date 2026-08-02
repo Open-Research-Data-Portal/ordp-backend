@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Dataset, DatasetFile, Contributor
+from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate
 
 
 class DatasetFileSerializer(serializers.ModelSerializer):
@@ -34,3 +34,33 @@ class InitUploadSerializer(serializers.Serializer):
 
 class TermsAcceptanceSerializer(serializers.Serializer):
     terms_accepted = serializers.BooleanField()
+
+class DatasetRevisionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DatasetRevision
+        fields = [
+            "id", "dataset", "submitted_by", "diff_percentage", "triggered_version_bump",
+            "submitter_message", "change_summary", "proposed_metadata", "status", "created_at",
+        ]
+        read_only_fields = ["diff_percentage", "triggered_version_bump", "change_summary", "status"]
+
+
+class RevisionComparisonSerializer(serializers.Serializer):
+    dataset_title = serializers.CharField()
+    submitted_by = serializers.CharField()
+    submitted_at = serializers.DateTimeField()
+    submitter_message = serializers.CharField()
+    ai_change_summary = serializers.JSONField()
+    diff_percentage = serializers.FloatField()
+    will_trigger_content_review = serializers.BooleanField()
+    previous_download_url = serializers.CharField()
+    new_download_url = serializers.CharField()
+    metadata_diff = serializers.JSONField()
+    status = serializers.CharField()
+
+
+class PendingContentUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PendingContentUpdate
+        fields = ["id", "dataset", "source", "submitted_by", "approved_by_owner",
+                  "diff_percentage", "change_summary", "proposed_metadata", "status", "created_at"]

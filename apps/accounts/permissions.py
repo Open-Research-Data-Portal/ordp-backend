@@ -2,13 +2,6 @@ from rest_framework.permissions import BasePermission
 
 
 class HasRole(BasePermission):
-    """
-    Base class — subclass this and set `allowed_roles` to restrict
-    a view to specific roles. Usage in a view:
-
-        class SomeView(APIView):
-            permission_classes = [IsAuthenticated, IsResearcherOrAdmin]
-    """
     allowed_roles = []
 
     def has_permission(self, request, view):
@@ -43,3 +36,5 @@ class HasCompletedProfile(BasePermission):
         except AttributeError:
             return False
         return profile.terms_accepted and all(getattr(profile, f, "") for f in self.REQUIRED_FIELDS)
+class IsResearcherOnly(HasRole):
+    allowed_roles = ["researcher"]

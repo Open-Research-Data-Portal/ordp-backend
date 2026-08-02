@@ -57,9 +57,8 @@ class UserProfile(models.Model):
         ("checker", "Checker/Reviewer"),
         ("admin", "Admin"),
     ]
-    # TODO: real values needed from Yodit — doc's list is incomplete (cuts off with "...")
     COLLEGE_CHOICES = [("engineering", "Engineering"), ("applied_science", "Applied Science")]
-    COE_CHOICES = []  # TODO: "all 8 CoE" — none named in the doc yet
+    COE_CHOICES = [] 
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
 

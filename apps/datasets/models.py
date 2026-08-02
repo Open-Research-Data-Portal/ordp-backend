@@ -46,8 +46,6 @@ class DatasetFile(models.Model):
 
 
 class Contributor(models.Model):
-    """Model only in branch 1 — the invite endpoint (with its notification) lands in
-    the sharing branch. This just lets a dataset display who's credited on it."""
     class ContributorType(models.TextChoices):
         AUTHOR = "author"
         CONTRIBUTOR = "contributor"
@@ -56,5 +54,53 @@ class Contributor(models.Model):
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="contributors")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     name = models.CharField(max_length=255, blank=True)
+    invited_email = models.EmailField(blank=True) 
     contributor_type = models.CharField(max_length=16, choices=ContributorType.choices)
     order = models.IntegerField(default=1)
+
+class DatasetRevision(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        APPROVED = "approved"
+        REJECTED = "rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="revisions")
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    previous_file_key = models.CharField(max_length=512)
+    new_file_key = models.CharField(max_length=512)
+    diff_percentage = models.FloatField()
+    triggered_version_bump = models.BooleanField(default=False)
+    submitter_message = models.TextField()
+    change_summary = models.JSONField(default=dict, blank=True)
+    proposed_metadata = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class PendingContentUpdate(models.Model):
+    class Source(models.TextChoices):
+        OWNER_EDIT = "owner_edit"
+        CONTRIBUTOR_EDIT = "contributor_edit"
+        REVISION = "revision"
+
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        APPROVED = "approved"
+        REJECTED = "rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="pending_updates")
+    source = models.CharField(max_length=16, choices=Source.choices)
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+")
+    approved_by_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    new_file_key = models.CharField(max_length=512)
+    proposed_metadata = models.JSONField(default=dict, blank=True)
+    diff_percentage = models.FloatField()
+    change_summary = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
