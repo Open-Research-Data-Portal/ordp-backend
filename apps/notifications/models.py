@@ -16,6 +16,8 @@ class Notification(models.Model):
         RESEARCHER_REQUEST = "researcher_request"
         CONTRIBUTOR_INVITATION = "contributor_invitation"
         ACCESS_REQUEST = "access_request"
+        RESEARCHER_APPROVED = "researcher_approved"
+        RESEARCHER_REJECTED = "researcher_rejected"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")

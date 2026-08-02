@@ -16,6 +16,10 @@ class IsDatasetOwner(BasePermission):
             )
         return False
 
+    def has_object_permission(self, request, view, obj):
+        dataset = obj if hasattr(obj, "owner") else obj.dataset
+        return dataset.owner_id == request.user.id
+
 
 class IsDatasetOwnerOrContributor(BasePermission):
     def has_permission(self, request, view):
@@ -30,7 +34,3 @@ class IsDatasetOwnerOrContributor(BasePermission):
         if not profile or profile.role not in ("researcher", "admin"):
             return False
         return Contributor.objects.filter(dataset_id=dataset_id, user=request.user).exists()
-class IsDatasetOwner(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        dataset = obj if hasattr(obj, "owner") else obj.dataset
-        return dataset.owner_id == request.user.id

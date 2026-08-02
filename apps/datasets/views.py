@@ -15,8 +15,9 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from .services.assignment import assign_reviewer
 
-from apps.accounts.permissions import IsResearcherOrAdmin, HasCompletedProfile
+from apps.accounts.permissions import IsResearcherOrAdmin
 from apps.accounts.views import log_activity, get_client_ip
 from .services.storage import presigned_download_url, minio_client
 import uuid as uuid_lib
@@ -31,7 +32,7 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOrAdmin, HasCompletedProfile])
+@permission_classes([IsAuthenticated, IsResearcherOrAdmin])
 def init_upload(request):
     """Step 1: create the Dataset shell (status=draft), open a chunked-upload session."""
     serializer = InitUploadSerializer(data=request.data)
@@ -110,7 +111,7 @@ def accept_terms_and_submit(request, dataset_id):
     dataset.terms_version = settings.CURRENT_TERMS_VERSION
     dataset.status = Dataset.Status.PENDING
     dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status"])
-
+    assign_reviewer(dataset)
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
     return Response({"status": "submitted for review"}, status=200)
@@ -173,8 +174,9 @@ def update_dataset(request, dataset_id):
         except UploadTooLargeError:
             return Response({"detail": "File exceeds size limit."}, status=413)
 
+        new_file_key = new_dataset_file.file_key
         old_local = _download_to_tmp(current_file.file_key)
-        new_local = _download_to_tmp(new_dataset_file.file_key)
+        new_local = _download_to_tmp(new_file_key)
         diff_pct, summary = compute_diff(old_local, new_local, current_file.file_type)
         for p in (old_local, new_local):
             if os.path.exists(p):
@@ -186,9 +188,10 @@ def update_dataset(request, dataset_id):
         )
         result = route_change(
             dataset=dataset, source=source, submitted_by=request.user,
-            new_file_key=new_dataset_file.file_key, diff_percentage=diff_pct, change_summary=summary,
+            new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
             proposed_metadata=_build_proposed_metadata(dataset, request.data),
         )
+        new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
         return Response(result, status=202 if result["status"] == "pending_review" else 200)
 
     return Response({"status": "updated"}, status=200)
@@ -214,8 +217,9 @@ def propose_revision(request, dataset_id):
     except UploadTooLargeError:
         return Response({"detail": "File exceeds size limit."}, status=413)
 
+    new_file_key = new_dataset_file.file_key
     old_local = _download_to_tmp(current_file.file_key)
-    new_local = _download_to_tmp(new_dataset_file.file_key)
+    new_local = _download_to_tmp(new_file_key)
     diff_pct, summary = compute_diff(old_local, new_local, current_file.file_type)
     for p in (old_local, new_local):
         if os.path.exists(p):
@@ -223,11 +227,12 @@ def propose_revision(request, dataset_id):
 
     revision = DatasetRevision.objects.create(
         dataset=dataset, submitted_by=request.user,
-        previous_file_key=current_file.file_key, new_file_key=new_dataset_file.file_key,
+        previous_file_key=current_file.file_key, new_file_key=new_file_key,
         diff_percentage=diff_pct, change_summary=summary, submitter_message=submitter_message,
         proposed_metadata=_build_proposed_metadata(dataset, request.data),
         status=DatasetRevision.Status.PENDING,
     )
+    new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
     notify(
         user=dataset.owner, notification_type=Notification.NotificationType.REVISION_PROPOSED,
         message=f'{request.user.profile.full_name} proposed a revision to "{dataset.title}".', dataset=dataset,

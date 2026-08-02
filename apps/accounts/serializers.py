@@ -27,7 +27,7 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
         fields = [
-            "college", "center_of_excellence", "department", "occupation", "academic_title",
+            "college", "center_of_excellence", "department", "academia", "academic_title",
             "highest_degree", "orcid_id", "research_interests", "bio", "additional_link",
             "profile_visibility", "terms_accepted",
         ]
@@ -39,18 +39,38 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
 
     def save(self, **kwargs):
         instance = super().save(**kwargs)
+
         if instance.terms_accepted and not instance.terms_accepted_at:
             from django.utils import timezone
             instance.terms_accepted_at = timezone.now()
             instance.save(update_fields=["terms_accepted_at"])
+
+        required = ["academia", "department"]
+        is_complete = instance.terms_accepted and all(getattr(instance, f, None) for f in required)
+
+        if is_complete and instance.role == UserProfile.Role.PUBLIC:
+            from .models import ResearcherRequest
+            from apps.notifications.services import notify
+            from apps.notifications.models import Notification
+            from django.contrib.auth import get_user_model
+
+            req, _ = ResearcherRequest.objects.get_or_create(user=instance.user)
+            if req.status != ResearcherRequest.Status.PENDING:
+                req.status = ResearcherRequest.Status.PENDING
+                req.reason = ""
+                req.decided_by = None
+                req.decided_at = None
+                req.save()
+
+            User = get_user_model()
+            for admin_user in User.objects.filter(profile__role="admin"):
+                notify(
+                    user=admin_user, notification_type=Notification.NotificationType.RESEARCHER_REQUEST,
+                    message=f"{instance.full_name} ({instance.user.email}) completed their profile and is requesting researcher access.",
+                    link_path=f"/admin-panel/researcher-requests/{req.id}",
+                )
+
         return instance
-
-
-
-
-
-
-
 
 class RegisterSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)

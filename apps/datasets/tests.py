@@ -3,18 +3,22 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 from rest_framework import status
 
-from apps.accounts.models import UserProfile
+from apps.accounts.models import UserProfile, Department, College
 from .models import Dataset
-
+from apps.accounts.models import UserProfile, Department
 User = get_user_model()
 
 
 def make_researcher(username, email, completed=True):
     user = User.objects.create_user(username=username, email=email, password="pw12345!")
+    department = None
+    if completed:
+        college, _ = College.objects.get_or_create(name="Test College")
+        department, _ = Department.objects.get_or_create(name="Computer Science", college=college)
     profile = UserProfile.objects.create(
         user=user, full_name=username.title(), role="researcher",
-        occupation="researcher" if completed else "",
-        department="Computer Science" if completed else "",
+        academia="researcher" if completed else "",
+        department=department,
         terms_accepted=completed,
     )
     return user, profile
@@ -29,9 +33,11 @@ class InitUploadTests(APITestCase):
 
     def test_public_role_cannot_upload(self):
         user = User.objects.create_user(username="pubuser", email="pub@aastu.edu.et", password="pw12345!")
+        college, _ = College.objects.get_or_create(name="Test College")
+        department, _ = Department.objects.get_or_create(name="Computer Science", college=college)
         UserProfile.objects.create(
             user=user, full_name="Pub User", role="public",
-            occupation="student", department="CS", terms_accepted=True,
+            academia="student", department=department, terms_accepted=True,
         )
         self.client.force_authenticate(user)
         resp = self.client.post("/api/datasets/upload/init/", {"title": "Test Dataset"})

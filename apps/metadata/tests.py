@@ -35,4 +35,4 @@ class AttachMetadataTests(APITestCase):
         resp = self.client.post(f"/api/metadata/{self.dataset.id}/attach/", {
             "description": "x", "category": str(self.category.id), "subject": str(self.subject.id),
         })
-        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)  # owner=self.owner filter excludes them
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)  
