@@ -34,3 +34,7 @@ class IsAdminOnly(HasRole):
 
 class IsCheckerOrAdmin(HasRole):
     allowed_roles = ["checker", "admin"]
+
+class IsResearcherOnly(HasRole):
+    allowed_roles = ["researcher"]
+

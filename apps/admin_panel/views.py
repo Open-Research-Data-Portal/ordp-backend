@@ -7,9 +7,15 @@ from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .models import ModerationDecision
 from .serializers import ModerationQueueItemSerializer
+
+from apps.datasets.models import PendingContentUpdate
+from apps.datasets.serializers import PendingContentUpdateSerializer
+from apps.datasets.services.revisions import decide_pending_content_update
+
 from django.utils import timezone
 from apps.accounts.permissions import IsAdminOnly
 from apps.accounts.models import ResearcherRequest, UserProfile
+
 
 @api_view(["GET"])
 @permission_classes([IsCheckerOrAdmin])
@@ -55,6 +61,24 @@ def moderate_dataset(request, dataset_id):
 
 
 @api_view(["GET"])
+@permission_classes([IsCheckerOrAdmin])
+def content_update_queue(request):
+    qs = PendingContentUpdate.objects.filter(status="pending").select_related("dataset", "submitted_by")
+    return Response(PendingContentUpdateSerializer(qs, many=True).data)
+
+
+@api_view(["POST"])
+@permission_classes([IsCheckerOrAdmin])
+def decide_content_update(request, update_id):
+    update = get_object_or_404(PendingContentUpdate, id=update_id)
+    decision = request.data.get("decision")
+    reason = (request.data.get("reason") or "").strip()
+    if decision == "reject" and not reason:
+        return Response({"detail": "A reason is required to reject a content update."}, status=400)
+    decide_pending_content_update(update, decision, request.user, reason)
+    return Response({"status": update.status})
+
+@api_view(["GET"]) 
 @permission_classes([IsAdminOnly])
 def researcher_request_queue(request):
     qs = ResearcherRequest.objects.filter(
@@ -101,3 +125,4 @@ def decide_researcher_request(request, request_id):
 
     req.save()
     return Response({"status": req.status})
+

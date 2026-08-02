@@ -1,6 +1,13 @@
 import os
 import uuid
 
+from django.shortcuts import get_object_or_404
+from apps.accounts.permissions import IsResearcherOnly
+from apps.notifications.services import notify
+from apps.notifications.models import Notification
+from .services.diffing import compute_diff
+from .serializers import DatasetRevisionSerializer
+
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -12,6 +19,11 @@ from .services.assignment import assign_reviewer
 
 from apps.accounts.permissions import IsResearcherOrAdmin
 from apps.accounts.views import log_activity, get_client_ip
+from .services.storage import presigned_download_url, minio_client
+import uuid as uuid_lib
+from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
+from .services.revisions import apply_revision, route_change
+from .models import DatasetRevision, PendingContentUpdate
 
 from .models import Dataset
 from .permissions import IsDatasetOwner
@@ -118,7 +130,157 @@ def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     return Response(DatasetSerializer(dataset).data)
 
+def _download_to_tmp(file_key):
+    local_path = f"/tmp/{uuid_lib.uuid4().hex}"
+    minio_client.fget_object(settings.MINIO_BUCKET, file_key, local_path)
+    return local_path
 
+
+def _build_proposed_metadata(dataset, request_data):
+    if not hasattr(dataset, "metadata"):
+        return {}
+    changed = {}
+    current = dataset.metadata
+    for field in ("description", "category_id", "subject_id", "sponsor_or_grant"):
+        new_value = request_data.get(field)
+        old_value = getattr(current, field, None)
+        if new_value is not None and str(new_value) != str(old_value):
+            changed[field] = {"old": old_value, "new": new_value}
+    return changed
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated, IsDatasetOwnerOrContributor])
+def update_dataset(request, dataset_id):
+    """Owner or a linked contributor edits the dataset directly. Minor changes apply
+    immediately. Changes at/above VERSION_BUMP_THRESHOLD_PCT are held for independent
+    reviewer clearance — this is what stops an owner (alone, or colluding with a
+    contributor or revision submitter) from pushing unreviewed content live."""
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+
+    for field in ("title", "visibility"):
+        if field in request.data:
+            setattr(dataset, field, request.data[field])
+    dataset.save()
+
+    if "upload_session_id" in request.data:
+        current_file = dataset.files.latest("uploaded_at")
+        try:
+            new_dataset_file = finalize_upload(
+                dataset_id=dataset_id, upload_session_id=request.data["upload_session_id"],
+                uploader=request.user, original_filename=request.data.get("filename", "update"),
+                declared_file_type=request.data.get("file_type", current_file.file_type),
+            )
+        except UploadTooLargeError:
+            return Response({"detail": "File exceeds size limit."}, status=413)
+
+        new_file_key = new_dataset_file.file_key
+        old_local = _download_to_tmp(current_file.file_key)
+        new_local = _download_to_tmp(new_file_key)
+        diff_pct, summary = compute_diff(old_local, new_local, current_file.file_type)
+        for p in (old_local, new_local):
+            if os.path.exists(p):
+                os.remove(p)
+
+        source = (
+            PendingContentUpdate.Source.OWNER_EDIT if dataset.owner_id == request.user.id
+            else PendingContentUpdate.Source.CONTRIBUTOR_EDIT
+        )
+        result = route_change(
+            dataset=dataset, source=source, submitted_by=request.user,
+            new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
+            proposed_metadata=_build_proposed_metadata(dataset, request.data),
+        )
+        new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
+        return Response(result, status=202 if result["status"] == "pending_review" else 200)
+
+    return Response({"status": "updated"}, status=200)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsResearcherOnly])
+def propose_revision(request, dataset_id):
+    """A researcher proposes a revision to a dataset they don't own. Requires prior
+    upload of the new file via the normal chunked-upload endpoints, plus a non-empty
+    submitter_message."""
+    submitter_message = (request.data.get("submitter_message") or "").strip()
+    if not submitter_message:
+        return Response({"detail": "Please describe what you changed and why."}, status=400)
+
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+    current_file = dataset.files.latest("uploaded_at")
+
+    try:
+        new_dataset_file = finalize_upload(
+            dataset_id=dataset_id, upload_session_id=request.data["upload_session_id"],
+            uploader=request.user, original_filename=request.data["filename"],
+            declared_file_type=request.data.get("file_type", current_file.file_type),
+        )
+    except UploadTooLargeError:
+        return Response({"detail": "File exceeds size limit."}, status=413)
+
+    new_file_key = new_dataset_file.file_key
+    old_local = _download_to_tmp(current_file.file_key)
+    new_local = _download_to_tmp(new_file_key)
+    diff_pct, summary = compute_diff(old_local, new_local, current_file.file_type)
+    for p in (old_local, new_local):
+        if os.path.exists(p):
+            os.remove(p)
+
+    revision = DatasetRevision.objects.create(
+        dataset=dataset, submitted_by=request.user,
+        previous_file_key=current_file.file_key, new_file_key=new_file_key,
+        diff_percentage=diff_pct, change_summary=summary, submitter_message=submitter_message,
+        proposed_metadata=_build_proposed_metadata(dataset, request.data),
+        status=DatasetRevision.Status.PENDING,
+    )
+    new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
+    notify(
+        user=dataset.owner, notification_type=Notification.NotificationType.REVISION_PROPOSED,
+        message=f'{request.user.profile.full_name} proposed a revision to "{dataset.title}".', dataset=dataset,
+        link_path=f"/datasets/{dataset.id}/revisions/{revision.id}",
+    )
+    return Response(DatasetRevisionSerializer(revision).data, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def revision_comparison(request, revision_id):
+    revision = get_object_or_404(DatasetRevision.objects.select_related("dataset", "submitted_by"), id=revision_id)
+    return Response({
+        "dataset_title": revision.dataset.title,
+        "submitted_by": revision.submitted_by.profile.full_name,
+        "submitted_at": revision.created_at,
+        "submitter_message": revision.submitter_message,
+        "ai_change_summary": revision.change_summary,
+        "diff_percentage": revision.diff_percentage,
+        "will_trigger_content_review": revision.diff_percentage >= settings.VERSION_BUMP_THRESHOLD_PCT,
+        "previous_download_url": presigned_download_url(revision.previous_file_key),
+        "new_download_url": presigned_download_url(revision.new_file_key),
+        "metadata_diff": revision.proposed_metadata,
+        "status": revision.status,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def decide_revision(request, revision_id):
+    revision = get_object_or_404(DatasetRevision, id=revision_id)
+    decision = request.data.get("decision")
+
+    if decision == "reject":
+        reason = (request.data.get("reason") or "").strip()
+        if not reason:
+            return Response({"detail": "A reason is required to reject a revision."}, status=400)
+        revision.status = DatasetRevision.Status.REJECTED
+        revision.save()
+        notify(
+            user=revision.submitted_by, notification_type=Notification.NotificationType.REVISION_REJECTED,
+            message=f'Your proposed revision to "{revision.dataset.title}" was declined: {reason}',
+            dataset=revision.dataset, reason=reason,
+        )
+        return Response({"status": "rejected"})
+
+    result = apply_revision(revision)
+    return Response(result, status=200)
 # @api_view(["DELETE"])
 # @permission_classes([IsAuthenticated, IsDatasetOwner])
 # def soft_delete_dataset(request, dataset_id):

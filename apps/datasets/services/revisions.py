@@ -1,10 +1,11 @@
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-
+from apps.accounts.models import ActivityLog
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from ..models import DatasetFile, DatasetRevision, PendingContentUpdate
+
 
 User = get_user_model()
 
@@ -19,7 +20,7 @@ def _apply_metadata(dataset, proposed_metadata):
 
 
 def bump_version_and_notify(dataset):
-    from ..models import ActivityLog
+   
 
     dataset.version += 1
     dataset.save(update_fields=["version"])

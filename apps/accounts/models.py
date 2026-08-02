@@ -1,8 +1,9 @@
+import uuid
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from datetime import timedelta
-import uuid
+
 
 class LoginSecurity(models.Model):
     user = models.OneToOneField(
@@ -31,6 +32,47 @@ class LoginSecurity(models.Model):
         self.failed_attempts = 0
         self.locked_until = None
         self.save()
+
+
+class College(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=128, unique=True)
+
+    def __str__(self):
+        return self.name
+
+
+class CenterOfExcellence(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=128, unique=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Department(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=128)
+    college = models.ForeignKey(College, null=True, blank=True, on_delete=models.CASCADE, related_name="departments")
+    center_of_excellence = models.ForeignKey(
+        CenterOfExcellence, null=True, blank=True, on_delete=models.CASCADE, related_name="departments"
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(  
+                    models.Q(college__isnull=False, center_of_excellence__isnull=True)
+                    | models.Q(college__isnull=True, center_of_excellence__isnull=False)
+                ),
+                name="department_belongs_to_college_xor_coe",
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class UserProfile(models.Model):
     ACADEMIA_CHOICES = [
         ("student", "Student"), ("researcher", "Researcher"), ("lecturer", "Lecturer"),
@@ -43,6 +85,15 @@ class UserProfile(models.Model):
         ("none", "None"), ("mr", "Mr."), ("ms", "Ms."), ("mrs", "Mrs."),
         ("eng", "Eng."), ("dr", "Dr."), ("prof", "Prof."),
     ]
+    ACADEMIC_RANK_CHOICES = [
+        ("none", "None"),
+        ("graduate_assistant", "Graduate Assistant"),
+        ("assistant_lecturer", "Assistant Lecturer"),
+        ("lecturer", "Lecturer"),
+        ("assistant_professor", "Assistant Professor"),
+        ("associate_professor", "Associate Professor"),
+        ("professor", "Professor"),
+    ]
     DEGREE_CHOICES = [
         ("high_school", "High School Diploma"), ("diploma", "Diploma"),
         ("bachelor", "Bachelor's Degree"), ("master", "Master's Degree"),
@@ -51,6 +102,7 @@ class UserProfile(models.Model):
     VISIBILITY_CHOICES = [
         ("public", "Everyone (Public)"), ("trusted", "Trusted Parties"), ("private", "Only Me (Private)"),
     ]
+
     class Role(models.TextChoices):
         PUBLIC = "public", "Public"
         RESEARCHER = "researcher", "Researcher"
@@ -58,10 +110,6 @@ class UserProfile(models.Model):
         ADMIN = "admin", "Admin"
 
     ROLE_CHOICES = Role.choices
-    
-    # TODO: real values needed from Yodit — doc's list is incomplete (cuts off with "...")
-    COLLEGE_CHOICES = [("engineering", "Engineering"), ("applied_science", "Applied Science")]
-    COE_CHOICES = []  # TODO: "all 8 CoE" — none named in the doc yet
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
 
@@ -71,16 +119,17 @@ class UserProfile(models.Model):
 
     # Academic & Professional Information
     affiliation = models.CharField(max_length=255, default="Addis Ababa Science and Technology University (AASTU)")
-    college = models.CharField(max_length=50, choices=COLLEGE_CHOICES, blank=True)
-    center_of_excellence = models.CharField(max_length=50, choices=COE_CHOICES, blank=True)
-    department = models.CharField(max_length=255)  # TODO: depends on college/CoE — needs real dependent-dropdown data
+    college = models.ForeignKey(College, null=True, blank=True, on_delete=models.SET_NULL)                      # was CharField
+    center_of_excellence = models.ForeignKey(CenterOfExcellence, null=True, blank=True, on_delete=models.SET_NULL)  # was CharField
+    department = models.ForeignKey(Department, null=True, blank=True, on_delete=models.SET_NULL)                # was CharField
     academia = models.CharField(max_length=30, choices=ACADEMIA_CHOICES)
     academic_title = models.CharField(max_length=10, choices=ACADEMIC_TITLE_CHOICES, blank=True, default="none")
+    academic_rank = models.CharField(max_length=32, choices=ACADEMIC_RANK_CHOICES, blank=True, default="none")  # re-added
     highest_degree = models.CharField(max_length=20, choices=DEGREE_CHOICES, blank=True)
-    orcid_id = models.CharField(max_length=19, blank=True)  # format: 0000-0002-1825-0097
+    orcid_id = models.CharField(max_length=19, blank=True)
 
     # Research Profile
-    research_interests = models.JSONField(default=list)  # multi-select, stored as a list of strings
+    research_interests = models.JSONField(default=list)
     bio = models.CharField(max_length=300, blank=True)
     additional_link = models.URLField(blank=True)
 
@@ -88,14 +137,21 @@ class UserProfile(models.Model):
     profile_visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="private")
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
-    role = models.CharField(
-    max_length=20,
-    choices=Role.choices,
-    default=Role.PUBLIC,
-) 
-    expertise = models.ManyToManyField(
-        "metadata.Category", blank=True, related_name="reviewers"
-    )
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.PUBLIC)
+
+    expertise = models.ManyToManyField("metadata.Category", blank=True, related_name="reviewers")
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.college_id and self.center_of_excellence_id:
+            raise ValidationError("Select either a College or a Center of Excellence, not both.")
+        if self.department_id:
+            if self.college_id and self.department.college_id != self.college_id:
+                raise ValidationError({"department": "Department does not belong to the selected College."})
+            if self.center_of_excellence_id and self.department.center_of_excellence_id != self.center_of_excellence_id:
+                raise ValidationError({"department": "Department does not belong to the selected Center of Excellence."})
+
+
 class ResearcherRequest(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending"
@@ -107,15 +163,13 @@ class ResearcherRequest(models.Model):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
     decided_at = models.DateTimeField(null=True, blank=True)
-    reason = models.TextField(blank=True)   
+    reason = models.TextField(blank=True)
     submitted_at = models.DateTimeField(auto_now_add=True)
+
+
 class ActivityLog(models.Model):
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="activity_logs",
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="activity_logs",
     )
     action = models.CharField(max_length=100)
     target_object = models.CharField(max_length=255)
@@ -125,3 +179,9 @@ class ActivityLog(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+    @classmethod
+    def log(cls, user, action, target_object, ip_address="0.0.0.0", extra=None):
+        return cls.objects.create(
+            user=user, action=action, target_object=target_object,
+            ip_address=ip_address, extra=extra or {},
+        )

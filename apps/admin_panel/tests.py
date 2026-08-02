@@ -4,18 +4,10 @@ from rest_framework import status
 from apps.metadata.models import Category, Subject, Metadata
 from apps.accounts.models import UserProfile
 from apps.datasets.models import Dataset
+from apps.datasets.factories import make_user
 from apps.notifications.models import Notification
 
 User = get_user_model()
-
-
-def make_user(username, email, role):
-    user = User.objects.create_user(username=username, email=email, password="pw12345!")
-    UserProfile.objects.create(user=user, full_name=username.title(), role=role,
-                                academia="x", department="x", terms_accepted=True)
-    return user
-
-
 class ModerationTests(APITestCase):
     def setUp(self):
         self.owner = make_user("modowner", "modowner@aastu.edu.et", "researcher")

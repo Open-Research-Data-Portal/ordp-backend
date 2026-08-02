@@ -39,8 +39,7 @@ def _summarize_with_ai(old_df, new_df, diff_pct):
 Old shape: {old_df.shape}, columns: {list(old_df.columns)}
 New shape: {new_df.shape}, columns: {list(new_df.columns)}
 Cells changed: {diff_pct:.1f}%
-
-
+Return ONLY valid JSON, no preamble, in this exact shape:
 {{
   "columns_added": [...], "columns_removed": [...],
   "rows_added": <int>, "rows_removed": <int>,

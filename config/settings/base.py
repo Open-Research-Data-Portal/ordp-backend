@@ -161,3 +161,5 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
 }
+VERSION_BUMP_THRESHOLD_PCT = float(os.environ.get("VERSION_BUMP_THRESHOLD_PCT", 15.0))
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
