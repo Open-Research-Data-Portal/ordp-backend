@@ -25,9 +25,9 @@ from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
 from .services.revisions import apply_revision, route_change
 from .models import DatasetRevision, PendingContentUpdate
 
-from .models import Dataset
+from .models import Dataset, DatasetVersion
 from .permissions import IsDatasetOwner
-from .serializers import DatasetSerializer, InitUploadSerializer, TermsAcceptanceSerializer
+from .serializers import DatasetSerializer, InitUploadSerializer, TermsAcceptanceSerializer, DatasetVersionSerializer
 from .services.assembly import finalize_upload, session_dir, running_total, UploadTooLargeError
 
 
@@ -130,6 +130,12 @@ def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     return Response(DatasetSerializer(dataset).data)
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def dataset_versions(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    versions = dataset.versions.select_related("changed_by", "changed_by__profile")
+    return Response(DatasetVersionSerializer(versions, many=True).data)
 def _download_to_tmp(file_key):
     local_path = f"/tmp/{uuid_lib.uuid4().hex}"
     minio_client.fget_object(settings.MINIO_BUCKET, file_key, local_path)

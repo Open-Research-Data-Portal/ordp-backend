@@ -3,11 +3,14 @@ from django.test import override_settings
 from rest_framework.test import APITestCase
 from rest_framework import status
 
-from apps.accounts.models import UserProfile
+
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 from apps.notifications.models import Notification
 from apps.datasets.factories import make_user
 from apps.datasets.models import (
-    Dataset, DatasetFile, DatasetRevision, PendingContentUpdate, Contributor
+    Dataset, DatasetFile, DatasetRevision, PendingContentUpdate, Contributor, DatasetVersion 
 
 )
 from apps.datasets.services.revisions import route_change, apply_revision, decide_pending_content_update
@@ -34,6 +37,16 @@ class RouteChangeAndReviewCycleTests(APITestCase):
         self.assertEqual(self.dataset.files.latest("uploaded_at").file_key, "v2.csv")
         self.assertEqual(PendingContentUpdate.objects.filter(dataset=self.dataset).count(), 0)
 
+       
+
+        self.assertEqual(
+    DatasetVersion.objects.filter(dataset=self.dataset).count(),
+    0
+)
+
+        self.dataset.refresh_from_db()
+        self.assertEqual(self.dataset.version, 1)
+
     @override_settings(VERSION_BUMP_THRESHOLD_PCT=15.0)
     def test_above_threshold_holds_and_notifies_reviewers(self):
         result = route_change(
@@ -59,6 +72,10 @@ class RouteChangeAndReviewCycleTests(APITestCase):
         update.refresh_from_db()
         self.assertEqual(update.status, "approved")
         self.assertEqual(update.reviewed_by, self.checker)
+
+        version = DatasetVersion.objects.get(dataset=self.dataset, version_number=self.dataset.version)
+        self.assertEqual(version.file_key, "v2.csv")
+        self.assertEqual(version.changed_by, self.owner)
 
     @override_settings(VERSION_BUMP_THRESHOLD_PCT=15.0)
     def test_reviewer_rejection_leaves_live_file_and_version_untouched(self):
@@ -97,6 +114,11 @@ class ApplyRevisionServiceTests(APITestCase):
         self.owner = make_user("arowner", "arowner@aastu.edu.et")
         self.proposer = make_user("arproposer", "arproposer@aastu.edu.et")
         self.dataset = Dataset.objects.create(title="Revision DS", owner=self.owner, status=Dataset.Status.APPROVED)
+        self.checker = User.objects.create_user(
+        username="checker",
+        email="checker@test.com",
+        password="password123"
+)
         DatasetFile.objects.create(dataset=self.dataset, file_key="orig.csv", file_type="csv", file_size=10, checksum="a")
 
     @override_settings(VERSION_BUMP_THRESHOLD_PCT=15.0)
@@ -122,8 +144,29 @@ class ApplyRevisionServiceTests(APITestCase):
         self.assertTrue(PendingContentUpdate.objects.filter(
             dataset=self.dataset, source=PendingContentUpdate.Source.REVISION, status="pending"
         ).exists())
+    @override_settings(VERSION_BUMP_THRESHOLD_PCT=15.0)
+    def test_major_change_creates_no_version_until_approved(self):
+        result = route_change(
+            dataset=self.dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=self.owner,
+            new_file_key="v2.csv", diff_percentage=50.0, change_summary={}, proposed_metadata={},
+        )
+        self.assertEqual(result["status"], "pending_review")
+        self.assertEqual(DatasetVersion.objects.filter(dataset=self.dataset).count(), 0)
 
+        update = PendingContentUpdate.objects.get(dataset=self.dataset)
+        decide_pending_content_update(update, "approve", self.checker)
 
+        self.assertEqual(DatasetVersion.objects.filter(dataset=self.dataset).count(), 1)
+
+    @override_settings(VERSION_BUMP_THRESHOLD_PCT=15.0)
+    def test_rejected_content_update_creates_no_version(self):
+        route_change(dataset=self.dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=self.owner,
+                     new_file_key="v2.csv", diff_percentage=50.0, change_summary={}, proposed_metadata={})
+        update = PendingContentUpdate.objects.get(dataset=self.dataset)
+
+        decide_pending_content_update(update, "reject", self.checker, reason="Not acceptable.")
+
+        self.assertEqual(DatasetVersion.objects.filter(dataset=self.dataset).count(), 0)
 # ---------------------------------------------------------------------------
 # HTTP-level — permission boundaries and full endpoint flows, mocking file I/O
 # ---------------------------------------------------------------------------
@@ -415,3 +458,57 @@ class ContentUpdateQueuePermissionTests(APITestCase):
         self.client.force_authenticate(self.checker)
         resp = self.client.post(f"/api/admin-panel/content-updates/{self.update.id}/decide/", {"decision": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class DatasetVersionsEndpointTests(APITestCase):
+    def setUp(self):
+        self.owner = make_user("dvowner", "dvowner@aastu.edu.et")
+        self.checker = make_user("dvchecker", "dvchecker@aastu.edu.et", role="checker")
+        self.dataset = Dataset.objects.create(title="Versioned DS", owner=self.owner, status=Dataset.Status.APPROVED)
+        DatasetFile.objects.create(dataset=self.dataset, file_key="v1.csv", file_type="csv", file_size=10, checksum="a")
+
+    @override_settings(VERSION_BUMP_THRESHOLD_PCT=15.0)
+    def test_versions_list_ordered_newest_first_with_changed_by_name(self):
+        route_change(
+            dataset=self.dataset,
+            source=PendingContentUpdate.Source.OWNER_EDIT,
+            submitted_by=self.owner,
+            new_file_key="v2.csv",
+            diff_percentage=50.0,
+            change_summary={"overall_summary": "First edit."},
+            proposed_metadata={}
+        )
+
+        update = PendingContentUpdate.objects.get(dataset=self.dataset)
+        decide_pending_content_update(update, "approve", self.checker)
+
+        route_change(
+            dataset=self.dataset,
+            source=PendingContentUpdate.Source.OWNER_EDIT,
+            submitted_by=self.owner,
+            new_file_key="v3.csv",
+            diff_percentage=50.0,
+            change_summary={"overall_summary": "Second edit."},
+            proposed_metadata={}
+        )
+
+        update = PendingContentUpdate.objects.get(
+            dataset=self.dataset,
+            status="pending"
+        )
+        decide_pending_content_update(update, "approve", self.checker)
+
+        self.client.force_authenticate(self.owner)
+        resp = self.client.get(f"/api/datasets/{self.dataset.id}/versions/")
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data), 2)
+        self.assertEqual(resp.data[0]["file_key"], "v3.csv")
+        self.assertEqual(resp.data[1]["file_key"], "v2.csv")
+        self.assertEqual(resp.data[0]["changed_by_name"], self.owner.profile.full_name)
+
+    def test_versions_list_empty_for_unedited_dataset(self):
+        self.client.force_authenticate(self.owner)
+        resp = self.client.get(f"/api/datasets/{self.dataset.id}/versions/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data, [])

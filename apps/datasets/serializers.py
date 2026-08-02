@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate
+from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate, DatasetVersion
 
 
 class DatasetFileSerializer(serializers.ModelSerializer):
@@ -64,3 +64,12 @@ class PendingContentUpdateSerializer(serializers.ModelSerializer):
         model = PendingContentUpdate
         fields = ["id", "dataset", "source", "submitted_by", "approved_by_owner",
                   "diff_percentage", "change_summary", "proposed_metadata", "status", "created_at"]
+
+
+class DatasetVersionSerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.CharField(source="changed_by.profile.full_name", read_only=True)
+
+    class Meta:
+        model = DatasetVersion
+        fields = ["id", "version_number", "file_key", "source", "changed_by", "changed_by_name",
+                  "change_summary", "diff_percentage", "created_at"]
