@@ -109,3 +109,26 @@ class PendingContentUpdate(models.Model):
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
     decided_at = models.DateTimeField(null=True, blank=True)
+
+
+class DatasetVersion(models.Model):
+    class Source(models.TextChoices):
+        OWNER_EDIT = "owner_edit"
+        CONTRIBUTOR_EDIT = "contributor_edit"
+        REVISION = "revision"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="versions")
+    version_number = models.IntegerField()
+    file_key = models.CharField(max_length=512)
+    source = models.CharField(max_length=16, choices=Source.choices)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="+")
+    change_summary = models.JSONField(default=dict, blank=True)
+    diff_percentage = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["dataset", "version_number"], name="unique_dataset_version_number")
+        ]

@@ -6,7 +6,7 @@ from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from ..models import DatasetFile, DatasetRevision, PendingContentUpdate
 
-
+from ..models import DatasetFile, DatasetRevision, PendingContentUpdate, DatasetVersion
 User = get_user_model()
 
 
@@ -75,6 +75,12 @@ def apply_revision(revision: DatasetRevision):
     revision.save()
     return result
 
+def _record_version(dataset, file_key, source, changed_by, change_summary, diff_percentage):
+    next_number = DatasetVersion.objects.filter(dataset=dataset).count() + 1
+    return DatasetVersion.objects.create(
+        dataset=dataset, version_number=next_number, file_key=file_key, source=source,
+        changed_by=changed_by, change_summary=change_summary, diff_percentage=diff_percentage,
+    )
 
 def decide_pending_content_update(update: PendingContentUpdate, decision, reviewer, reason=""):
     update.reviewed_by = reviewer
@@ -84,6 +90,11 @@ def decide_pending_content_update(update: PendingContentUpdate, decision, review
         DatasetFile.objects.filter(dataset=update.dataset).update(file_key=update.new_file_key)
         _apply_metadata(update.dataset, update.proposed_metadata)
         bump_version_and_notify(update.dataset)
+        DatasetVersion.objects.create(
+            dataset=update.dataset, version_number=update.dataset.version, file_key=update.new_file_key,
+            source=update.source, changed_by=update.submitted_by, change_summary=update.change_summary,
+            diff_percentage=update.diff_percentage,
+        )
         update.status = PendingContentUpdate.Status.APPROVED
         notify(
             user=update.submitted_by, notification_type=Notification.NotificationType.DATASET_APPROVED,
