@@ -8,8 +8,8 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0009_userprofile_role'),
-    ]
+    ("accounts", "0009b_null_empty_college_coe_department"),  
+]
 
     operations = [
         migrations.CreateModel(
