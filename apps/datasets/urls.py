@@ -13,5 +13,5 @@ urlpatterns = [
     path("revisions/<uuid:revision_id>/comparison/", views.revision_comparison, name="revision-comparison"),
     path("revisions/<uuid:revision_id>/decide/", views.decide_revision, name="revision-decide"),
     path("<uuid:dataset_id>/versions/", views.dataset_versions, name="dataset-versions"),
-    # path("<uuid:dataset_id>/delete/", views.soft_delete_dataset, name="dataset-delete"),
+    path("<uuid:dataset_id>/delete/", views.soft_delete_dataset, name="dataset-delete"),
 ]

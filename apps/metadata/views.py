@@ -3,7 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.datasets.models import Dataset
-from .models import Metadata, Category, Subject
+from .models import Metadata, Category, Subject, Keyword
 from .serializers import MetadataSerializer, CategorySerializer, SubjectSerializer
 from django.shortcuts import get_object_or_404
 
@@ -19,7 +19,12 @@ def attach_metadata(request, dataset_id):
 
     metadata, _ = Metadata.objects.update_or_create(dataset=dataset, defaults=validated)
     if keywords is not None:
-        metadata.keywords.set(keywords)
+        keyword_objects = [
+            Keyword.objects.get_or_create(word=word.strip())[0]
+            for word in keywords
+            if word and word.strip()
+        ]
+        metadata.keywords.set(keyword_objects)
 
     return Response({"status": "metadata attached"}, status=200)
 
