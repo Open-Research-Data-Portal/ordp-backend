@@ -20,7 +20,7 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 from .models import LoginSecurity, UserProfile, ActivityLog
 from .serializers import (
     LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,
-    PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer, PasswordResetConfirmSerializer,ResearcherRequestSerializer,
 )
 from .tokens import email_verification_token
 
@@ -176,6 +176,19 @@ class CompleteProfileView(APIView):
         )
         return Response(serializer.data)
 
+class ResearcherRequestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ResearcherRequestSerializer(
+            request.user.profile, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {"detail": "Your request for researcher access has been submitted."},
+            status=status.HTTP_200_OK,
+        )
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         refresh_str = request.data.get("refresh")

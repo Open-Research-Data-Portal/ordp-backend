@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
+    atomic = False
     dependencies = [
     ("accounts", "0009b_null_empty_college_coe_department"),  
 ]
@@ -35,6 +35,17 @@ class Migration(migrations.Migration):
             model_name='userprofile',
             name='center_of_excellence',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='accounts.centerofexcellence'),
+        ),
+        migrations.RunSQL(
+            sql=[
+                "ALTER TABLE accounts_userprofile ALTER COLUMN center_of_excellence DROP NOT NULL;",
+                "ALTER TABLE accounts_userprofile ALTER COLUMN college DROP NOT NULL;",
+                "ALTER TABLE accounts_userprofile ALTER COLUMN department DROP NOT NULL;",
+                "UPDATE accounts_userprofile SET center_of_excellence = NULL WHERE center_of_excellence = '';",
+                "UPDATE accounts_userprofile SET college = NULL WHERE college = '';",
+                "UPDATE accounts_userprofile SET department = NULL WHERE department = '';",
+            ],
+            reverse_sql=migrations.RunSQL.noop,
         ),
         migrations.AlterField(
             model_name='userprofile',

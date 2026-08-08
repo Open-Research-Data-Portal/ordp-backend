@@ -45,33 +45,50 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
             instance.terms_accepted_at = timezone.now()
             instance.save(update_fields=["terms_accepted_at"])
 
+        return instance
+class ResearcherRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserProfile
+        fields = [
+            "college", "center_of_excellence", "department", "academia",
+            "academic_title", "highest_degree", "orcid_id", "research_interests",
+            "bio", "additional_link",
+        ]
+
+    def validate(self, data):
         required = ["academia", "department"]
-        is_complete = instance.terms_accepted and all(getattr(instance, f, None) for f in required)
+        missing = [f for f in required if not data.get(f, getattr(self.instance, f, None))]
+        if missing:
+            raise serializers.ValidationError(
+                {f: "This field is required to request researcher access." for f in missing}
+            )
+        return data
 
-        if is_complete and instance.role == UserProfile.Role.PUBLIC:
-            from .models import ResearcherRequest
-            from apps.notifications.services import notify
-            from apps.notifications.models import Notification
-            from django.contrib.auth import get_user_model
+    def save(self, **kwargs):
+        from .models import ResearcherRequest
+        from apps.notifications.services import notify
+        from apps.notifications.models import Notification
+        from django.contrib.auth import get_user_model
 
-            req, _ = ResearcherRequest.objects.get_or_create(user=instance.user)
-            if req.status != ResearcherRequest.Status.PENDING:
-                req.status = ResearcherRequest.Status.PENDING
-                req.reason = ""
-                req.decided_by = None
-                req.decided_at = None
-                req.save()
+        instance = super().save(**kwargs)
 
-            User = get_user_model()
-            for admin_user in User.objects.filter(profile__role="admin"):
-                notify(
-                    user=admin_user, notification_type=Notification.NotificationType.RESEARCHER_REQUEST,
-                    message=f"{instance.full_name} ({instance.user.email}) completed their profile and is requesting researcher access.",
-                    link_path=f"/admin-panel/researcher-requests/{req.id}",
-                )
+        req, _ = ResearcherRequest.objects.get_or_create(user=instance.user)
+        req.status = ResearcherRequest.Status.PENDING
+        req.reason = ""
+        req.decided_by = None
+        req.decided_at = None
+        req.save()
+
+        User = get_user_model()
+        for admin_user in User.objects.filter(profile__role="admin"):
+            notify(
+                user=admin_user,
+                notification_type=Notification.NotificationType.RESEARCHER_REQUEST,
+                message=f"{instance.full_name} ({instance.user.email}) requested researcher access.",
+                link_path=f"/admin-panel/researcher-requests/{req.id}",
+            )
 
         return instance
-
 class RegisterSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
     email = serializers.EmailField()
