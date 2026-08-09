@@ -287,10 +287,16 @@ def decide_revision(request, revision_id):
 
     result = apply_revision(revision)
     return Response(result, status=200)
-# @api_view(["DELETE"])
-# @permission_classes([IsAuthenticated, IsDatasetOwner])
-# def soft_delete_dataset(request, dataset_id):
-#     dataset = Dataset.objects.get(id=dataset_id, owner=request.user)
-#     dataset.is_active = False
-#     dataset.save(update_fields=["is_active"])
-#     return Response(status=204)
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def soft_delete_dataset(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user, is_active=True)
+    dataset.is_active = False
+    dataset.save(update_fields=["is_active"])
+    log_activity(
+        user=request.user,
+        action="dataset_soft_deleted",
+        target_object=f"Dataset:{dataset.id}",
+        ip_address=get_client_ip(request),
+    )
+    return Response(status=204)

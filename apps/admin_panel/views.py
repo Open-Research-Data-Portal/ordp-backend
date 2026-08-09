@@ -15,6 +15,7 @@ from apps.datasets.services.revisions import decide_pending_content_update
 from django.utils import timezone
 from apps.accounts.permissions import IsAdminOnly
 from apps.accounts.models import ResearcherRequest, UserProfile
+from apps.accounts.views import get_client_ip, log_activity
 
 
 @api_view(["GET"])
@@ -125,4 +126,20 @@ def decide_researcher_request(request, request_id):
 
     req.save()
     return Response({"status": req.status})
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAdminOnly])
+def hard_delete_dataset(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+    title = dataset.title
+    dataset.delete()
+    log_activity(
+        user=request.user,
+        action="dataset_hard_deleted",
+        target_object=f"Dataset:{dataset_id}",
+        ip_address=get_client_ip(request),
+        extra={"title": title},
+    )
+    return Response(status=204)
 

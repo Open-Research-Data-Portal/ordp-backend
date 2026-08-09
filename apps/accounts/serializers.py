@@ -17,9 +17,12 @@ User = get_user_model()
 
 
 class ProfileSerializer(serializers.ModelSerializer):
+    role = serializers.CharField(source="profile.role", read_only=True)
+    full_name = serializers.CharField(source="profile.full_name", read_only=True)
+
     class Meta:
         model = User
-        fields = ["id", "email", "username", "first_name", "last_name"]
+        fields = ["id", "email", "username", "first_name", "last_name", "full_name", "role"]
         read_only_fields = ["id", "email", "username"]
 
 
