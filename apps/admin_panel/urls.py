@@ -31,3 +31,6 @@ urlpatterns = [
     path("users/<int:user_id>/deactivate/", dashboard_views.admin_deactivate_user, name="admin-deactivate-user"),
     path("users/<int:user_id>/reactivate/", dashboard_views.admin_reactivate_user, name="admin-reactivate-user")
 ]
+    path("<uuid:dataset_id>/hard-delete/", views.hard_delete_dataset, name="dataset-hard-delete"),
+
+]
