@@ -17,7 +17,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from django.db import transaction
-
+from rest_framework.decorators import api_view, permission_classes
 from apps.datasets.models import Contributor
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
@@ -32,6 +32,19 @@ from .tokens import email_verification_token
 User = get_user_model()
 password_reset_token = PasswordResetTokenGenerator()
 
+@api_view(["POST"]) 
+@permission_classes([IsAuthenticated]) 
+def add_other_interest(request):
+    from apps.metadata.services import get_or_create_pending_category
+    name = (request.data.get("name") or "").strip()
+    if not name:
+        return Response({"detail": "name is required."}, status=400)
+    category = get_or_create_pending_category(name, request.user)
+    request.user.profile.expertise.add(category)
+    return Response({
+        "status": "added", "category_id": category.id,
+        "pending_review": category.status == category.Status.PENDING,
+    }, status=201)
 
 def log_activity(user, action, target_object, ip_address, extra=None):
     ActivityLog.objects.create(
@@ -321,7 +334,6 @@ class PasswordResetRequestView(APIView):
         try:
             user = User.objects.get(email__iexact=email_addr)
         except User.DoesNotExist:
-            # Same response either way — don't reveal whether the account exists.
             return Response(
                 {"detail": "If an account exists with that email, a reset link has been sent."},
                 status=status.HTTP_200_OK,
@@ -386,3 +398,18 @@ class PasswordResetConfirmView(APIView):
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def add_other_interest(request):
+    from apps.metadata.services import get_or_create_pending_category
+    name = (request.data.get("name") or "").strip()
+    if not name:
+        return Response({"detail": "name is required."}, status=400)
+    category = get_or_create_pending_category(name, request.user)
+    request.user.profile.expertise.add(category)
+    return Response({
+        "status": "added", "category_id": category.id,
+        "pending_review": category.status == category.Status.PENDING,
+    }, status=201)

@@ -329,3 +329,30 @@ def list_users(request):
         "roles": list(u.profile.roles.values_list("role", flat=True)) if hasattr(u, "profile") else [],
         "is_active": u.is_active, "date_joined": u.date_joined,
     } for u in qs])
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_categories(request):
+    from apps.metadata.models import Category
+    qs = Category.objects.filter(status=Category.Status.PENDING).select_related("suggested_by__profile")
+    return Response([{
+        "id": c.id, "name": c.name,
+        "suggested_by": c.suggested_by.profile.full_name if c.suggested_by else None,
+    } for c in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def decide_pending_category(request, category_id):
+    from apps.metadata.models import Category
+    category = get_object_or_404(Category, id=category_id, status=Category.Status.PENDING)
+    decision = request.data.get("decision")
+    if decision == "approve":
+        category.status = Category.Status.APPROVED
+    elif decision == "reject":
+        category.status = Category.Status.REJECTED
+    else:
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+    category.save(update_fields=["status"])
+    return Response({"status": category.status})

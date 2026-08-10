@@ -17,4 +17,4 @@ class SubjectSerializer(serializers.ModelSerializer):
 class MetadataSerializer(serializers.ModelSerializer):
     class Meta:
         model = Metadata
-        fields = ["id", "description", "category", "subject", "keywords", "sponsor_or_grant"]
+        fields = ["id", "description", "subject", "keywords", "sponsor_or_grant"]
