@@ -7,7 +7,7 @@ from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from ..models import Dataset, DatasetFile
 from .storage import push_to_minio
-
+from .file_validation import validate_file_matches_declared_type, FileTypeMismatchError
 
 class UploadTooLargeError(Exception):
     pass
@@ -24,7 +24,10 @@ def running_total(upload_session_id):
     return sum(os.path.getsize(os.path.join(d, f)) for f in os.listdir(d))
 
 
-def finalize_upload(dataset_id, upload_session_id, uploader, original_filename, declared_file_type):
+
+
+def finalize_upload(dataset_id, upload_session_id, uploader, original_filename, declared_file_type,
+                     is_structured=True, column_count=None, feature_names=None, item_count=None):
     dataset = Dataset.objects.get(id=dataset_id)
     d = session_dir(upload_session_id)
     chunk_paths = sorted(os.path.join(d, f) for f in os.listdir(d))
@@ -50,6 +53,16 @@ def finalize_upload(dataset_id, upload_session_id, uploader, original_filename, 
                 out.write(data)
     checksum = sha256.hexdigest()
 
+    try:
+        validate_file_matches_declared_type(assembled_path, declared_file_type)
+    except FileTypeMismatchError as exc:
+        shutil.rmtree(d, ignore_errors=True)
+        notify(
+            user=uploader, notification_type=Notification.NotificationType.UPLOAD_FAILURE,
+            message=f'Upload of "{original_filename}" rejected: {exc}', dataset=dataset,
+        )
+        raise
+
     object_key = f"datasets/{dataset.id}/{original_filename}"
     try:
         push_to_minio(assembled_path, object_key)
@@ -63,8 +76,10 @@ def finalize_upload(dataset_id, upload_session_id, uploader, original_filename, 
         shutil.rmtree(d, ignore_errors=True)
 
     dataset_file = DatasetFile.objects.create(
-        dataset=dataset, file_key=object_key, file_type=declared_file_type,
-        file_size=total_size, checksum=checksum,
+        dataset=dataset, file_key=object_key, original_filename=original_filename,
+        file_type=declared_file_type, file_size=total_size, checksum=checksum,
+        is_structured=is_structured, column_count=column_count,
+        feature_names=feature_names or [], item_count=item_count,
     )
     notify(
         user=uploader, notification_type=Notification.NotificationType.UPLOAD_SUCCESS,

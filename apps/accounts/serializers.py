@@ -27,9 +27,9 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
         fields = [
-            "college", "center_of_excellence", "department", "academia", "academic_title",
-            "highest_degree", "orcid_id", "research_interests", "bio", "additional_link",
-            "profile_visibility", "terms_accepted",
+            "full_name", "profile_picture", "college", "center_of_excellence", "department", "academia",
+            "academic_title", "academic_rank", "highest_degree", "orcid_id", "research_interests",
+            "bio", "additional_link", "profile_visibility", "terms_accepted",
         ]
 
     def validate_terms_accepted(self, value):

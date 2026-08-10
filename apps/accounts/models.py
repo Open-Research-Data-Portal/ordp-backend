@@ -3,8 +3,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from datetime import timedelta
-
-
+from django.core.exceptions import ValidationError
 class LoginSecurity(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -71,8 +70,6 @@ class Department(models.Model):
 
     def __str__(self):
         return self.name
-
-
 class UserProfile(models.Model):
     ACADEMIA_CHOICES = [
         ("student", "Student"), ("researcher", "Researcher"), ("lecturer", "Lecturer"),
@@ -102,7 +99,8 @@ class UserProfile(models.Model):
     VISIBILITY_CHOICES = [
         ("public", "Everyone (Public)"), ("trusted", "Trusted Parties"), ("private", "Only Me (Private)"),
     ]
-
+    def has_role(self, *roles):
+        return self.roles.filter(role__in=roles).exists()
     class Role(models.TextChoices):
         PUBLIC = "public", "Public"
         RESEARCHER = "researcher", "Researcher"
@@ -140,9 +138,9 @@ class UserProfile(models.Model):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.PUBLIC)
 
     expertise = models.ManyToManyField("metadata.Category", blank=True, related_name="reviewers")
-
+  
     def clean(self):
-        from django.core.exceptions import ValidationError
+
         if self.college_id and self.center_of_excellence_id:
             raise ValidationError("Select either a College or a Center of Excellence, not both.")
         if self.department_id:
@@ -150,6 +148,20 @@ class UserProfile(models.Model):
                 raise ValidationError({"department": "Department does not belong to the selected College."})
             if self.center_of_excellence_id and self.department.center_of_excellence_id != self.center_of_excellence_id:
                 raise ValidationError({"department": "Department does not belong to the selected Center of Excellence."})
+
+class UserRole(models.Model):
+    class RoleChoice(models.TextChoices):
+        PUBLIC = "public"
+        RESEARCHER = "researcher"
+        CHECKER = "checker"
+        ADMIN = "admin"
+
+    profile = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name="roles")
+    role = models.CharField(max_length=20, choices=RoleChoice.choices)
+    granted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["profile", "role"]
 
 
 class ResearcherRequest(models.Model):

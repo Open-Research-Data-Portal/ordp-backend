@@ -37,3 +37,13 @@ class Metadata(models.Model):
     sponsor_or_grant = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class FallbackThumbnail(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="fallback_thumbnails")
+    image_key = models.CharField(max_length=512)
+    usage_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["usage_count"]

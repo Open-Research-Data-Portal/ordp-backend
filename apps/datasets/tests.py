@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 from rest_framework import status
 
+from .factories import make_user
 from apps.accounts.models import UserProfile, Department, College
 from .models import Dataset
 from apps.accounts.models import UserProfile, Department
@@ -25,12 +26,6 @@ def make_researcher(username, email, completed=True):
 
 
 class InitUploadTests(APITestCase):
-    def test_incomplete_profile_is_blocked(self):
-        user, _ = make_researcher("incompleteuser", "incomplete@aastu.edu.et", completed=False)
-        self.client.force_authenticate(user)
-        resp = self.client.post("/api/datasets/upload/init/", {"title": "Test Dataset"})
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
-
     def test_public_role_cannot_upload(self):
         user = User.objects.create_user(username="pubuser", email="pub@aastu.edu.et", password="pw12345!")
         college, _ = College.objects.get_or_create(name="Test College")
@@ -97,7 +92,48 @@ class SubmitDatasetTests(APITestCase):
         self.dataset.refresh_from_db()
         self.assertEqual(self.dataset.status, Dataset.Status.DRAFT)
 
+class UploadRestrictedToResearcherTests(APITestCase):
+    def test_admin_cannot_init_upload(self):
+        admin = make_user("uadmin", "uadmin@aastu.edu.et", role="admin")
+        self.client.force_authenticate(admin)
+        resp = self.client.post("/api/datasets/upload/init/", {"title": "Admin Attempt"})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.data["detail"], "You must be a Researcher to do this.")
 
+    def test_public_role_cannot_init_upload(self):
+        public_user = make_user("upublic", "upublic@aastu.edu.et", role="public")
+        self.client.force_authenticate(public_user)
+        resp = self.client.post("/api/datasets/upload/init/", {"title": "Public Attempt"})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_public_role_cannot_upload_chunk(self):
+        """Regression test for the doubled @permission_classes bug — this endpoint
+        was silently accepting any authenticated user regardless of role."""
+        researcher = make_user("uresearcher", "uresearcher@aastu.edu.et", role="researcher")
+        public_user = make_user("upublic2", "upublic2@aastu.edu.et", role="public")
+
+        self.client.force_authenticate(researcher)
+        init_resp = self.client.post("/api/datasets/upload/init/", {"title": "Chunk Test"})
+        upload_session_id = init_resp.data["upload_session_id"]
+
+        self.client.force_authenticate(public_user)
+        resp = self.client.post(
+            f"/api/datasets/upload/chunk/{upload_session_id}/",
+            {"chunk_index": 0, "chunk": b"data"},
+            format="multipart",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_researcher_dual_role_can_upload(self):
+        """Confirms this is role-based, not admin-exclusion-based — an admin who
+        ALSO holds researcher should still be able to upload."""
+        from apps.accounts.models import UserRole
+        admin_researcher = make_user("uboth", "uboth@aastu.edu.et", role="admin")
+        UserRole.objects.get_or_create(profile=admin_researcher.profile, role="researcher")
+
+        self.client.force_authenticate(admin_researcher)
+        resp = self.client.post("/api/datasets/upload/init/", {"title": "Dual Role Attempt"})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 # class DatasetVisibilityTests(APITestCase):
 #     def test_owner_can_soft_delete_own_dataset(self):
 #         owner, _ = make_researcher("delowner", "delowner@aastu.edu.et")

@@ -1,6 +1,8 @@
 import os
 import uuid
 
+from apps.datasets.services.file_validation import FileTypeMismatchError
+from .models import Bookmark, Contributor
 from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import IsResearcherOnly
 from apps.notifications.services import notify
@@ -32,7 +34,7 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOrAdmin])
+@permission_classes([IsResearcherOnly])
 def init_upload(request):
     """Step 1: create the Dataset shell (status=draft), open a chunked-upload session."""
     serializer = InitUploadSerializer(data=request.data)
@@ -51,7 +53,7 @@ def init_upload(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsResearcherOnly])
 @parser_classes([MultiPartParser])
 def upload_chunk(request, upload_session_id):
     """Step 2: upload one chunk. Rejects early (413) once the running total exceeds
@@ -74,19 +76,40 @@ def upload_chunk(request, upload_session_id):
             f.write(part)
     return Response({"status": "chunk received"}, status=200)
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+@parser_classes([MultiPartParser])
+def upload_thumbnail(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    image = request.FILES.get("thumbnail")
+    if image is None:
+        return Response({"detail": "thumbnail file is required."}, status=400)
+    key = f"thumbnails/{dataset.id}/{image.name}"
+    minio_client().put_object(settings.MINIO_BUCKET, key, image, image.size)
+    dataset.thumbnail_key = key
+    dataset.thumbnail_source = Dataset.ThumbnailSource.UPLOADED
+    dataset.save(update_fields=["thumbnail_key", "thumbnail_source"])
+    return Response({"status": "thumbnail uploaded"}, status=200)
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsResearcherOnly])
 def complete_upload(request, upload_session_id):
-    """Step 3: assemble chunks, verify size, checksum, push to MinIO, create DatasetFile."""
+    """Step 3: assemble chunks, verify size + declared-type match, checksum,
+    push to MinIO, create DatasetFile."""
     try:
         dataset_file = finalize_upload(
             dataset_id=request.data["dataset_id"], upload_session_id=upload_session_id,
             uploader=request.user, original_filename=request.data["filename"],
             declared_file_type=request.data["file_type"],
+            is_structured=request.data.get("is_structured", True),
+            column_count=request.data.get("column_count"),
+            feature_names=request.data.get("feature_names"),
+            item_count=request.data.get("item_count"),
         )
     except UploadTooLargeError:
         return Response({"detail": "File exceeds size limit."}, status=413)
+    except FileTypeMismatchError as exc:
+        return Response({"detail": str(exc)}, status=400)
     except Exception:
         return Response({"detail": "Upload failed."}, status=500)
 
@@ -94,7 +117,7 @@ def complete_upload(request, upload_session_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, IsResearcherOnly])
 def accept_terms_and_submit(request, dataset_id):
     """Step 4 (final step): accept dataset-level T&Cs, move status draft -> pending."""
     dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
@@ -287,10 +310,51 @@ def decide_revision(request, revision_id):
 
     result = apply_revision(revision)
     return Response(result, status=200)
-# @api_view(["DELETE"])
-# @permission_classes([IsAuthenticated, IsDatasetOwner])
-# def soft_delete_dataset(request, dataset_id):
-#     dataset = Dataset.objects.get(id=dataset_id, owner=request.user)
-#     dataset.is_active = False
-#     dataset.save(update_fields=["is_active"])
-#     return Response(status=204)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_bookmark(request, dataset_id):
+    """Toggle: bookmarks it if not already bookmarked, removes it if it is."""
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    bookmark, created = Bookmark.objects.get_or_create(user=request.user, dataset=dataset)
+    if not created:
+        bookmark.delete()
+        return Response({"bookmarked": False}, status=200)
+    return Response({"bookmarked": True}, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_bookmarks(request):
+    qs = Dataset.objects.filter(bookmarked_by__user=request.user, is_active=True).order_by("-bookmarked_by__created_at")
+    return Response(DatasetSerializer(qs, many=True).data)
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def soft_delete_dataset(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    dataset.is_active = False
+    dataset.save(update_fields=["is_active"])
+    log_activity(
+        user=request.user, action="dataset_soft_deleted",
+        target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request),
+    )
+    return Response(status=204)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_contributor_type(request, dataset_id, contributor_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+    if dataset.owner_id != request.user.id:
+        return Response({"detail": "Only the original dataset owner can change contributor roles."}, status=403)
+
+    contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
+    new_type = request.data.get("contributor_type")
+    if new_type not in Contributor.ContributorType.values:
+        return Response({"detail": "contributor_type must be 'owner', 'author', or 'contributor'."}, status=400)
+
+    contributor.contributor_type = new_type
+    contributor.save(update_fields=["contributor_type"])
+    return Response({"status": "updated", "contributor_type": contributor.contributor_type})
