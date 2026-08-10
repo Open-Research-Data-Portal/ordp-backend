@@ -6,19 +6,28 @@ class IsDatasetOwner(BasePermission):
         from .models import Dataset, DatasetRevision, PendingContentUpdate
         dataset_id = view.kwargs.get("dataset_id")
         if dataset_id:
-            return Dataset.objects.filter(id=dataset_id, owner=request.user).exists()
+            dataset = Dataset.objects.filter(id=dataset_id).first()
+            if dataset and dataset.is_owned_by(request.user):
+                return True
+            self.message = "Only the dataset owner can do this."
+            return False
 
         revision_id = view.kwargs.get("revision_id") or view.kwargs.get("update_id")
         if revision_id:
-            return (
-                DatasetRevision.objects.filter(id=revision_id, dataset__owner=request.user).exists()
-                or PendingContentUpdate.objects.filter(id=revision_id, dataset__owner=request.user).exists()
-            )
+            revision = (DatasetRevision.objects.filter(id=revision_id).first()
+                        or PendingContentUpdate.objects.filter(id=revision_id).first())
+            if revision and revision.dataset.is_owned_by(request.user):
+                return True
+            self.message = "Only the dataset owner can do this."
+            return False
         return False
 
     def has_object_permission(self, request, view, obj):
         dataset = obj if hasattr(obj, "owner") else obj.dataset
-        return dataset.owner_id == request.user.id
+        if dataset.is_owned_by(request.user):
+            return True
+        self.message = "Only the dataset owner can do this."
+        return False
 
 
 class IsDatasetOwnerOrContributor(BasePermission):
@@ -31,6 +40,6 @@ class IsDatasetOwnerOrContributor(BasePermission):
             return True
 
         profile = getattr(request.user, "profile", None)
-        if not profile or profile.role not in ("researcher", "admin"):
+        if not profile or not profile.has_role("researcher", "admin"):
             return False
         return Contributor.objects.filter(dataset_id=dataset_id, user=request.user).exists()

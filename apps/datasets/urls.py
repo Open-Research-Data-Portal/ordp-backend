@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import dashboard_views
 
 urlpatterns = [
     path("upload/init/", views.init_upload, name="upload-init"),
@@ -13,5 +14,15 @@ urlpatterns = [
     path("revisions/<uuid:revision_id>/comparison/", views.revision_comparison, name="revision-comparison"),
     path("revisions/<uuid:revision_id>/decide/", views.decide_revision, name="revision-decide"),
     path("<uuid:dataset_id>/versions/", views.dataset_versions, name="dataset-versions"),
+    path("<uuid:dataset_id>/thumbnail/", views.upload_thumbnail, name="upload-thumbnail"),
+    path("<uuid:dataset_id>/bookmark/", views.toggle_bookmark, name="toggle-bookmark"),
+    path("bookmarks/", views.my_bookmarks, name="my-bookmarks"),
+    path("<uuid:dataset_id>/contributors/<uuid:contributor_id>/", views.update_contributor_type, name="update-contributor-type"),
+    path("<uuid:dataset_id>/delete/", views.soft_delete_dataset, name="dataset-delete"),
+    path("dashboard/stats/", dashboard_views.dashboard_stats, name="dashboard-stats"),
+    path("dashboard/recent-activity/", dashboard_views.recent_activity, name="dashboard-recent-activity"),
+    path("dashboard/feed/", dashboard_views.feed, name="dashboard-feed"),
+    path("dashboard/my-contributions/", dashboard_views.my_contributions, name="dashboard-my-contributions"),
+]
     path("<uuid:dataset_id>/delete/", views.soft_delete_dataset, name="dataset-delete"),
 ]

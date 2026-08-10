@@ -3,7 +3,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.datasets.models import Dataset
-from .models import Metadata, Category, Subject, Keyword
+from .models import Keyword, Metadata, Category, Subject
+
 from .serializers import MetadataSerializer, CategorySerializer, SubjectSerializer
 from django.shortcuts import get_object_or_404
 
@@ -25,6 +26,9 @@ def attach_metadata(request, dataset_id):
             if word and word.strip()
         ]
         metadata.keywords.set(keyword_objects)
+
+    from .services import assign_fallback_thumbnail
+    assign_fallback_thumbnail(dataset)
 
     return Response({"status": "metadata attached"}, status=200)
 

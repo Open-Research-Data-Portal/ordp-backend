@@ -6,7 +6,7 @@ from django.template.loader import render_to_string
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
-
+from .serializers import ExtendedProfileSerializer  
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -16,6 +16,11 @@ from rest_framework_simplejwt.tokens import RefreshToken as RefreshTokenObj
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+from django.db import transaction
+
+from apps.datasets.models import Contributor
+from apps.notifications.models import Notification
+from apps.notifications.services import notify
 
 from .models import LoginSecurity, UserProfile, ActivityLog
 from .serializers import (
@@ -44,6 +49,22 @@ def get_client_ip(request):
         return x_forwarded_for.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR", "unknown")
 
+def _link_pending_contributor_invites(user):
+    from apps.sharing.models import SharePermission   
+    pending = Contributor.objects.filter(invited_email__iexact=user.email, user__isnull=True)
+    for contributor in pending:
+        contributor.user = user
+        contributor.name = user.profile.full_name
+        contributor.invited_email = ""
+        contributor.save(update_fields=["user", "name", "invited_email"])
+        SharePermission.objects.get_or_create(
+            dataset=contributor.dataset, shared_with_user=user, defaults={"access_type": "download"}
+        )
+        notify(
+            user=user, notification_type=Notification.NotificationType.CONTRIBUTOR_INVITATION,
+            message=f'You now have contributor access to "{contributor.dataset.title}".',
+            dataset=contributor.dataset, link_path=f"/datasets/{contributor.dataset.id}",
+        )
 
 class LoginView(APIView):
     permission_classes = []
@@ -152,7 +173,7 @@ class ProfileView(APIView):
 
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-from .serializers import ExtendedProfileSerializer  # add to your existing import block
+
 
 
 class CompleteProfileView(APIView):
@@ -167,9 +188,17 @@ class CompleteProfileView(APIView):
         return Response(data)
 
     def patch(self, request):
+        old_full_name = request.user.profile.full_name
         serializer = ExtendedProfileSerializer(request.user.profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        new_full_name = request.user.profile.full_name
+        if new_full_name != old_full_name:
+            log_activity(
+            user=request.user, action="full_name_changed",
+            target_object=str(request.user.id), ip_address=get_client_ip(request),
+            extra={"old": old_full_name, "new": new_full_name},
+        )
         log_activity(
             user=request.user, action="profile_completed",
             target_object=str(request.user.id), ip_address=get_client_ip(request),
@@ -200,6 +229,7 @@ class CustomTokenRefreshView(TokenRefreshView):
         return response
 
 
+
 class RegisterView(APIView):
     permission_classes = []
 
@@ -209,32 +239,37 @@ class RegisterView(APIView):
         data = serializer.validated_data
         ip = get_client_ip(request)
 
-        user = User.objects.create_user(
-            username=data["username"],
-            email=data["email"],
-            password=data["password"],
-            is_active=False,
-        )
-        UserProfile.objects.create(user=user, full_name=data["full_name"])
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=data["username"],
+                email=data["email"],
+                password=data["password"],
+                is_active=False,
+            )
+            UserProfile.objects.create(user=user, full_name=data["full_name"])
 
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = email_verification_token.make_token(user)
         verify_link = f"{settings.FRONTEND_URL}/verify-email?uid={uid}&token={token}"
 
-        html_content = render_to_string("accounts/emails/verify_email.html", {
-            "full_name": data["full_name"],
-            "verify_link": verify_link,
-        })
-        text_content = f"Welcome to ORDP. Verify your email by visiting: {verify_link}"
+        try:
+            html_content = render_to_string("accounts/emails/verify_email.html", {
+                "full_name": data["full_name"],
+                "verify_link": verify_link,
+            })
+            text_content = f"Welcome to ORDP. Verify your email by visiting: {verify_link}"
 
-        email = EmailMultiAlternatives(
-            subject="Verify your ORDP account",
-            body=text_content,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[user.email],
-        )
-        email.attach_alternative(html_content, "text/html")
-        email.send()
+            email = EmailMultiAlternatives(
+                subject="Verify your ORDP account",
+                body=text_content,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[user.email],
+            )
+            email.attach_alternative(html_content, "text/html")
+            email.send()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Failed to send verification email to %s", user.email)
 
         log_activity(user=user, action="registration_requested", target_object=str(user.id), ip_address=ip)
 
