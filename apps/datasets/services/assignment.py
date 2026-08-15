@@ -4,7 +4,7 @@ from apps.accounts.models import UserProfile
 
 
 def assign_reviewer(dataset):
-    from .models import Dataset 
+    from ..models import Dataset 
 
     category = None
     if hasattr(dataset, "metadata") and dataset.metadata.category_id:
