@@ -111,6 +111,8 @@ def complete_upload(request, upload_session_id):
     except FileTypeMismatchError as exc:
         return Response({"detail": str(exc)}, status=400)
     except Exception:
+        import logging
+        logging.exception("Upload finalize failed")
         return Response({"detail": "Upload failed."}, status=500)
 
     return Response({"file_id": dataset_file.id, "checksum": dataset_file.checksum}, status=201)
@@ -143,7 +145,13 @@ def accept_terms_and_submit(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_datasets(request):
-    qs = Dataset.objects.filter(owner=request.user, is_active=True).order_by("-created_at")
+    qs = (
+        Dataset.objects
+        .filter(owner=request.user, is_active=True)
+        .exclude(status=Dataset.Status.DRAFT, files__isnull=True)
+        .order_by("-created_at")
+        .distinct()
+    )
     return Response(DatasetSerializer(qs, many=True).data)
 
 
