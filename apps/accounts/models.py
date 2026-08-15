@@ -70,6 +70,18 @@ class Department(models.Model):
 
     def __str__(self):
         return self.name
+class ResearchCategory(models.Model):
+    class Status(models.TextChoices):
+        APPROVED = "approved"
+        PENDING = "pending"
+        REJECTED = "rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=128, unique=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.APPROVED)
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
 class UserProfile(models.Model):
     ACADEMIA_CHOICES = [
         ("student", "Student"), ("researcher", "Researcher"), ("lecturer", "Lecturer"),
@@ -127,7 +139,7 @@ class UserProfile(models.Model):
     orcid_id = models.CharField(max_length=19, blank=True)
 
     # Research Profile
-    research_interests = models.JSONField(default=list)
+    research_interests = models.ManyToManyField(ResearchCategory, blank=True, related_name="interested_users")
     bio = models.CharField(max_length=300, blank=True)
     additional_link = models.URLField(blank=True)
 
@@ -148,6 +160,8 @@ class UserProfile(models.Model):
                 raise ValidationError({"department": "Department does not belong to the selected College."})
             if self.center_of_excellence_id and self.department.center_of_excellence_id != self.center_of_excellence_id:
                 raise ValidationError({"department": "Department does not belong to the selected Center of Excellence."})
+    email_verified = models.BooleanField(default=False)
+    research_interests_completed = models.BooleanField(default=False)
 
 class UserRole(models.Model):
     class RoleChoice(models.TextChoices):
