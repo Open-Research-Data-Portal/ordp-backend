@@ -19,6 +19,8 @@ def make_dataset_with_version(owner, title="Test DS", visibility="restricted"):
     return dataset
 
 
+
+
 class FreeDownloadTests(APITestCase):
     def test_owner_downloads_own_restricted_dataset_freely(self):
         owner = make_user("fdowner", "fdowner@aastu.edu.et")
@@ -119,7 +121,6 @@ class RestrictedShareVotingTests(APITestCase):
         self.client.force_authenticate(self.reviewers[0])
         resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
         self.assertEqual(resp.data["status"], "pending")
-
     def test_majority_approve_grants_access(self):
         request_id = self._submit_request()
         for reviewer in self.reviewers[:2]:
@@ -127,7 +128,11 @@ class RestrictedShareVotingTests(APITestCase):
             self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
         self.client.force_authenticate(self.reviewers[2])
         resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "reject"})
-        self.assertEqual(resp.data["status"], "approved")  
+        self.assertEqual(resp.data["status"], "pending")
+
+        self.client.force_authenticate(self.owner)
+        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
+        self.assertEqual(resp.data["status"], "approved")  #
 
         self.assertTrue(SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists())
         self.client.force_authenticate(self.requester)
@@ -147,6 +152,8 @@ class RestrictedShareVotingTests(APITestCase):
         for reviewer in self.reviewers:
             self.client.force_authenticate(reviewer)
             self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
+        self.client.force_authenticate(self.owner)
+        self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
         self.dataset.refresh_from_db()
         self.assertTrue(self.dataset.edit_in_progress_notice)
 
@@ -179,10 +186,31 @@ class RestrictedShareVotingTests(APITestCase):
         for reviewer in self.reviewers:
             self.client.force_authenticate(reviewer)
             self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
+        self.client.force_authenticate(self.owner)
+        self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
+
         late_reviewer = make_user("rsvlatereviewer", "rsvlatereviewer@aastu.edu.et", role="checker")
         self.client.force_authenticate(late_reviewer)
         resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+    def test_owner_rejection_blocks_access_even_with_committee_majority(self):
+        request_id = self._submit_request()
+        for reviewer in self.reviewers:
+            self.client.force_authenticate(reviewer)
+            self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
+
+        self.client.force_authenticate(self.owner)
+        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "reject"})
+        self.assertEqual(resp.data["status"], "rejected")
+        self.assertFalse(SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists())
+
+    def test_non_owner_cannot_record_owner_decision(self):
+        request_id = self._submit_request()
+        self.client.force_authenticate(self.requester)  # not the owner
+        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class ContributorInvitationTests(APITestCase):

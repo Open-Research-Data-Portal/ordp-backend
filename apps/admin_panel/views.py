@@ -56,18 +56,28 @@ def moderate_dataset(request, dataset_id):
     decision = request.data.get("decision")
     reason = (request.data.get("reason") or "").strip()
 
-    if decision == ModerationDecision.Decision.REJECTED and not reason:
-        return Response({"detail": "A reason is required to reject a dataset."}, status=400)
+    if decision not in ModerationDecision.Decision.values:
+        return Response({"detail": "decision must be 'approved', 'changes_requested', or 'rejected'."}, status=400)
+    if decision in (ModerationDecision.Decision.REJECTED, ModerationDecision.Decision.CHANGES_REQUESTED) and not reason:
+        return Response({"detail": "A reason is required to reject or request changes on a dataset."}, status=400)
 
     ModerationDecision.objects.create(dataset=dataset, reviewer=request.user, decision=decision, reason=reason or None)
 
     if decision == ModerationDecision.Decision.APPROVED:
-        dataset.status = Dataset.Status.APPROVED
+        dataset.status = Dataset.Status.PUBLISHED
         dataset.save(update_fields=["status"])
         _resolve_thumbnail_suggestions(dataset)
         notify(
             user=dataset.owner, notification_type=Notification.NotificationType.DATASET_APPROVED,
-            message=f'Your dataset "{dataset.title}" has been approved.', dataset=dataset,
+            message=f'Your dataset "{dataset.title}" has been published.', dataset=dataset,
+            link_path=f"/datasets/{dataset.id}",
+        )
+    elif decision == ModerationDecision.Decision.CHANGES_REQUESTED:
+        dataset.status = Dataset.Status.CHANGES_REQUESTED
+        dataset.save(update_fields=["status"])
+        notify(
+            user=dataset.owner, notification_type=Notification.NotificationType.CHANGES_REQUESTED,
+            message=f'Changes were requested on "{dataset.title}": {reason}', dataset=dataset, reason=reason,
             link_path=f"/datasets/{dataset.id}",
         )
     else:
