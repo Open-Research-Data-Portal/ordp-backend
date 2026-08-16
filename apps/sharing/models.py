@@ -1,9 +1,7 @@
-from django.db import models
-
-# Create your models here.
 import uuid
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 from apps.datasets.models import Dataset
 
 
@@ -12,15 +10,36 @@ class SharePermission(models.Model):
         VIEW = "view"
         DOWNLOAD = "download"
 
+    class Status(models.TextChoices):
+        ACTIVE = "active"
+        EXPIRED = "expired"
+        REVOKED = "revoked"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="share_permissions")
     shared_with_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     access_type = models.CharField(max_length=16, choices=AccessType.choices, default=AccessType.DOWNLOAD)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
     expires_at = models.DateTimeField(null=True, blank=True)
     granted_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         unique_together = ["dataset", "shared_with_user"]
+
+    def is_active_grant(self):
+        """Lazy expiry check, same pattern as LoginSecurity.is_locked() —
+        flips status to EXPIRED on read rather than needing a scheduled job."""
+        if self.status != self.Status.ACTIVE:
+            return False
+        if self.expires_at and self.expires_at <= timezone.now():
+            self.status = self.Status.EXPIRED
+            self.save(update_fields=["status"])
+            return False
+        return True
 
 
 class UsabilityFormResponse(models.Model):
@@ -42,8 +61,8 @@ class RestrictedAccessJustification(models.Model):
 
 
 class DatasetAccessRequest(models.Model):
-    """Restricted-visibility sharing request. Decided by reviewer committee majority
-    vote (see AccessRequestVote), not by the dataset owner."""
+    """Restricted-visibility sharing request. Requires BOTH reviewer committee
+    majority AND dataset-owner approval."""
     class Status(models.TextChoices):
         PENDING = "pending"
         APPROVED = "approved"
@@ -53,13 +72,24 @@ class DatasetAccessRequest(models.Model):
         READ = "read", "Read / analyze"
         EDIT = "edit", "Intends to propose changes"
 
+    class OwnerDecision(models.TextChoices):
+        PENDING = "pending"
+        APPROVED = "approved"
+        REJECTED = "rejected"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="access_requests")
-    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="access_requests")
+    shared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+        help_text="Set when this request was created via share_with_user rather than the requester acting for themselves.",
+    )
     usability_form = models.ForeignKey(UsabilityFormResponse, on_delete=models.CASCADE)
     restricted_justification = models.ForeignKey(RestrictedAccessJustification, on_delete=models.CASCADE)
     purpose_type = models.CharField(max_length=16, choices=PurposeType.choices, default=PurposeType.READ)
+    requested_duration_days = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    owner_decision = models.CharField(max_length=16, choices=OwnerDecision.choices, default=OwnerDecision.PENDING)
     resolved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

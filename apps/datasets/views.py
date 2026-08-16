@@ -122,10 +122,15 @@ def complete_upload(request, upload_session_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsResearcherOnly])
 def accept_terms_and_submit(request, dataset_id):
-    """Step 4 (final step): accept dataset-level T&Cs, move status draft -> pending."""
+    """Step 4 (final step): accept dataset-level T&Cs, move draft/changes_requested -> pending.
+    Also serves as the resubmit action after a reviewer requests changes."""
     dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    if dataset.status not in (Dataset.Status.DRAFT, Dataset.Status.CHANGES_REQUESTED):
+        return Response({"detail": f"Cannot submit a dataset with status '{dataset.status}'."}, status=400)
     if not hasattr(dataset, "metadata"):
         return Response({"detail": "Attach metadata before submitting."}, status=400)
+    if not dataset.languages.exists():
+        return Response({"detail": "At least one language is required before submitting."}, status=400)
 
     serializer = TermsAcceptanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)

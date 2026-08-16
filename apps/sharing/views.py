@@ -1,24 +1,22 @@
-from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.mail import send_mail
 from django.db import models as django_models
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from apps.datasets.models import Dataset, Contributor, DatasetInvitation
-from apps.datasets.services.invitations import create_invitation, accept_invitation
+
 from apps.accounts.models import ActivityLog
 from apps.accounts.permissions import IsCheckerOrAdmin
-from apps.datasets.models import Dataset, Contributor
-from apps.datasets.permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
+from apps.datasets.models import Dataset, Contributor, DatasetInvitation
+from apps.datasets.permissions import IsDatasetOwner
 from apps.datasets.services.storage import presigned_download_url
+from apps.datasets.services.invitations import create_invitation, accept_invitation
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 
 from .models import UsabilityFormResponse, RestrictedAccessJustification, DatasetAccessRequest, AccessRequestVote, SharePermission
-from .serializers import RequestAccessSerializer, DatasetAccessRequestSerializer, InviteContributorSerializer
-from .services import user_can_freely_download, resolve_access_request_votes
+from .serializers import RequestAccessSerializer, DatasetAccessRequestSerializer
+from .services import user_can_freely_download, user_can_access_dataset, resolve_access_request_votes, record_owner_decision
 
 User = get_user_model()
 
@@ -26,8 +24,6 @@ User = get_user_model()
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def view_dataset(request, dataset_id):
-    """Increments view_count AND logs a timestamped event, so views can be
-    graphed over time the same way downloads already can."""
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
     dataset.refresh_from_db(fields=["view_count"])
@@ -41,18 +37,15 @@ def view_dataset(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def download_dataset(request, dataset_id):
-    """Free for the owner or a researcher-role contributor on their own dataset,
-    any visibility. Everyone else needs an approved SharePermission — from
-    request_share_access, resolved by reviewer committee vote for restricted data."""
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     profile = getattr(request.user, "profile", None)
     is_reviewer = profile.has_role("checker", "admin")
     is_free_access = user_can_freely_download(request.user, dataset)
 
-    has_permission = (
-        is_free_access or is_reviewer
-        or SharePermission.objects.filter(dataset=dataset, shared_with_user=request.user).exists()
-    )
+    permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=request.user).first()
+    has_active_share = bool(permission and permission.is_active_grant())
+
+    has_permission = is_free_access or is_reviewer or has_active_share
     if not has_permission:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
 
@@ -80,10 +73,6 @@ def download_dataset(request, dataset_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def request_share_access(request, dataset_id):
-    """Sharing ALWAYS requires this flow, even for the owner — that's the whole
-    point of the distinction from download. public/institutional resolve instantly
-    for any authenticated user; restricted requires a completed profile, both
-    consent forms, and both uploader + committee approval."""
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     serializer = RequestAccessSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -113,6 +102,7 @@ def request_share_access(request, dataset_id):
     access_request = DatasetAccessRequest.objects.create(
         dataset=dataset, requester=request.user, usability_form=usability_form,
         restricted_justification=justification, purpose_type=serializer.validated_data["purpose_type"],
+        requested_duration_days=serializer.validated_data.get("requested_duration_days"),
     )
 
     for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
@@ -129,10 +119,80 @@ def request_share_access(request, dataset_id):
     return Response({"status": "pending", "request_id": access_request.id})
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def share_with_user(request, dataset_id):
+    """Distinct from request_share_access: the ACTING user must already have
+    access, and is granting access to someone ELSE — a fresh access request for
+    the recipient, never a copy of the sharer's own grant."""
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if not user_can_access_dataset(request.user, dataset):
+        return Response({"detail": "You don't have access to this dataset to share it."}, status=403)
+
+    recipient_email = (request.data.get("email") or "").strip().lower()
+    if not recipient_email:
+        return Response({"detail": "email is required."}, status=400)
+    try:
+        recipient = User.objects.get(email__iexact=recipient_email)
+    except User.DoesNotExist:
+        return Response({"detail": "No account found with that email."}, status=404)
+    if recipient.id == request.user.id:
+        return Response({"detail": "You can't share a dataset with yourself."}, status=400)
+
+    serializer = RequestAccessSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    usability_form = UsabilityFormResponse.objects.create(
+        dataset=dataset, user=recipient, purpose=serializer.validated_data["purpose"],
+    )
+
+    if dataset.visibility in (Dataset.Visibility.PUBLIC, Dataset.Visibility.INSTITUTIONAL):
+        SharePermission.objects.get_or_create(
+            dataset=dataset, shared_with_user=recipient, defaults={"access_type": "download"},
+        )
+        notify(
+            user=recipient, notification_type=Notification.NotificationType.CONTRIBUTOR_INVITATION,
+            message=f'{request.user.profile.full_name} shared "{dataset.title}" with you.',
+            dataset=dataset, link_path=f"/datasets/{dataset.id}",
+        )
+        return Response({"status": "approved", "share_ready": True})
+
+    if not recipient.profile.is_profile_complete():
+        return Response(
+            {"detail": f"{recipient.profile.full_name} needs to complete their profile before receiving access to a restricted dataset."},
+            status=400,
+        )
+
+    justification_text = (serializer.validated_data.get("justification") or "").strip()
+    if not justification_text:
+        return Response({"detail": "Please complete the restricted-access justification form."}, status=400)
+
+    justification = RestrictedAccessJustification.objects.create(
+        dataset=dataset, requester=recipient, justification=justification_text,
+    )
+    access_request = DatasetAccessRequest.objects.create(
+        dataset=dataset, requester=recipient, shared_by=request.user, usability_form=usability_form,
+        restricted_justification=justification, purpose_type=serializer.validated_data["purpose_type"],
+        requested_duration_days=serializer.validated_data.get("requested_duration_days"),
+    )
+
+    for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+        notify(
+            user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
+            message=f'{request.user.profile.full_name} requested sharing "{dataset.title}" with {recipient.profile.full_name}.',
+            dataset=dataset, link_path=f"/admin-panel/access-requests/{access_request.id}",
+        )
+    notify(
+        user=dataset.owner, notification_type=Notification.NotificationType.ACCESS_REQUEST,
+        message=f'{request.user.profile.full_name} wants to share your dataset "{dataset.title}" with {recipient.profile.full_name}. Your approval is required.',
+        dataset=dataset, link_path=f"/datasets/{dataset.id}/access-requests/{access_request.id}",
+    )
+    return Response({"status": "pending", "request_id": access_request.id})
+
+
 @api_view(["GET"])
 @permission_classes([IsCheckerOrAdmin])
 def access_request_queue(request):
-    """Every pending share request awaiting committee votes."""
     qs = DatasetAccessRequest.objects.filter(status=DatasetAccessRequest.Status.PENDING).select_related(
         "dataset", "requester__profile", "restricted_justification"
     )
@@ -142,8 +202,6 @@ def access_request_queue(request):
 @api_view(["POST"])
 @permission_classes([IsCheckerOrAdmin])
 def vote_on_access_request(request, request_id):
-    """One vote per reviewer — re-voting updates their existing vote rather than
-    stacking duplicates. Resolves automatically once quorum + majority is reached."""
     access_request = get_object_or_404(DatasetAccessRequest, id=request_id)
     if access_request.status != DatasetAccessRequest.Status.PENDING:
         return Response({"detail": "This request has already been resolved."}, status=400)
@@ -159,7 +217,22 @@ def vote_on_access_request(request, request_id):
     return Response(result)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def owner_decide_access_request(request, request_id):
+    access_request = get_object_or_404(DatasetAccessRequest, id=request_id)
+    if not access_request.dataset.is_owned_by(request.user):
+        return Response({"detail": "Only the dataset owner can decide this."}, status=403)
 
+    decision = request.data.get("decision")
+    if decision not in ("approve", "reject"):
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+
+    try:
+        result = record_owner_decision(access_request, decision)
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=400)
+    return Response(result)
 
 
 @api_view(["POST"])
@@ -213,30 +286,3 @@ def revoke_invitation(request, dataset_id, invitation_id):
     invitation.status = DatasetInvitation.Status.REVOKED
     invitation.save(update_fields=["status"])
     return Response({"status": "revoked"})
-
-    try:
-        invited_user = User.objects.get(email=email)
-    except User.DoesNotExist:
-        invited_user = None
-
-    contributor = Contributor.objects.create(
-        dataset=dataset, user=invited_user,
-        name=invited_user.profile.full_name if invited_user else "",
-        invited_email="" if invited_user else email,
-        contributor_type=serializer.validated_data["contributor_type"],
-        order=dataset.contributors.count() + 1,
-    )
-
-    if invited_user:
-        SharePermission.objects.get_or_create(
-            dataset=dataset, shared_with_user=invited_user, defaults={"access_type": "download"}
-        )
-        notify(
-            user=invited_user, notification_type=Notification.NotificationType.CONTRIBUTOR_INVITATION,
-            message=f'{request.user.profile.full_name} added you as a contributor on "{dataset.title}".',
-            dataset=dataset, link_path=f"/datasets/{dataset.id}",
-        )
-        return Response({"status": "invited"}, status=201)
-
-    _send_registration_invite_email(email, dataset, request.user)
-    return Response({"status": "invited_pending_registration"}, status=201)

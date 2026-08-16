@@ -6,23 +6,28 @@ from datetime import timedelta
 from django.utils import timezone
 
 
-
 class Dataset(models.Model):
     class Visibility(models.TextChoices):
         PUBLIC = "public"
         INSTITUTIONAL = "institutional"
         RESTRICTED = "restricted"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PENDING = "pending", "Pending Review"
+        CHANGES_REQUESTED = "changes_requested", "Changes Requested"
+        PUBLISHED = "published", "Published"
+        REJECTED = "rejected", "Rejected"
+
+    Status.APPROVED = Status.PUBLISHED
+
     def is_owned_by(self, user):
         if not user or not getattr(user, "is_authenticated", False):
             return False
         if self.owner_id == user.id:
             return True
         return self.contributors.filter(user=user, contributor_type=Contributor.ContributorType.OWNER).exists()
-    class Status(models.TextChoices):
-        DRAFT = "draft"
-        PENDING = "pending"
-        APPROVED = "approved"
-        REJECTED = "rejected"
+
     class ThumbnailSource(models.TextChoices):
         UPLOADED = "uploaded"
         FALLBACK_AUTO = "fallback_auto"
@@ -34,13 +39,13 @@ class Dataset(models.Model):
     title = models.CharField(max_length=255)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="datasets")
     visibility = models.CharField(max_length=16, choices=Visibility.choices, default=Visibility.RESTRICTED)
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    status = models.CharField(max_length=18, choices=Status.choices, default=Status.DRAFT)
     is_active = models.BooleanField(default=True)
     version = models.IntegerField(default=1)
     view_count = models.PositiveIntegerField(default=0)
     download_count = models.PositiveIntegerField(default=0)
     edit_in_progress_notice = models.BooleanField(default=False)
-
+    languages = models.ManyToManyField("metadata.Language", related_name="datasets")
 
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
@@ -59,7 +64,7 @@ class Dataset(models.Model):
 
     @property
     def current_version(self):
-        return self.versions.first() 
+        return self.versions.first()
 
 
 class DatasetFile(models.Model):
