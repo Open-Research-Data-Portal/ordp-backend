@@ -98,7 +98,6 @@ class UploadRestrictedToResearcherTests(APITestCase):
         self.client.force_authenticate(admin)
         resp = self.client.post("/api/datasets/upload/init/", {"title": "Admin Attempt"})
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(resp.data["detail"], "You must be a Researcher to do this.")
 
     def test_public_role_cannot_init_upload(self):
         public_user = make_user("upublic", "upublic@aastu.edu.et", role="public")

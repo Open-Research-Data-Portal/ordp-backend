@@ -6,11 +6,12 @@ from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-
+from apps.datasets.models import Dataset, Contributor, DatasetInvitation
+from apps.datasets.services.invitations import create_invitation, accept_invitation
 from apps.accounts.models import ActivityLog
 from apps.accounts.permissions import IsCheckerOrAdmin
 from apps.datasets.models import Dataset, Contributor
-from apps.datasets.permissions import IsDatasetOwnerOrContributor
+from apps.datasets.permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
 from apps.datasets.services.storage import presigned_download_url
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
@@ -80,8 +81,9 @@ def download_dataset(request, dataset_id):
 @permission_classes([IsAuthenticated])
 def request_share_access(request, dataset_id):
     """Sharing ALWAYS requires this flow, even for the owner — that's the whole
-    point of the distinction from download. public/institutional resolve instantly;
-    restricted goes to the reviewer committee vote."""
+    point of the distinction from download. public/institutional resolve instantly
+    for any authenticated user; restricted requires a completed profile, both
+    consent forms, and both uploader + committee approval."""
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     serializer = RequestAccessSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -94,6 +96,12 @@ def request_share_access(request, dataset_id):
         SharePermission.objects.get_or_create(dataset=dataset, shared_with_user=request.user,
                                                defaults={"access_type": "download"})
         return Response({"status": "approved", "share_ready": True})
+
+    if not request.user.profile.is_profile_complete():
+        return Response(
+            {"detail": "Please complete your profile (academia and department) before requesting access to a restricted dataset."},
+            status=403,
+        )
 
     justification_text = (serializer.validated_data.get("justification") or "").strip()
     if not justification_text:
@@ -113,6 +121,11 @@ def request_share_access(request, dataset_id):
             message=f'{request.user.profile.full_name} requested sharing access to "{dataset.title}".',
             dataset=dataset, link_path=f"/admin-panel/access-requests/{access_request.id}",
         )
+    notify(
+        user=dataset.owner, notification_type=Notification.NotificationType.ACCESS_REQUEST,
+        message=f'{request.user.profile.full_name} requested sharing access to your dataset "{dataset.title}". Your approval is required.',
+        dataset=dataset, link_path=f"/datasets/{dataset.id}/access-requests/{access_request.id}",
+    )
     return Response({"status": "pending", "request_id": access_request.id})
 
 
@@ -146,29 +159,60 @@ def vote_on_access_request(request, request_id):
     return Response(result)
 
 
-def _send_registration_invite_email(email, dataset, inviter):
-    register_link = f"{settings.FRONTEND_URL}/register?invited_dataset={dataset.id}"
-    send_mail(
-        subject=f'You\'ve been invited to contribute on "{dataset.title}"',
-        message=(
-            f'{inviter.profile.full_name} added you as a contributor on "{dataset.title}" on ORDP.\n'
-            f"You don't have an ORDP account yet — register with this email address to get access: {register_link}"
-        ),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-    )
+
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsDatasetOwnerOrContributor])
-def invite_contributor(request, dataset_id):
-    """Credits someone on the dataset. Does NOT grant researcher role or edit rights
-    by itself — edit rights still require the invitee to independently hold
-    role=researcher, per IsDatasetOwnerOrContributor."""
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def invite_coauthor(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id)
-    serializer = InviteContributorSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    email = serializer.validated_data["email"]
+    email = (request.data.get("email") or "").strip()
+    if not email:
+        return Response({"detail": "email is required."}, status=400)
+    invitation = create_invitation(dataset, request.user, email, DatasetInvitation.Role.CO_AUTHOR)
+    return Response({"status": "invited", "invitation_id": invitation.id}, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def invite_contributor(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+    email = (request.data.get("email") or "").strip()
+    if not email:
+        return Response({"detail": "email is required."}, status=400)
+    invitation = create_invitation(dataset, request.user, email, DatasetInvitation.Role.CONTRIBUTOR)
+    return Response({"status": "invited", "invitation_id": invitation.id}, status=201)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def view_invitation(request, token):
+    invitation = get_object_or_404(DatasetInvitation, token=token)
+
+    if request.method == "GET":
+        return Response({
+            "dataset_title": invitation.dataset.title, "role": invitation.role,
+            "invited_by": invitation.invited_by.profile.full_name,
+            "status": invitation.status, "expires_at": invitation.expires_at,
+            "valid": invitation.is_valid(),
+        })
+
+    try:
+        contributor = accept_invitation(token, request.user)
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=400)
+    return Response({"status": "accepted", "contributor_type": contributor.contributor_type})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def revoke_invitation(request, dataset_id, invitation_id):
+    invitation = get_object_or_404(DatasetInvitation, id=invitation_id, dataset_id=dataset_id)
+    if invitation.status != DatasetInvitation.Status.PENDING:
+        return Response({"detail": "Only a pending invitation can be revoked."}, status=400)
+    invitation.status = DatasetInvitation.Status.REVOKED
+    invitation.save(update_fields=["status"])
+    return Response({"status": "revoked"})
 
     try:
         invited_user = User.objects.get(email=email)

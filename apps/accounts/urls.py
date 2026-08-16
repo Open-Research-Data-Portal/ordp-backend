@@ -16,5 +16,6 @@ urlpatterns = [
     path("refresh/", CustomTokenRefreshView.as_view(), name="token_refresh"),
     path("password-reset/", PasswordResetRequestView.as_view(), name="password_reset_request"),
     path("password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
-    path("profile/interests/other/", views.add_other_interest, name="add-other-interest")
+    path("profile/interests/other/", views.add_other_interest, name="add-other-interest"),
+    path("search-users/", views.search_users, name="search-users")
 ]

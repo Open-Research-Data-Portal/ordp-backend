@@ -36,3 +36,9 @@ class IsCheckerOrAdmin(HasRole):
 
 class IsResearcherOnly(HasRole):
     allowed_roles = ["researcher"]
+
+    def has_permission(self, request, view):
+        result = super().has_permission(request, view)
+        if not result and request.user and request.user.is_authenticated and hasattr(request.user, "profile"):
+            self.message = "Complete your profile to start uploading."
+        return result

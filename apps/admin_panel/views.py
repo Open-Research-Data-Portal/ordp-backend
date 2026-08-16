@@ -203,18 +203,4 @@ def execute_deletion(request, request_id):
     title = execute_hard_delete(deletion_request, request.user)
     return Response({"status": "executed", "deleted_dataset_title": title})
 
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def hard_delete_dataset(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id)
-    title = dataset.title
-    dataset.delete()
-    log_activity(
-        user=request.user,
-        action="dataset_hard_deleted",
-        target_object=f"Dataset:{dataset_id}",
-        ip_address=get_client_ip(request),
-        extra={"title": title},
-    )
-    return Response(status=204)
 
