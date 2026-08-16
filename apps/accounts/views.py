@@ -32,19 +32,7 @@ from .tokens import email_verification_token
 User = get_user_model()
 password_reset_token = PasswordResetTokenGenerator()
 
-@api_view(["POST"]) 
-@permission_classes([IsAuthenticated]) 
-def add_other_interest(request):
-    from apps.metadata.services import get_or_create_pending_category
-    name = (request.data.get("name") or "").strip()
-    if not name:
-        return Response({"detail": "name is required."}, status=400)
-    category = get_or_create_pending_category(name, request.user)
-    request.user.profile.expertise.add(category)
-    return Response({
-        "status": "added", "category_id": category.id,
-        "pending_review": category.status == category.Status.PENDING,
-    }, status=201)
+
 
 def log_activity(user, action, target_object, ip_address, extra=None):
     ActivityLog.objects.create(
@@ -238,6 +226,13 @@ class CustomTokenRefreshView(TokenRefreshView):
                 target_object=str(user_id) if user_id else "unknown",
                 ip_address=get_client_ip(request),
             )
+        else:
+            log_activity(
+                user=None,
+                action="token_refresh_failure",
+                target_object=str(user_id) if user_id else "unknown",
+                ip_address=get_client_ip(request),
+            )
 
         return response
 
@@ -304,12 +299,14 @@ class VerifyEmailView(APIView):
             user_id = force_str(urlsafe_base64_decode(uid))
             user = User.objects.get(pk=user_id)
         except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            log_activity(user=None, action="email_verification_failure", target_object=uid or "unknown", ip_address=ip, extra={"reason": "invalid_link"})
             return Response(
-                {"error": {"code": "INVALID_LINK", "message": "This verification link is invalid.", "field": None}},
+                {"error": {"code": "INVALID_LINK","message": "This verification link is invalid.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if not email_verification_token.check_token(user, token):
+            log_activity(user=user, action="email_verification_failure", target_object=str(user.id), ip_address=ip, extra={"reason": "expired_or_invalid_token"})
             return Response(
                 {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This verification link is invalid or has expired.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -334,11 +331,11 @@ class PasswordResetRequestView(APIView):
         try:
             user = User.objects.get(email__iexact=email_addr)
         except User.DoesNotExist:
+            log_activity(user=None, action="password_reset_requested_unknown_email", target_object=email_addr, ip_address=ip, extra={"reason": "no_account"})
             return Response(
                 {"detail": "If an account exists with that email, a reset link has been sent."},
                 status=status.HTTP_200_OK,
             )
-
         uid = urlsafe_base64_encode(force_bytes(user.pk))
         token = password_reset_token.make_token(user)
         reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
@@ -378,14 +375,16 @@ class PasswordResetConfirmView(APIView):
             user_id = force_str(urlsafe_base64_decode(data["uid"]))
             user = User.objects.get(pk=user_id)
         except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            log_activity(user=None, action="password_reset_confirm_failure", target_object=data.get("uid") or "unknown", ip_address=ip, extra={"reason": "invalid_link"})
             return Response(
-                {"error": {"code": "INVALID_LINK", "message": "This reset link is invalid.", "field": None}},
+                {"error": {"code": "INVALID_LINK","message": "This reset link is invalid.", "field":None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if not password_reset_token.check_token(user, data["token"]):
+            log_activity(user=user, action="password_reset_confirm_failure", target_object=str(user.id), ip_address=ip, extra={"reason": "expired_or_invalid_token"})
             return Response(
-                {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This reset link is invalid or has expired.", "field": None}},
+                {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This reset link is invalidor has expired.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
