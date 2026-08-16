@@ -172,6 +172,7 @@ class UserRole(models.Model):
 
     profile = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name="roles")
     role = models.CharField(max_length=20, choices=RoleChoice.choices)
+    is_primary = models.BooleanField(default=False)
     granted_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
