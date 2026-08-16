@@ -62,22 +62,6 @@ def get_client_ip(request):
         return x_forwarded_for.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR", "unknown")
 
-def _link_pending_contributor_invites(user):
-    from apps.sharing.models import SharePermission   
-    pending = Contributor.objects.filter(invited_email__iexact=user.email, user__isnull=True)
-    for contributor in pending:
-        contributor.user = user
-        contributor.name = user.profile.full_name
-        contributor.invited_email = ""
-        contributor.save(update_fields=["user", "name", "invited_email"])
-        SharePermission.objects.get_or_create(
-            dataset=contributor.dataset, shared_with_user=user, defaults={"access_type": "download"}
-        )
-        notify(
-            user=user, notification_type=Notification.NotificationType.CONTRIBUTOR_INVITATION,
-            message=f'You now have contributor access to "{contributor.dataset.title}".',
-            dataset=contributor.dataset, link_path=f"/datasets/{contributor.dataset.id}",
-        )
 
 class LoginView(APIView):
     permission_classes = []
@@ -194,10 +178,8 @@ class CompleteProfileView(APIView):
 
     def get(self, request):
         data = ExtendedProfileSerializer(request.user.profile).data
-        from .models import ResearcherRequest
-        pending = ResearcherRequest.objects.filter(user=request.user, status="pending").exists()
-        data["researcher_request_pending"] = pending
         data["role"] = request.user.profile.role
+        data["roles"] = list(request.user.profile.roles.values_list("role", flat=True))
         return Response(data)
 
     def patch(self, request):
@@ -413,3 +395,19 @@ def add_other_interest(request):
         "status": "added", "category_id": category.id,
         "pending_review": category.status == category.Status.PENDING,
     }, status=201)
+
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def search_users(request):
+    query = request.query_params.get("q", "").strip()
+    if not query:
+        return Response([])
+    qs = User.objects.filter(
+        Q(profile__full_name__icontains=query) | Q(email__icontains=query)
+    ).select_related("profile")[:10]
+    return Response([
+        {"id": u.id, "full_name": u.profile.full_name, "email": u.email}
+        for u in qs if hasattr(u, "profile")
+    ])

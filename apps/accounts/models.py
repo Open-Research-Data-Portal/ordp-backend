@@ -149,6 +149,11 @@ class UserProfile(models.Model):
             if self.center_of_excellence_id and self.department.center_of_excellence_id != self.center_of_excellence_id:
                 raise ValidationError({"department": "Department does not belong to the selected Center of Excellence."})
 
+
+    def is_profile_complete(self):
+        required = ["academia", "department"]
+        return self.terms_accepted and all(getattr(self, f, None) for f in required)
+
 class UserRole(models.Model):
     class RoleChoice(models.TextChoices):
         PUBLIC = "public"

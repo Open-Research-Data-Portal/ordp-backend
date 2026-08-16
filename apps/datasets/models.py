@@ -1,6 +1,10 @@
 import uuid
 from django.conf import settings
 from django.db import models
+import secrets
+from datetime import timedelta
+from django.utils import timezone
+
 
 
 class Dataset(models.Model):
@@ -76,7 +80,7 @@ class DatasetFile(models.Model):
 class Contributor(models.Model):
     class ContributorType(models.TextChoices):
         OWNER = "owner"
-        AUTHOR = "author"
+        CO_AUTHOR = "co_author"
         CONTRIBUTOR = "contributor"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -87,6 +91,34 @@ class Contributor(models.Model):
     contributor_type = models.CharField(max_length=16, choices=ContributorType.choices)
     order = models.IntegerField(default=1)
 
+def generate_invitation_token():
+    return secrets.token_urlsafe(48)
+
+
+class DatasetInvitation(models.Model):
+    class Role(models.TextChoices):
+        CO_AUTHOR = "co_author"
+        CONTRIBUTOR = "contributor"
+
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        ACCEPTED = "accepted"
+        EXPIRED = "expired"
+        REVOKED = "revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="invitations")
+    invited_email = models.EmailField()
+    role = models.CharField(max_length=16, choices=Role.choices)
+    token = models.CharField(max_length=64, unique=True, default=generate_invitation_token)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+    def is_valid(self):
+        return self.status == self.Status.PENDING and self.expires_at > timezone.now()
 class DatasetRevision(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending"
