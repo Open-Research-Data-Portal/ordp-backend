@@ -143,14 +143,21 @@ def accept_terms_and_submit(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_datasets(request):
-    qs = Dataset.objects.filter(owner=request.user, is_active=True).order_by("-created_at")
+    qs = (
+        Dataset.objects
+        .filter(owner=request.user, is_active=True)
+        .prefetch_related("files", "contributors")
+        .order_by("-created_at")
+    )
     return Response(DatasetSerializer(qs, many=True).data)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def dataset_detail(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    dataset = get_object_or_404(
+        Dataset.objects.prefetch_related("files", "contributors"),
+        id=dataset_id, is_active=True
+    )
     return Response(DatasetSerializer(dataset).data)
 
 @api_view(["GET"])
@@ -327,7 +334,12 @@ def toggle_bookmark(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_bookmarks(request):
-    qs = Dataset.objects.filter(bookmarked_by__user=request.user, is_active=True).order_by("-bookmarked_by__created_at")
+    qs = (
+        Dataset.objects
+        .filter(bookmarked_by__user=request.user, is_active=True)
+        .prefetch_related("files", "contributors")
+        .order_by("-bookmarked_by__created_at")
+    )
     return Response(DatasetSerializer(qs, many=True).data)
 
 @api_view(["DELETE"])
