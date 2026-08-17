@@ -155,15 +155,12 @@ def my_datasets(request):
         Dataset.objects
         .filter(owner=request.user, is_active=True)
         .prefetch_related("files", "contributors")
-        .order_by("-created_at")
         .exclude(status=Dataset.Status.DRAFT, files__isnull=True)
         .order_by("-created_at")
         .distinct()
-
     )
     return Response(DatasetSerializer(qs, many=True).data)
 
-@api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(
