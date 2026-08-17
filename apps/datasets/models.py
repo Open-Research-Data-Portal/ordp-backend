@@ -1,6 +1,9 @@
 import uuid
 from django.conf import settings
 from django.db import models
+import secrets
+from datetime import timedelta
+from django.utils import timezone
 
 
 class Dataset(models.Model):
@@ -8,17 +11,23 @@ class Dataset(models.Model):
         PUBLIC = "public"
         INSTITUTIONAL = "institutional"
         RESTRICTED = "restricted"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PENDING = "pending", "Pending Review"
+        CHANGES_REQUESTED = "changes_requested", "Changes Requested"
+        PUBLISHED = "published", "Published"
+        REJECTED = "rejected", "Rejected"
+
+    Status.APPROVED = Status.PUBLISHED
+
     def is_owned_by(self, user):
         if not user or not getattr(user, "is_authenticated", False):
             return False
         if self.owner_id == user.id:
             return True
         return self.contributors.filter(user=user, contributor_type=Contributor.ContributorType.OWNER).exists()
-    class Status(models.TextChoices):
-        DRAFT = "draft"
-        PENDING = "pending"
-        APPROVED = "approved"
-        REJECTED = "rejected"
+
     class ThumbnailSource(models.TextChoices):
         UPLOADED = "uploaded"
         FALLBACK_AUTO = "fallback_auto"
@@ -30,13 +39,13 @@ class Dataset(models.Model):
     title = models.CharField(max_length=255)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="datasets")
     visibility = models.CharField(max_length=16, choices=Visibility.choices, default=Visibility.RESTRICTED)
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    status = models.CharField(max_length=18, choices=Status.choices, default=Status.DRAFT)
     is_active = models.BooleanField(default=True)
     version = models.IntegerField(default=1)
     view_count = models.PositiveIntegerField(default=0)
     download_count = models.PositiveIntegerField(default=0)
     edit_in_progress_notice = models.BooleanField(default=False)
-
+    languages = models.ManyToManyField("metadata.Language", related_name="datasets")
 
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
@@ -55,7 +64,7 @@ class Dataset(models.Model):
 
     @property
     def current_version(self):
-        return self.versions.first() 
+        return self.versions.first()
 
 
 class DatasetFile(models.Model):
@@ -76,7 +85,7 @@ class DatasetFile(models.Model):
 class Contributor(models.Model):
     class ContributorType(models.TextChoices):
         OWNER = "owner"
-        AUTHOR = "author"
+        CO_AUTHOR = "co_author"
         CONTRIBUTOR = "contributor"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -87,6 +96,34 @@ class Contributor(models.Model):
     contributor_type = models.CharField(max_length=16, choices=ContributorType.choices)
     order = models.IntegerField(default=1)
 
+def generate_invitation_token():
+    return secrets.token_urlsafe(48)
+
+
+class DatasetInvitation(models.Model):
+    class Role(models.TextChoices):
+        CO_AUTHOR = "co_author"
+        CONTRIBUTOR = "contributor"
+
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        ACCEPTED = "accepted"
+        EXPIRED = "expired"
+        REVOKED = "revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="invitations")
+    invited_email = models.EmailField()
+    role = models.CharField(max_length=16, choices=Role.choices)
+    token = models.CharField(max_length=64, unique=True, default=generate_invitation_token)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+    def is_valid(self):
+        return self.status == self.Status.PENDING and self.expires_at > timezone.now()
 class DatasetRevision(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending"

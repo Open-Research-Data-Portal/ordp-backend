@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Category, Subject, Keyword, Metadata, FallbackThumbnail
+from .models import Category, Language, Subject, Keyword, Metadata, FallbackThumbnail
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
@@ -18,3 +18,9 @@ class FallbackThumbnailAdmin(admin.ModelAdmin):
     list_display = ["id", "category", "image_key", "usage_count"]
     list_filter = ["category"]
     readonly_fields = ["usage_count"]
+
+
+@admin.register(Language)
+class LanguageAdmin(admin.ModelAdmin):
+    list_display = ["name", "status"]
+    list_filter = ["status"]

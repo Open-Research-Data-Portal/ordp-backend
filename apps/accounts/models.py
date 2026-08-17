@@ -163,6 +163,11 @@ class UserProfile(models.Model):
     email_verified = models.BooleanField(default=False)
     research_interests_completed = models.BooleanField(default=False)
 
+
+    def is_profile_complete(self):
+        required = ["academia", "department"]
+        return self.terms_accepted and all(getattr(self, f, None) for f in required)
+
 class UserRole(models.Model):
     class RoleChoice(models.TextChoices):
         PUBLIC = "public"

@@ -36,7 +36,8 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 @api_view(["POST"])
 @permission_classes([IsResearcherOnly])
 def init_upload(request):
-    """Step 1: create the Dataset shell (status=draft), open a chunked-upload session."""
+    """Step 1: create the Dataset shell (status=draft), open a chunked-upload session.
+    The uploader IS the author/owner via dataset.owner — no separate Contributor row needed."""
     serializer = InitUploadSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
@@ -111,6 +112,8 @@ def complete_upload(request, upload_session_id):
     except FileTypeMismatchError as exc:
         return Response({"detail": str(exc)}, status=400)
     except Exception:
+        import logging
+        logging.exception("Upload finalize failed")
         return Response({"detail": "Upload failed."}, status=500)
 
     return Response({"file_id": dataset_file.id, "checksum": dataset_file.checksum}, status=201)
@@ -119,10 +122,15 @@ def complete_upload(request, upload_session_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsResearcherOnly])
 def accept_terms_and_submit(request, dataset_id):
-    """Step 4 (final step): accept dataset-level T&Cs, move status draft -> pending."""
+    """Step 4 (final step): accept dataset-level T&Cs, move draft/changes_requested -> pending.
+    Also serves as the resubmit action after a reviewer requests changes."""
     dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    if dataset.status not in (Dataset.Status.DRAFT, Dataset.Status.CHANGES_REQUESTED):
+        return Response({"detail": f"Cannot submit a dataset with status '{dataset.status}'."}, status=400)
     if not hasattr(dataset, "metadata"):
         return Response({"detail": "Attach metadata before submitting."}, status=400)
+    if not dataset.languages.exists():
+        return Response({"detail": "At least one language is required before submitting."}, status=400)
 
     serializer = TermsAcceptanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -148,6 +156,10 @@ def my_datasets(request):
         .filter(owner=request.user, is_active=True)
         .prefetch_related("files", "contributors")
         .order_by("-created_at")
+        .exclude(status=Dataset.Status.DRAFT, files__isnull=True)
+        .order_by("-created_at")
+        .distinct()
+
     )
     return Response(DatasetSerializer(qs, many=True).data)
 
@@ -354,7 +366,6 @@ def soft_delete_dataset(request, dataset_id):
     )
     return Response(status=204)
 
-
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
 def update_contributor_type(request, dataset_id, contributor_id):
@@ -365,10 +376,20 @@ def update_contributor_type(request, dataset_id, contributor_id):
     contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
     new_type = request.data.get("contributor_type")
     if new_type not in Contributor.ContributorType.values:
-        return Response({"detail": "contributor_type must be 'owner', 'author', or 'contributor'."}, status=400)
+        return Response({"detail": "contributor_type must be 'owner', 'co_author', or 'contributor'."}, status=400)
 
     contributor.contributor_type = new_type
     contributor.save(update_fields=["contributor_type"])
     return Response({"status": "updated", "contributor_type": contributor.contributor_type})
 
 
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def remove_contributor(request, dataset_id, contributor_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+    if dataset.owner_id != request.user.id:
+        return Response({"detail": "Only the original dataset owner can remove contributors."}, status=403)
+
+    contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
+    contributor.delete()
+    return Response(status=204)
