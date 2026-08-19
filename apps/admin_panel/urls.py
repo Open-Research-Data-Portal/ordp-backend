@@ -35,5 +35,6 @@ urlpatterns = [
     path("share-permissions/<uuid:permission_id>/revoke/", dashboard_views.admin_revoke_share_permission, name="admin-revoke-share-permission"),
     path("languages/pending/", dashboard_views.pending_languages, name="pending-languages"),
     path("languages/<uuid:language_id>/decide/", dashboard_views.decide_pending_language, name="decide-pending-language"),
+    path("notifications/broadcast/", dashboard_views.admin_broadcast_notification, name="admin-broadcast-notification"),
 ]
    
