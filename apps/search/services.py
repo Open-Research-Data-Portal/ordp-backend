@@ -1,8 +1,8 @@
 
 from django.db.models import Q, F, Exists, OuterRef, Count, Sum
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
-
 from apps.datasets.models import Dataset, Bookmark, Contributor, DatasetFile
+
 
 ORDER_BY_MAP = {
     "newest": "-created_at",
@@ -29,7 +29,6 @@ def apply_ordering(qs, order_by):
     if order_by == "popular":
         qs = qs.annotate(popularity=F("view_count") + F("download_count"))
     return qs.order_by(ORDER_BY_MAP.get(order_by, "-created_at"))
-
 
 
 def apply_common_filters(qs, params, user):
@@ -84,7 +83,6 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
                                    order_by=None, extra_params=None):
     base_qs = visible_datasets_queryset()
     extra_params = extra_params or {}
-
     profile = getattr(user, "profile", None)
     visibility = extra_params.get("visibility", "").strip()
     if visibility and profile and profile.has_role("admin"):

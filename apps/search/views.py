@@ -2,7 +2,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from apps.datasets.serializers import DatasetSerializer
-from .services import build_dataset_search_queryset, build_discovery_feed
+from .services import build_dataset_search_queryset, build_discovery_feed, FILE_SIZE_MAP
+
+VALID_ORDER_BY = ("newest", "title", "popular", "downloads")
+VALID_VISIBILITIES = ("public", "institutional", "restricted")
 
 VALID_ORDER_BY = ("newest", "title", "popular", "downloads")
 VALID_FILE_SIZES = ("small", "medium", "large")
@@ -21,8 +24,13 @@ def list_datasets(request):
         return Response({"detail": f"order_by must be one of: {', '.join(VALID_ORDER_BY)}."}, status=400)
 
     file_size = request.query_params.get("file_size", "").strip()
+
+#     if file_size and file_size not in FILE_SIZE_MAP:
+#         return Response({"detail": "file_size must be one of: small, medium, large."}, status=400)
+
     if file_size and file_size not in VALID_FILE_SIZES:
         return Response({"detail": f"file_size must be one of: {', '.join(VALID_FILE_SIZES)}."}, status=400)
+
 
     visibility = request.query_params.get("visibility", "").strip()
     if visibility and visibility not in VALID_VISIBILITIES:
@@ -42,6 +50,16 @@ def list_datasets(request):
     }
 
 
+    qs = build_dataset_search_queryset(
+        query=query,
+        user=request.user if request.user.is_authenticated else None,
+        category_id=category_id,
+        order_by=order_by or None,
+        extra_params=extra_params,
+    )
+
+
+
 #     qs = build_dataset_search_queryset(
 #         query=query,
 #         user=request.user,
@@ -50,7 +68,8 @@ def list_datasets(request):
 #         extra_params=extra_params,
 #     )
 
-    qs = build_dataset_search_queryset(query=query, category_id=category_id, order_by=order_by)
+#     qs = build_dataset_search_queryset(query=query, category_id=category_id, order_by=order_by)
+
 
     return Response(DatasetSerializer(qs, many=True).data)
 
