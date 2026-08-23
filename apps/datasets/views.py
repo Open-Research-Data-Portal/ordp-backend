@@ -4,7 +4,7 @@ import uuid
 from apps.datasets.services.file_validation import FileTypeMismatchError
 from .models import Bookmark, Contributor
 from django.shortcuts import get_object_or_404
-from apps.accounts.permissions import IsResearcherOnly
+from apps.accounts.permissions import IsProfileComplete, IsResearcherOnly
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .services.diffing import compute_diff
@@ -34,7 +34,7 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 
 
 @api_view(["POST"])
-@permission_classes([IsResearcherOnly])
+@permission_classes([IsResearcherOnly, IsProfileComplete])
 def init_upload(request):
     """Step 1: create the Dataset shell (status=draft), open a chunked-upload session.
     The uploader IS the author/owner via dataset.owner — no separate Contributor row needed."""
