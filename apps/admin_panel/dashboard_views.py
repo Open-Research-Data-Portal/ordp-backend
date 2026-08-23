@@ -23,6 +23,7 @@ from reportlab.lib import colors # type: ignore
 from reportlab.lib.pagesizes import landscape, letter # type: ignore
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle # type: ignore
 from django.shortcuts import get_object_or_404
+from apps.accounts.permissions import IsAdminOnly
 User = get_user_model()
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 
@@ -356,3 +357,43 @@ def decide_pending_category(request, category_id):
         return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
     category.save(update_fields=["status"])
     return Response({"status": category.status})
+
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_revoke_share_permission(request, permission_id):
+    from apps.sharing.models import SharePermission
+    from apps.sharing.services import revoke_share_permission
+    permission = get_object_or_404(SharePermission, id=permission_id)
+    revoke_share_permission(permission, request.user)
+    return Response({"status": "revoked"})
+
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_languages(request):
+    from apps.metadata.models import Language
+    qs = Language.objects.filter(status=Language.Status.PENDING).select_related("suggested_by__profile")
+    return Response([{
+        "id": l.id, "name": l.name,
+        "suggested_by": l.suggested_by.profile.full_name if l.suggested_by else None,
+    } for l in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def decide_pending_language(request, language_id):
+    from apps.metadata.models import Language
+    language = get_object_or_404(Language, id=language_id, status=Language.Status.PENDING)
+    decision = request.data.get("decision")
+    if decision == "approve":
+        language.status = Language.Status.APPROVED
+    elif decision == "reject":
+        language.status = Language.Status.REJECTED
+    else:
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+    language.save(update_fields=["status"])
+    return Response({"status": language.status})

@@ -12,6 +12,7 @@ class RequestAccessSerializer(serializers.Serializer):
         required=False, allow_blank=True,
         help_text="Second form, required only when the dataset's visibility is 'restricted'.",
     )
+    requested_duration_days = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
 
 class DatasetAccessRequestSerializer(serializers.ModelSerializer):
@@ -20,16 +21,12 @@ class DatasetAccessRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DatasetAccessRequest
-        fields = ["id", "dataset", "requester", "purpose_type", "status",
-                  "approve_votes", "reject_votes", "created_at", "resolved_at"]
+        fields = ["id", "dataset", "requester", "shared_by", "purpose_type", "status",
+                  "owner_decision", "requested_duration_days", "approve_votes", "reject_votes",
+                  "created_at", "resolved_at"]
 
     def get_approve_votes(self, obj):
         return obj.votes.filter(vote="approve").count()
 
     def get_reject_votes(self, obj):
         return obj.votes.filter(vote="reject").count()
-
-
-class InviteContributorSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    contributor_type = serializers.ChoiceField(choices=["author", "contributor"], default="contributor")

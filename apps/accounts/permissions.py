@@ -36,3 +36,18 @@ class IsCheckerOrAdmin(HasRole):
 
 class IsResearcherOnly(HasRole):
     allowed_roles = ["researcher"]
+
+    def has_permission(self, request, view):
+        result = super().has_permission(request, view)
+        if not result and request.user and request.user.is_authenticated and hasattr(request.user, "profile"):
+            self.message = "Complete your profile to start uploading."
+        return result
+class IsProfileComplete(BasePermission):
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        profile = getattr(request.user, "profile", None)
+        if not profile or not profile.profile_completed:
+            self.message = "Complete your profile before uploading datasets."
+            return False
+        return True

@@ -56,3 +56,37 @@ class FallbackThumbnail(models.Model):
 
     class Meta:
         ordering = ["usage_count"]
+
+
+class Language(models.Model):
+    class Status(models.TextChoices):
+        APPROVED = "approved"
+        PENDING = "pending"
+        REJECTED = "rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.APPROVED)
+    suggested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    def __str__(self):
+        return self.name
+
+
+class DatasetCharacteristic(models.Model):
+    class Status(models.TextChoices):
+        APPROVED = "approved"
+        PENDING = "pending"
+        REJECTED = "rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=128, unique=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.APPROVED)
+    suggested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    def __str__(self):
+        return self.name

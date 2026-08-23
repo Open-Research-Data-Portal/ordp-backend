@@ -24,5 +24,6 @@ urlpatterns = [
     path("dashboard/feed/", dashboard_views.feed, name="dashboard-feed"),
     path("dashboard/my-contributions/", dashboard_views.my_contributions, name="dashboard-my-contributions"),
     path("<uuid:dataset_id>/delete/", views.soft_delete_dataset, name="dataset-delete"),
+    path("<uuid:dataset_id>/contributors/<uuid:contributor_id>/remove/", views.remove_contributor, name="remove-contributor"),
 ]
     

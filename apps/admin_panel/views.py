@@ -56,18 +56,28 @@ def moderate_dataset(request, dataset_id):
     decision = request.data.get("decision")
     reason = (request.data.get("reason") or "").strip()
 
-    if decision == ModerationDecision.Decision.REJECTED and not reason:
-        return Response({"detail": "A reason is required to reject a dataset."}, status=400)
+    if decision not in ModerationDecision.Decision.values:
+        return Response({"detail": "decision must be 'approved', 'changes_requested', or 'rejected'."}, status=400)
+    if decision in (ModerationDecision.Decision.REJECTED, ModerationDecision.Decision.CHANGES_REQUESTED) and not reason:
+        return Response({"detail": "A reason is required to reject or request changes on a dataset."}, status=400)
 
     ModerationDecision.objects.create(dataset=dataset, reviewer=request.user, decision=decision, reason=reason or None)
 
     if decision == ModerationDecision.Decision.APPROVED:
-        dataset.status = Dataset.Status.APPROVED
+        dataset.status = Dataset.Status.PUBLISHED
         dataset.save(update_fields=["status"])
         _resolve_thumbnail_suggestions(dataset)
         notify(
             user=dataset.owner, notification_type=Notification.NotificationType.DATASET_APPROVED,
-            message=f'Your dataset "{dataset.title}" has been approved.', dataset=dataset,
+            message=f'Your dataset "{dataset.title}" has been published.', dataset=dataset,
+            link_path=f"/datasets/{dataset.id}",
+        )
+    elif decision == ModerationDecision.Decision.CHANGES_REQUESTED:
+        dataset.status = Dataset.Status.CHANGES_REQUESTED
+        dataset.save(update_fields=["status"])
+        notify(
+            user=dataset.owner, notification_type=Notification.NotificationType.CHANGES_REQUESTED,
+            message=f'Changes were requested on "{dataset.title}": {reason}', dataset=dataset, reason=reason,
             link_path=f"/datasets/{dataset.id}",
         )
     else:
@@ -203,18 +213,4 @@ def execute_deletion(request, request_id):
     title = execute_hard_delete(deletion_request, request.user)
     return Response({"status": "executed", "deleted_dataset_title": title})
 
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def hard_delete_dataset(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id)
-    title = dataset.title
-    dataset.delete()
-    log_activity(
-        user=request.user,
-        action="dataset_hard_deleted",
-        target_object=f"Dataset:{dataset_id}",
-        ip_address=get_client_ip(request),
-        extra={"title": title},
-    )
-    return Response(status=204)
 

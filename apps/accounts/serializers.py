@@ -2,12 +2,15 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from .models import UserProfile
-
-
+import re
+from .models import UserRole
+from apps.notifications.services import notify
+from apps.notifications.models import Notification
+from django.utils import timezone
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     password = serializers.CharField(write_only=True)
-
+    stay_logged_in = serializers.BooleanField(default=False, required=False)
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
@@ -35,43 +38,22 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
             "bio", "additional_link", "profile_visibility", "terms_accepted",
         ]
 
-    def validate_terms_accepted(self, value):
-        if not value:
-            raise serializers.ValidationError("You must accept the terms to continue.")
-        return value
+    
 
     def save(self, **kwargs):
         instance = super().save(**kwargs)
 
         if instance.terms_accepted and not instance.terms_accepted_at:
-            from django.utils import timezone
+            
             instance.terms_accepted_at = timezone.now()
             instance.save(update_fields=["terms_accepted_at"])
 
-        required = ["academia", "department"]
-        is_complete = instance.terms_accepted and all(getattr(instance, f, None) for f in required)
-
-        if is_complete and instance.role == UserProfile.Role.PUBLIC:
-            from .models import ResearcherRequest
-            from apps.notifications.services import notify
-            from apps.notifications.models import Notification
-            from django.contrib.auth import get_user_model
-
-            req, _ = ResearcherRequest.objects.get_or_create(user=instance.user)
-            if req.status != ResearcherRequest.Status.PENDING:
-                req.status = ResearcherRequest.Status.PENDING
-                req.reason = ""
-                req.decided_by = None
-                req.decided_at = None
-                req.save()
-
-            User = get_user_model()
-            for admin_user in User.objects.filter(profile__role="admin"):
-                notify(
-                    user=admin_user, notification_type=Notification.NotificationType.RESEARCHER_REQUEST,
-                    message=f"{instance.full_name} ({instance.user.email}) completed their profile and is requesting researcher access.",
-                    link_path=f"/admin-panel/researcher-requests/{req.id}",
-                )
+        if instance.is_profile_complete() and not instance.has_role(UserProfile.Role.RESEARCHER):
+            UserRole.objects.get_or_create(profile=instance, role=UserProfile.Role.RESEARCHER)
+            notify(
+                user=instance.user, notification_type=Notification.NotificationType.RESEARCHER_APPROVED,
+                message="Your profile is complete — you can upload datasets.",
+            )
 
         return instance
 
@@ -90,7 +72,6 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate_username(self, value):
-        import re
         if not re.match(r'^[a-z0-9_]+$', value):
             raise serializers.ValidationError("Username may only contain lowercase letters, numbers, and underscores.")
         if User.objects.filter(username__iexact=value).exists():
