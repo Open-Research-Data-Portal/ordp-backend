@@ -139,7 +139,13 @@ class UserProfile(models.Model):
     orcid_id = models.CharField(max_length=19, blank=True)
     profession = models.CharField(max_length=255, blank=True)
     profile_completed = models.BooleanField(default=False)
-
+    is_external = models.BooleanField(default=False)
+    sponsored_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sponsored_users",
+    )
     # Research Profile
     research_interests = models.ManyToManyField(ResearchCategory, blank=True, related_name="interested_users")
     bio = models.CharField(max_length=300, blank=True)
