@@ -151,17 +151,54 @@ def accept_terms_and_submit(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_datasets(request):
+    from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering
+
     qs = (
         Dataset.objects
         .filter(owner=request.user, is_active=True)
         .prefetch_related("files", "contributors")
-        .order_by("-created_at")
         .exclude(status=Dataset.Status.DRAFT, files__isnull=True)
-        .order_by("-created_at")
         .distinct()
-
     )
-    return Response(DatasetSerializer(qs, many=True).data)
+
+    # Status filter — owners can see all their own statuses
+    status = request.query_params.get("status", "").strip()
+    if status and status in Dataset.Status.values:
+        qs = qs.filter(status=status)
+
+    # Visibility filter
+    visibility = request.query_params.get("visibility", "").strip()
+    if visibility and visibility in Dataset.Visibility.values:
+        qs = qs.filter(visibility=visibility)
+
+    # File size validation
+    file_size = request.query_params.get("file_size", "").strip()
+    if file_size and file_size not in FILE_SIZE_MAP:
+        return Response({"detail": "file_size must be one of: small, medium, large."}, status=400)
+
+    extra_params = {
+        "file_type":             request.query_params.get("file_type", "").strip(),
+        "date_from":             request.query_params.get("date_from", "").strip(),
+        "date_to":               request.query_params.get("date_to", "").strip(),
+        "file_size":             file_size,
+        "has_contributors":      request.query_params.get("has_contributors", "").strip(),
+        "bookmarked":            request.query_params.get("bookmarked", "").strip(),
+        "has_multiple_versions": request.query_params.get("has_multiple_versions", "").strip(),
+        "download_min":          request.query_params.get("download_min", "").strip(),
+        "download_max":          request.query_params.get("download_max", "").strip(),
+    }
+
+    qs = apply_common_filters(qs, extra_params, request.user)
+
+    order_by = request.query_params.get("order_by", "").strip()
+    if order_by and order_by not in ("newest", "title", "popular", "downloads"):
+        return Response({"detail": "order_by must be one of: newest, title, popular, downloads."}, status=400)
+
+    qs = qs.distinct()
+    return Response(DatasetSerializer(
+        apply_ordering(qs, order_by) if order_by else qs.order_by("-created_at"),
+        many=True
+    ).data)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
