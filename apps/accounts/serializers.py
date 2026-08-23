@@ -10,7 +10,7 @@ from django.utils import timezone
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     password = serializers.CharField(write_only=True)
-
+    stay_logged_in = serializers.BooleanField(default=False, required=False)
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
