@@ -23,13 +23,12 @@ from rest_framework.decorators import api_view, permission_classes
 from apps.datasets.models import Contributor
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
-
-from .models import LoginSecurity, UserProfile, ActivityLog
+from django.utils import timezone
+from .models import LoginSecurity, UserProfile, ActivityLog, EmailVerificationToken
 from .serializers import (
     LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
 )
-from .tokens import email_verification_token
 
 User = get_user_model()
 password_reset_token = PasswordResetTokenGenerator()
@@ -250,10 +249,12 @@ class RegisterView(APIView):
             )
             UserProfile.objects.create(user=user, full_name=data["full_name"])
 
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = email_verification_token.make_token(user)
-        verify_link = f"{settings.FRONTEND_URL}/verify-email?uid={uid}&token={token}"
-
+        
+        verification = EmailVerificationToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        verify_link = f"{settings.FRONTEND_URL}/verify-email?token={verification.token}"
         try:
             html_content = render_to_string("accounts/emails/verify_email.html", {
                 "full_name": data["full_name"],
@@ -285,27 +286,36 @@ class VerifyEmailView(APIView):
     permission_classes = []
 
     def post(self, request):
-        uid = request.data.get("uid")
-        token = request.data.get("token")
+        token_str = request.data.get("token")
         ip = get_client_ip(request)
 
-        try:
-            user_id = force_str(urlsafe_base64_decode(uid))
-            user = User.objects.get(pk=user_id)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        if not token_str:
             return Response(
                 {"error": {"code": "INVALID_LINK", "message": "This verification link is invalid.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not email_verification_token.check_token(user, token):
+        try:
+            verification = EmailVerificationToken.objects.select_related("user").get(token=token_str)
+        except (EmailVerificationToken.DoesNotExist, ValueError):
+            log_activity(user=None, action="email_verification_failure", target_object=str(token_str), ip_address=ip, extra={"reason": "invalid_link"})
+            return Response(
+                {"error": {"code": "INVALID_LINK", "message": "This verification link is invalid.", "field": None}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not verification.is_valid():
+            log_activity(user=verification.user, action="email_verification_failure", target_object=str(verification.user.id), ip_address=ip, extra={"reason": "expired_or_used"})
             return Response(
                 {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This verification link is invalid or has expired.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        verification.is_used = True
+        verification.save(update_fields=["is_used"])
+        user = verification.user
         user.is_active = True
-        user.save()
+        user.save(update_fields=["is_active"])
         log_activity(user=user, action="email_verified", target_object=str(user.id), ip_address=ip)
 
         return Response({"detail": "Email verified. You can now log in."}, status=status.HTTP_200_OK)
