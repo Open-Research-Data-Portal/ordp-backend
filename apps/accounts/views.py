@@ -5,9 +5,6 @@ from django.db.models import Q
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.utils.encoding import force_bytes, force_str
-from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from .serializers import ExtendedProfileSerializer  
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -24,14 +21,14 @@ from apps.datasets.models import Contributor
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from django.utils import timezone
-from .models import LoginSecurity, UserProfile, ActivityLog, EmailVerificationToken
+from .models import LoginSecurity, UserProfile, ActivityLog, EmailVerificationToken,PasswordResetToken
 from .serializers import (
     LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
 )
 
 User = get_user_model()
-password_reset_token = PasswordResetTokenGenerator()
+
 
 @api_view(["POST"]) 
 @permission_classes([IsAuthenticated]) 
@@ -338,9 +335,13 @@ class PasswordResetRequestView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = password_reset_token.make_token(user)
-        reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+                # Invalidate any previous unused reset tokens for this user
+        PasswordResetToken.objects.filter(user=user, is_used=False).update(is_used=True)
+        reset_token = PasswordResetToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token.token}"
 
         html_content = render_to_string("accounts/emails/password_reset_email.html", {
             "reset_link": reset_link,
@@ -373,23 +374,35 @@ class PasswordResetConfirmView(APIView):
         data = serializer.validated_data
         ip = get_client_ip(request)
 
-        try:
-            user_id = force_str(urlsafe_base64_decode(data["uid"]))
-            user = User.objects.get(pk=user_id)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        token_str = data.get("token")
+        if not token_str:
             return Response(
                 {"error": {"code": "INVALID_LINK", "message": "This reset link is invalid.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not password_reset_token.check_token(user, data["token"]):
+        try:
+            reset_token = PasswordResetToken.objects.select_related("user").get(token=token_str)
+        except (PasswordResetToken.DoesNotExist, ValueError):
+            log_activity(user=None, action="password_reset_confirm_failure", target_object=str(token_str), ip_address=ip, extra={"reason": "invalid_link"})
+            return Response(
+                {"error": {"code": "INVALID_LINK", "message": "This reset link is invalid.", "field": None}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not reset_token.is_valid():
+            log_activity(user=reset_token.user, action="password_reset_confirm_failure", target_object=str(reset_token.user.id), ip_address=ip, extra={"reason": "expired_or_used"})
             return Response(
                 {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This reset link is invalid or has expired.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        user = reset_token.user
         user.set_password(data["new_password"])
         user.save()
+
+        reset_token.is_used = True
+        reset_token.save(update_fields=["is_used"])
 
         for token_obj in OutstandingToken.objects.filter(user=user):
             BlacklistedToken.objects.get_or_create(token=token_obj)
@@ -397,7 +410,6 @@ class PasswordResetConfirmView(APIView):
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
