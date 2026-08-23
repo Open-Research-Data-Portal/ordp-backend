@@ -137,7 +137,15 @@ class UserProfile(models.Model):
     academic_rank = models.CharField(max_length=32, choices=ACADEMIC_RANK_CHOICES, blank=True, default="none")  # re-added
     highest_degree = models.CharField(max_length=20, choices=DEGREE_CHOICES, blank=True)
     orcid_id = models.CharField(max_length=19, blank=True)
-
+    profession = models.CharField(max_length=255, blank=True)
+    profile_completed = models.BooleanField(default=False)
+    is_external = models.BooleanField(default=False)
+    sponsored_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sponsored_users",
+    )
     # Research Profile
     research_interests = models.ManyToManyField(ResearchCategory, blank=True, related_name="interested_users")
     bio = models.CharField(max_length=300, blank=True)
