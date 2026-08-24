@@ -28,6 +28,24 @@ class Dataset(models.Model):
             return True
         return self.contributors.filter(user=user, contributor_type=Contributor.ContributorType.OWNER).exists()
 
+    @property
+    def current_version(self):
+        version = self.versions.first()
+        if version:
+            return version
+        latest_file = self.files.order_by("-uploaded_at").first()
+        if latest_file:
+            return latest_file
+        return None
+
+
+    @property
+    def has_pending_change(self):
+        return (
+            self.revision_requests.filter(status="approved", used=False).exists()
+            or self.pending_updates.filter(status="pending").exists()
+        )
+
     class ThumbnailSource(models.TextChoices):
         UPLOADED = "uploaded"
         FALLBACK_AUTO = "fallback_auto"
@@ -62,9 +80,7 @@ class Dataset(models.Model):
     def __str__(self):
         return self.title
 
-    @property
-    def current_version(self):
-        return self.versions.first()
+    
 
 
 class DatasetFile(models.Model):
@@ -188,11 +204,14 @@ class DatasetVersion(models.Model):
     diff_percentage = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    
     class Meta:
         ordering = ["-version_number"]
         constraints = [
             models.UniqueConstraint(fields=["dataset", "version_number"], name="unique_dataset_version_number")
         ]
+
+    
 
 
 class Bookmark(models.Model):
@@ -204,3 +223,62 @@ class Bookmark(models.Model):
     class Meta:
         unique_together = ["user", "dataset"]
         ordering = ["-created_at"]
+
+
+
+
+class RevisionRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        APPROVED = "approved"
+        REJECTED = "rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="revision_requests")
+    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="revision_requests")
+    reason = models.TextField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    token = models.CharField(max_length=64, unique=True, default=generate_invitation_token)
+    used = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class RevisionRequestVote(models.Model):
+    class Vote(models.TextChoices):
+        APPROVE = "approve"
+        REJECT = "reject"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    revision_request = models.ForeignKey(RevisionRequest, on_delete=models.CASCADE, related_name="votes")
+    reviewer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    vote = models.CharField(max_length=16, choices=Vote.choices)
+    voted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["revision_request", "reviewer"]
+
+
+class PendingContentUpdateVote(models.Model):
+    class Vote(models.TextChoices):
+        APPROVE = "approve"
+        REJECT = "reject"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    update = models.ForeignKey(PendingContentUpdate, on_delete=models.CASCADE, related_name="votes")
+    reviewer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    vote = models.CharField(max_length=16, choices=Vote.choices)
+    voted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["update", "reviewer"]
+
+
+class DatasetWatcher(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="watchers")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ["dataset", "user"]

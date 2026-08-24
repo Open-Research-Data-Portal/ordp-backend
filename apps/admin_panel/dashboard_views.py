@@ -397,3 +397,51 @@ def decide_pending_language(request, language_id):
         return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
     language.save(update_fields=["status"])
     return Response({"status": language.status})
+
+
+
+
+
+@api_view(["GET"])
+@permission_classes([IsCheckerOrAdmin])
+def revision_request_queue(request):
+    from apps.datasets.models import RevisionRequest
+    qs = RevisionRequest.objects.filter(status="pending").select_related("dataset", "requester__profile")
+    return Response([{
+        "id": r.id, "dataset_id": r.dataset_id, "dataset_title": r.dataset.title,
+        "requester": r.requester.profile.full_name, "reason": r.reason, "created_at": r.created_at,
+    } for r in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsCheckerOrAdmin])
+def vote_on_revision_request(request, request_id):
+    from apps.datasets.models import RevisionRequest, RevisionRequestVote
+    from apps.datasets.services.revisions import resolve_revision_request_votes
+    revision_request = get_object_or_404(RevisionRequest, id=request_id)
+    if revision_request.status != RevisionRequest.Status.PENDING:
+        return Response({"detail": "This request has already been resolved."}, status=400)
+    vote_value = request.data.get("vote")
+    if vote_value not in ("approve", "reject"):
+        return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)
+    RevisionRequestVote.objects.update_or_create(
+        revision_request=revision_request, reviewer=request.user, defaults={"vote": vote_value}
+    )
+    return Response(resolve_revision_request_votes(revision_request))
+
+
+@api_view(["POST"])
+@permission_classes([IsCheckerOrAdmin])
+def vote_on_content_update(request, update_id):
+    from apps.datasets.models import PendingContentUpdate, PendingContentUpdateVote
+    from apps.datasets.services.revisions import resolve_content_update_votes
+    update = get_object_or_404(PendingContentUpdate, id=update_id)
+    if update.status != PendingContentUpdate.Status.PENDING:
+        return Response({"detail": "This update has already been resolved."}, status=400)
+    vote_value = request.data.get("vote")
+    if vote_value not in ("approve", "reject"):
+        return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)
+    PendingContentUpdateVote.objects.update_or_create(
+        update=update, reviewer=request.user, defaults={"vote": vote_value}
+    )
+    return Response(resolve_content_update_votes(update))

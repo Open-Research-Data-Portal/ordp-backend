@@ -84,16 +84,28 @@ class ResearchCategory(models.Model):
 
 class UserProfile(models.Model):
     ACADEMIA_CHOICES = [
-        ("student", "Student"), ("researcher", "Researcher"), ("lecturer", "Lecturer"),
-        ("professor", "Professor"), ("assistant_lecturer", "Assistant Lecturer"),
-        ("data_scientist", "Data Scientist"), ("software_engineer", "Software Engineer"),
-        ("government_officer", "Government Officer"), ("industry_professional", "Industry Professional"),
+        ("student", "Student"),
+        ("researcher", "Researcher"),
+        ("lecturer", "Lecturer"),
+        ("professor", "Professor"),
+        ("assistant_lecturer", "Assistant Lecturer"),
+        ("data_scientist", "Data Scientist"),
+        ("software_engineer", "Software Engineer"),
+        ("government_officer", "Government Officer"),
+        ("industry_professional", "Industry Professional"),
         ("other", "Other"),
     ]
+
     ACADEMIC_TITLE_CHOICES = [
-        ("none", "None"), ("mr", "Mr."), ("ms", "Ms."), ("mrs", "Mrs."),
-        ("eng", "Eng."), ("dr", "Dr."), ("prof", "Prof."),
+        ("none", "None"),
+        ("mr", "Mr."),
+        ("ms", "Ms."),
+        ("mrs", "Mrs."),
+        ("eng", "Eng."),
+        ("dr", "Dr."),
+        ("prof", "Prof."),
     ]
+
     ACADEMIC_RANK_CHOICES = [
         ("none", "None"),
         ("graduate_assistant", "Graduate Assistant"),
@@ -103,70 +115,192 @@ class UserProfile(models.Model):
         ("associate_professor", "Associate Professor"),
         ("professor", "Professor"),
     ]
+
     DEGREE_CHOICES = [
-        ("high_school", "High School Diploma"), ("diploma", "Diploma"),
-        ("bachelor", "Bachelor's Degree"), ("master", "Master's Degree"),
-        ("phd", "PhD"), ("postdoc", "Postdoctoral Fellowship"), ("other", "Other"),
+        ("high_school", "High School Diploma"),
+        ("diploma", "Diploma"),
+        ("bachelor", "Bachelor's Degree"),
+        ("master", "Master's Degree"),
+        ("phd", "PhD"),
+        ("postdoc", "Postdoctoral Fellowship"),
+        ("other", "Other"),
     ]
+
     VISIBILITY_CHOICES = [
-        ("public", "Everyone (Public)"), ("trusted", "Trusted Parties"), ("private", "Only Me (Private)"),
+        ("public", "Everyone (Public)"),
+        ("trusted", "Trusted Parties"),
+        ("private", "Only Me (Private)"),
     ]
-    def has_role(self, *roles):
-        return self.roles.filter(role__in=roles).exists()
-    class Role(models.TextChoices):
-        PUBLIC = "public", "Public"
-        RESEARCHER = "researcher", "Researcher"
-        CHECKER = "checker", "Checker/Reviewer"
-        ADMIN = "admin", "Admin"
 
-    ROLE_CHOICES = Role.choices
-
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile",
+    )
 
     # Personal Information
     full_name = models.CharField(max_length=255)
-    profile_picture = models.ImageField(upload_to="profile_pictures/", blank=True, null=True)
+
+    profile_picture = models.ImageField(
+        upload_to="profile_pictures/",
+        blank=True,
+        null=True,
+    )
 
     # Academic & Professional Information
-    affiliation = models.CharField(max_length=255, default="Addis Ababa Science and Technology University (AASTU)")
-    college = models.ForeignKey(College, null=True, blank=True, on_delete=models.SET_NULL)                      # was CharField
-    center_of_excellence = models.ForeignKey(CenterOfExcellence, null=True, blank=True, on_delete=models.SET_NULL)  # was CharField
-    department = models.ForeignKey(Department, null=True, blank=True, on_delete=models.SET_NULL)                # was CharField
-    academia = models.CharField(max_length=30, choices=ACADEMIA_CHOICES)
-    academic_title = models.CharField(max_length=10, choices=ACADEMIC_TITLE_CHOICES, blank=True, default="none")
-    academic_rank = models.CharField(max_length=32, choices=ACADEMIC_RANK_CHOICES, blank=True, default="none")  # re-added
-    highest_degree = models.CharField(max_length=20, choices=DEGREE_CHOICES, blank=True)
-    orcid_id = models.CharField(max_length=19, blank=True)
+    affiliation = models.CharField(
+        max_length=255,
+        default="Addis Ababa Science and Technology University (AASTU)",
+    )
+
+    college = models.ForeignKey(
+        College,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+
+    center_of_excellence = models.ForeignKey(
+        CenterOfExcellence,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+
+    department = models.ForeignKey(
+        Department,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+
+    academia = models.CharField(
+        max_length=30,
+        choices=ACADEMIA_CHOICES,
+        blank=True,
+    )
+
+    academic_title = models.CharField(
+        max_length=10,
+        choices=ACADEMIC_TITLE_CHOICES,
+        blank=True,
+        default="none",
+    )
+
+    academic_rank = models.CharField(
+        max_length=32,
+        choices=ACADEMIC_RANK_CHOICES,
+        blank=True,
+        default="none",
+    )
+
+    highest_degree = models.CharField(
+        max_length=20,
+        choices=DEGREE_CHOICES,
+        blank=True,
+    )
+
+    orcid_id = models.CharField(
+        max_length=19,
+        blank=True,
+    )
 
     # Research Profile
-    research_interests = models.ManyToManyField(ResearchCategory, blank=True, related_name="interested_users")
-    bio = models.CharField(max_length=300, blank=True)
-    additional_link = models.URLField(blank=True)
+    research_interests = models.ManyToManyField(
+        ResearchCategory,
+        blank=True,
+        related_name="interested_users",
+    )
+
+    bio = models.CharField(
+        max_length=300,
+        blank=True,
+    )
+
+    additional_link = models.URLField(
+        blank=True,
+    )
 
     # Visibility & Consent
-    profile_visibility = models.CharField(max_length=10, choices=VISIBILITY_CHOICES, default="private")
+    profile_visibility = models.CharField(
+        max_length=10,
+        choices=VISIBILITY_CHOICES,
+        default="private",
+    )
+
     terms_accepted = models.BooleanField(default=False)
-    terms_accepted_at = models.DateTimeField(null=True, blank=True)
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.PUBLIC)
 
-    expertise = models.ManyToManyField("metadata.Category", blank=True, related_name="reviewers")
-  
-    def clean(self):
+    terms_accepted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
 
-        if self.college_id and self.center_of_excellence_id:
-            raise ValidationError("Select either a College or a Center of Excellence, not both.")
-        if self.department_id:
-            if self.college_id and self.department.college_id != self.college_id:
-                raise ValidationError({"department": "Department does not belong to the selected College."})
-            if self.center_of_excellence_id and self.department.center_of_excellence_id != self.center_of_excellence_id:
-                raise ValidationError({"department": "Department does not belong to the selected Center of Excellence."})
+    expertise = models.ManyToManyField(
+        "metadata.Category",
+        blank=True,
+        related_name="reviewers",
+    )
+
     email_verified = models.BooleanField(default=False)
+
     research_interests_completed = models.BooleanField(default=False)
 
+    # --------------------------------------------------
+    # ROLE CHECKING
+    # --------------------------------------------------
+
+    def has_role(self, *roles):
+        return self.roles.filter(role__in=roles).exists()
+
+    # --------------------------------------------------
+    # VALIDATION
+    # --------------------------------------------------
+
+    def clean(self):
+        if self.college_id and self.center_of_excellence_id:
+            raise ValidationError(
+                "Select either a College or a Center of Excellence, not both."
+            )
+
+        if self.department_id:
+            if (
+                self.college_id
+                and self.department.college_id != self.college_id
+            ):
+                raise ValidationError({
+                    "department":
+                    "Department does not belong to the selected College."
+                })
+
+            if (
+                self.center_of_excellence_id
+                and self.department.center_of_excellence_id
+                != self.center_of_excellence_id
+            ):
+                raise ValidationError({
+                    "department":
+                    "Department does not belong to the selected Center of Excellence."
+                })
+
+    # --------------------------------------------------
+    # PROFILE COMPLETION
+    # --------------------------------------------------
 
     def is_profile_complete(self):
-        required = ["academia", "department"]
-        return self.terms_accepted and all(getattr(self, f, None) for f in required)
+        """
+        The profile is complete when all required ORDP profile
+        fields have been filled.
+        """
+
+        return (
+            bool(self.full_name)
+            and bool(self.affiliation)
+            and bool(self.department_id)
+            and bool(self.academia)
+            and self.research_interests.exists()
+            and bool(self.profile_visibility)
+            and self.terms_accepted
+        )
 
 class UserRole(models.Model):
     class RoleChoice(models.TextChoices):
@@ -183,19 +317,6 @@ class UserRole(models.Model):
         unique_together = ["profile", "role"]
 
 
-class ResearcherRequest(models.Model):
-    class Status(models.TextChoices):
-        PENDING = "pending"
-        APPROVED = "approved"
-        REJECTED = "rejected"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="researcher_request")
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
-    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
-    decided_at = models.DateTimeField(null=True, blank=True)
-    reason = models.TextField(blank=True)
-    submitted_at = models.DateTimeField(auto_now_add=True)
 
 
 class ActivityLog(models.Model):

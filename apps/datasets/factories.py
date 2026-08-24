@@ -1,4 +1,4 @@
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model # type: ignore
 from apps.accounts.models import UserProfile, College, Department
 
 User = get_user_model()

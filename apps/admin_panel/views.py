@@ -3,24 +3,26 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
 from apps.accounts.permissions import IsCheckerOrAdmin
-from apps.datasets.models import Dataset
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from django.db.models import Count, F
+
+from apps.accounts.permissions import IsCheckerOrAdmin, IsAdminOnly
+from apps.datasets.models import Dataset, PendingContentUpdate
+from apps.datasets.serializers import PendingContentUpdateSerializer
 from apps.metadata.models import FallbackThumbnail
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
-from .models import ModerationDecision, ThumbnailSuggestion
+from django.contrib.auth import get_user_model
+
+from .models import (
+    ModerationDecision,
+    ThumbnailSuggestion,
+    DatasetDeletionRequest,
+    DeletionRequestVote,
+)
 from .serializers import ModerationQueueItemSerializer
-
-from apps.datasets.models import PendingContentUpdate
-from apps.datasets.serializers import PendingContentUpdateSerializer
-from apps.datasets.services.revisions import decide_pending_content_update
-from apps.accounts.services import decide_researcher_request as decide_researcher_request_service
-from django.utils import timezone
-from apps.accounts.permissions import IsAdminOnly
-from apps.accounts.models import ResearcherRequest, UserProfile, UserRole
-from django.contrib.auth import get_user_model 
-
-from apps.accounts.permissions import IsAdminOnly 
-from .models import DatasetDeletionRequest, DeletionRequestVote
 from .services import resolve_deletion_request_votes, execute_hard_delete
 
 def _resolve_thumbnail_suggestions(dataset):
@@ -35,8 +37,7 @@ def _resolve_thumbnail_suggestions(dataset):
             thumbnail_key=winner.image_key, thumbnail_source=Dataset.ThumbnailSource.FALLBACK_REVIEWER_SELECTED
         )
         FallbackThumbnail.objects.filter(id=winner.id).update(usage_count=F("usage_count") + 1)
-from apps.accounts.models import ResearcherRequest, UserProfile
-from apps.accounts.views import get_client_ip, log_activity
+
 
 
 @api_view(["GET"])
@@ -109,48 +110,6 @@ def suggest_thumbnail(request, dataset_id):
 def content_update_queue(request):
     qs = PendingContentUpdate.objects.filter(status="pending").select_related("dataset", "submitted_by")
     return Response(PendingContentUpdateSerializer(qs, many=True).data)
-
-
-@api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
-def decide_content_update(request, update_id):
-    update = get_object_or_404(PendingContentUpdate, id=update_id)
-    decision = request.data.get("decision")
-    reason = (request.data.get("reason") or "").strip()
-    if decision == "reject" and not reason:
-        return Response({"detail": "A reason is required to reject a content update."}, status=400)
-    decide_pending_content_update(update, decision, request.user, reason)
-    return Response({"status": update.status})
-
-
-@api_view(["GET"])
-@permission_classes([IsAdminOnly])
-def researcher_request_queue(request):
-    qs = ResearcherRequest.objects.filter(
-        status=ResearcherRequest.Status.PENDING
-    ).select_related("user", "user__profile")
-    return Response([{
-        "id": r.id,
-        "email": r.user.email,
-        "full_name": r.user.profile.full_name,
-        "academia": r.user.profile.academia,
-        "department": str(r.user.profile.department) if r.user.profile.department else None,
-        "submitted_at": r.submitted_at,
-    } for r in qs])
-
-
-@api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def decide_researcher_request(request, request_id):
-    req = get_object_or_404(ResearcherRequest, id=request_id)
-    decision = request.data.get("decision")
-    reason = (request.data.get("reason") or "").strip()
-
-    if decision == "reject" and not reason:
-        return Response({"detail": "A reason is required to reject a researcher request."}, status=400)
-
-    decide_researcher_request_service(req, decision, request.user, reason)
-    return Response({"status": req.status})
 
 
 

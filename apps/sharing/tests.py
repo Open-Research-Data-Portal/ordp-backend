@@ -2,19 +2,27 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 
 from apps.datasets.factories import make_user
-from apps.datasets.models import Dataset, Contributor, PendingContentUpdate
-from apps.datasets.services.revisions import route_change, decide_pending_content_update
+from apps.datasets.models import Dataset, Contributor, PendingContentUpdate, PendingContentUpdateVote
+from apps.datasets.services.revisions import resolve_content_update_votes, route_change
 from apps.notifications.models import Notification
 from .models import SharePermission, DatasetAccessRequest
 
 
 def make_dataset_with_version(owner, title="Test DS", visibility="restricted"):
     dataset = Dataset.objects.create(title=title, owner=owner, visibility=visibility, status=Dataset.Status.APPROVED)
-    checker = make_user(f"{title.replace(' ', '')}setupchecker", f"{title.replace(' ', '')}setupchecker@aastu.edu.et", role="checker")
     route_change(dataset=dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=owner,
                  new_file_key="f.csv", diff_percentage=100.0, change_summary={}, proposed_metadata={})
     update = PendingContentUpdate.objects.get(dataset=dataset)
-    decide_pending_content_update(update, "approve", checker)
+
+    for i in range(3):  # MIN_REVIEWER_QUORUM
+        checker = make_user(
+            f"{title.replace(' ', '')}setupchecker{i}",
+            f"{title.replace(' ', '')}setupchecker{i}@aastu.edu.et",
+            role="checker",
+        )
+        PendingContentUpdateVote.objects.create(update=update, reviewer=checker, vote="approve")
+    resolve_content_update_votes(update)
+
     dataset.refresh_from_db()
     return dataset
 
@@ -74,8 +82,8 @@ class ViewCounterTests(APITestCase):
         owner = make_user("vcowner", "vcowner@aastu.edu.et")
         dataset = make_dataset_with_version(owner)
         self.client.force_authenticate(owner)
-        self.client.get(f"/api/sharing/{dataset.id}/view/")
-        self.client.get(f"/api/sharing/{dataset.id}/view/")
+        self.client.get(f"/api/datasets/{dataset.id}/")
+        self.client.get(f"/api/datasets/{dataset.id}/")
         self.client.get(f"/api/sharing/{dataset.id}/download/")
         dataset.refresh_from_db()
         self.assertEqual(dataset.view_count, 2)

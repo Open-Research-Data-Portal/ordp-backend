@@ -27,8 +27,7 @@ class SharePermission(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
 
-    class Meta:
-        unique_together = ["dataset", "shared_with_user"]
+
 
     def is_active_grant(self):
         """Lazy expiry check, same pattern as LoginSecurity.is_locked() —

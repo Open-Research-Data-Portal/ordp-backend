@@ -7,9 +7,6 @@ urlpatterns = [
     path("<uuid:dataset_id>/decide/", views.moderate_dataset, name="moderation-decide"),
 
     path("content-updates/queue/", views.content_update_queue, name="content-update-queue"),
-    path("content-updates/<uuid:update_id>/decide/", views.decide_content_update, name="content-update-decide"),
-    path("researcher-requests/queue/", views.researcher_request_queue, name="researcher-request-queue"),
-    path("researcher-requests/<uuid:request_id>/decide/", views.decide_researcher_request, name="researcher-request-decide"),
     path("datasets/<uuid:dataset_id>/thumbnail-suggestion/", views.suggest_thumbnail, name="suggest-thumbnail"),
     path("datasets/<uuid:dataset_id>/request-deletion/", views.request_dataset_deletion, name="request-dataset-deletion"),
     path("deletion-requests/<uuid:request_id>/vote/", views.vote_on_deletion_request, name="vote-deletion-request"),
@@ -34,6 +31,10 @@ urlpatterns = [
     path("users/<int:user_id>/reactivate/", dashboard_views.admin_reactivate_user, name="admin-reactivate-user"),
     path("share-permissions/<uuid:permission_id>/revoke/", dashboard_views.admin_revoke_share_permission, name="admin-revoke-share-permission"),
     path("languages/pending/", dashboard_views.pending_languages, name="pending-languages"),
+    path("revision-requests/queue/", dashboard_views.revision_request_queue, name="revision-request-queue"),
+    path("revision-requests/<uuid:request_id>/vote/", dashboard_views.vote_on_revision_request, name="revision-request-vote"),
+    path("content-updates/<uuid:update_id>/vote/", dashboard_views.vote_on_content_update, name="content-update-vote"),
     path("languages/<uuid:language_id>/decide/", dashboard_views.decide_pending_language, name="decide-pending-language"),
+
 ]
    

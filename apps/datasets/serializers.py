@@ -17,12 +17,18 @@ class ContributorSerializer(serializers.ModelSerializer):
 class DatasetSerializer(serializers.ModelSerializer):
     files = DatasetFileSerializer(many=True, read_only=True)
     contributors = ContributorSerializer(many=True, read_only=True)
+    category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
+    description = serializers.CharField(source="metadata.description", read_only=True, default=None)
+    languages = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
+    characteristics = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
 
     class Meta:
         model = Dataset
         fields = [
             "id", "title", "owner", "visibility", "status", "is_active", "version",
-            "terms_accepted", "terms_version", "files", "contributors", "created_at", "updated_at",
+            "terms_accepted", "terms_version", "files", "contributors",
+            "thumbnail_key", "view_count", "download_count", "category", "description",
+            "languages", "characteristics", "created_at", "updated_at",
         ]
         read_only_fields = ["owner", "status", "version", "is_active"]
 

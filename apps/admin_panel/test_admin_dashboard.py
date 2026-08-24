@@ -52,7 +52,7 @@ class AdminGraphsTests(APITestCase):
         dataset = make_dataset(owner, "Graph DS")
 
         self.client.force_authenticate(viewer)
-        self.client.get(f"/api/sharing/{dataset.id}/view/")
+        self.client.get(f"/api/datasets/{dataset.id}/")
 
         self.client.force_authenticate(admin)
         resp = self.client.get("/api/admin-panel/dashboard/admin/graphs/")
