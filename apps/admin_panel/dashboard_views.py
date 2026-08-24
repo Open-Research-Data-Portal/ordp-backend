@@ -204,6 +204,20 @@ def admin_reactivate_user(request, user_id):
     target_user.save(update_fields=["is_active"])
     return Response({"status": "reactivated"})
 
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_broadcast_notification(request):
+    from apps.notifications.services import broadcast_system_notification
+    message = request.data.get("message")
+    link_path = request.data.get("link_path")
+    
+    if not message:
+        return Response({"detail": "Message is required."}, status=400)
+    
+    broadcast_system_notification(message, link_path)
+    return Response({"status": "broadcasted"})
+
 @api_view(["GET"])
 @permission_classes([IsAdminOnly])
 def admin_graphs(request):

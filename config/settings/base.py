@@ -90,11 +90,11 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("POSTGRES_DB"),
-        "USER": os.environ.get("POSTGRES_USER"),
-        "PASSWORD": os.environ.get("POSTGRES_PASSWORD"),
-        "HOST": os.environ.get("POSTGRES_HOST", "db"),
-        "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+        "NAME": config("POSTGRES_DB", default="ordp"),
+        "USER": config("POSTGRES_USER", default="ordp"),
+        "PASSWORD": config("POSTGRES_PASSWORD", default="ordpaastu"),
+        "HOST": config("POSTGRES_HOST", default="db"),
+        "PORT": config("POSTGRES_PORT", default="5432"),
     }
 }
 
@@ -174,5 +174,8 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
 }
+PASSWORD_RESET_TIMEOUT = 86400  # 24 hours in seconds
+
+
 VERSION_BUMP_THRESHOLD_PCT = float(os.environ.get("VERSION_BUMP_THRESHOLD_PCT", 15.0))
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

@@ -19,6 +19,8 @@ class Notification(models.Model):
         RESEARCHER_APPROVED = "researcher_approved"
         RESEARCHER_REJECTED = "researcher_rejected"
         CHANGES_REQUESTED = "changes_requested"
+        SYSTEM_ANNOUNCEMENT = "system_announcement"
+
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
@@ -26,6 +28,8 @@ class Notification(models.Model):
     notification_type = models.CharField(max_length=32, choices=NotificationType.choices)
     reason = models.TextField(blank=True, null=True)
     message = models.TextField()
+    is_system = models.BooleanField(default=False)
+
     link_path = models.CharField(max_length=512, blank=True)
     is_read = models.BooleanField(default=False)
     email_sent = models.BooleanField(default=False)

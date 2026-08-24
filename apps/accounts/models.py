@@ -148,6 +148,8 @@ class UserProfile(models.Model):
     )
 
     # Academic & Professional Information
+# Academic & Professional Information
+
     affiliation = models.CharField(
         max_length=255,
         default="Addis Ababa Science and Technology University (AASTU)",
@@ -205,49 +207,69 @@ class UserProfile(models.Model):
         blank=True,
     )
 
-    # Research Profile
-    research_interests = models.ManyToManyField(
-        ResearchCategory,
+    profession = models.CharField(
+        max_length=255,
         blank=True,
-        related_name="interested_users",
     )
+
+    profile_completed = models.BooleanField(
+        default=False,
+    )
+
+    is_external = models.BooleanField(
+        default=False,
+    )
+
+    sponsored_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sponsored_users",
+    )
+        # Research Profile
+    research_interests = models.ManyToManyField(
+            ResearchCategory,
+            blank=True,
+            related_name="interested_users",
+        )
 
     bio = models.CharField(
-        max_length=300,
-        blank=True,
-    )
+            max_length=300,
+            blank=True,
+        )
 
     additional_link = models.URLField(
-        blank=True,
-    )
+            blank=True,
+        )
 
-    # Visibility & Consent
+        # Visibility & Consent
     profile_visibility = models.CharField(
-        max_length=10,
-        choices=VISIBILITY_CHOICES,
-        default="private",
-    )
+            max_length=10,
+            choices=VISIBILITY_CHOICES,
+            default="private",
+        )
 
     terms_accepted = models.BooleanField(default=False)
 
     terms_accepted_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
+            null=True,
+            blank=True,
+        )
 
     expertise = models.ManyToManyField(
-        "metadata.Category",
-        blank=True,
-        related_name="reviewers",
-    )
+            "metadata.Category",
+            blank=True,
+            related_name="reviewers",
+        )
 
     email_verified = models.BooleanField(default=False)
 
     research_interests_completed = models.BooleanField(default=False)
 
-    # --------------------------------------------------
-    # ROLE CHECKING
-    # --------------------------------------------------
+        # --------------------------------------------------
+        # ROLE CHECKING
+        # --------------------------------------------------
 
     def has_role(self, *roles):
         return self.roles.filter(role__in=roles).exists()
@@ -337,3 +359,39 @@ class ActivityLog(models.Model):
             user=user, action=action, target_object=target_object,
             ip_address=ip_address, extra=extra or {},
         )
+class EmailVerificationToken(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="email_verification_tokens",
+    )
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    def is_valid(self):
+        from django.utils import timezone
+        return not self.is_used and self.expires_at > timezone.now()
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class PasswordResetToken(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_tokens",
+    )
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    def is_valid(self):
+        from django.utils import timezone
+        return not self.is_used and self.expires_at > timezone.now()
+
+    class Meta:
+        ordering = ["-created_at"]

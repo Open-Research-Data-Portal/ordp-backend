@@ -35,6 +35,6 @@ urlpatterns = [
     path("revision-requests/<uuid:request_id>/vote/", dashboard_views.vote_on_revision_request, name="revision-request-vote"),
     path("content-updates/<uuid:update_id>/vote/", dashboard_views.vote_on_content_update, name="content-update-vote"),
     path("languages/<uuid:language_id>/decide/", dashboard_views.decide_pending_language, name="decide-pending-language"),
-
+    path("notifications/broadcast/", dashboard_views.admin_broadcast_notification, name="admin-broadcast-notification"),
 ]
    
