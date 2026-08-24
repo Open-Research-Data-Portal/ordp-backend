@@ -6,7 +6,7 @@ from django.conf import settings
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from ..models import Dataset, DatasetFile
-from .storage import push_to_minio
+from .storage import push_to_storage
 from .file_validation import validate_file_matches_declared_type, FileTypeMismatchError
 
 class UploadTooLargeError(Exception):
@@ -65,7 +65,7 @@ def finalize_upload(dataset_id, upload_session_id, uploader, original_filename, 
 
     object_key = f"datasets/{dataset.id}/{original_filename}"
     try:
-        push_to_minio(assembled_path, object_key)
+        push_to_storage(assembled_path, object_key)
     except Exception as exc:
         notify(
             user=uploader, notification_type=Notification.NotificationType.UPLOAD_FAILURE,

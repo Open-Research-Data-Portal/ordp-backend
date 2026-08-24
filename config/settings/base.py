@@ -148,11 +148,13 @@ MAX_DATASET_UPLOAD_SIZE = 2_147_483_648
 UPLOAD_TMP_DIR = str(BASE_DIR / "media" / "upload_tmp")
 CURRENT_TERMS_VERSION = "v1.0"
 
-MINIO_ENDPOINT = "minio:9000" 
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ROOT_USER")
-MINIO_SECRET_KEY = os.environ.get("MINIO_ROOT_PASSWORD")
-MINIO_SECURE = False
-MINIO_BUCKET = "ordp-datasets"
+# S3-compatible object storage. Backblaze B2 is used in deployment, while
+# the same adapter can point to MinIO later without application changes.
+OBJECT_STORAGE_ENDPOINT_URL = config("OBJECT_STORAGE_ENDPOINT_URL", default="")
+OBJECT_STORAGE_ACCESS_KEY = config("OBJECT_STORAGE_ACCESS_KEY", default="")
+OBJECT_STORAGE_SECRET_KEY = config("OBJECT_STORAGE_SECRET_KEY", default="")
+OBJECT_STORAGE_BUCKET = config("OBJECT_STORAGE_BUCKET", default="ordp-datasets")
+OBJECT_STORAGE_REGION = config("OBJECT_STORAGE_REGION", default="us-east-005")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@ordp.aastu.edu.et")
 
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:5173")
