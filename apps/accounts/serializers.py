@@ -32,31 +32,58 @@ class ProfileSerializer(serializers.ModelSerializer):
 class ExtendedProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = [
-            "full_name", "profile_picture", "college", "center_of_excellence", "department", "academia",
-            "academic_title", "academic_rank", "highest_degree", "orcid_id", "research_interests",
-            "bio", "additional_link", "profile_visibility", "terms_accepted",
-        ]
 
-    
+        fields = [
+            "full_name",
+            "profile_picture",
+
+            "affiliation",
+            "college",
+            "center_of_excellence",
+            "department",
+            "academia",
+            "academic_title",
+            "academic_rank",
+            "highest_degree",
+            "orcid_id",
+
+            "research_interests",
+            "bio",
+            "additional_link",
+
+            "profile_visibility",
+            "terms_accepted",
+        ]
 
     def save(self, **kwargs):
         instance = super().save(**kwargs)
 
         if instance.terms_accepted and not instance.terms_accepted_at:
-            
             instance.terms_accepted_at = timezone.now()
             instance.save(update_fields=["terms_accepted_at"])
 
-        if instance.is_profile_complete() and not instance.has_role(UserProfile.Role.RESEARCHER):
-            UserRole.objects.get_or_create(profile=instance, role=UserProfile.Role.RESEARCHER)
+        # Automatically grant the researcher role
+        # when all required profile fields are completed.
+        if instance.is_profile_complete():
+            if not instance.profile_completed:
+                instance.profile_completed = True
+                instance.save(update_fields=["profile_completed"])
+
+            role, created = UserRole.objects.get_or_create(
+                profile=instance,
+                role=UserRole.RoleChoice.RESEARCHER,
+            )
+
             notify(
-                user=instance.user, notification_type=Notification.NotificationType.RESEARCHER_APPROVED,
-                message="Your profile is complete — you can upload datasets.",
+                user=instance.user,
+                notification_type=Notification.NotificationType.RESEARCHER_APPROVED,
+                message=(
+                    "Your profile is complete — "
+                    "you can now upload datasets."
+                ),
             )
 
         return instance
-
 class RegisterSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
     email = serializers.EmailField()

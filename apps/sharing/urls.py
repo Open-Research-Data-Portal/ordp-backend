@@ -2,7 +2,6 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path("<uuid:dataset_id>/view/", views.view_dataset, name="view-dataset"),
     path("<uuid:dataset_id>/download/", views.download_dataset, name="download-dataset"),
     path("<uuid:dataset_id>/request-share/", views.request_share_access, name="request-share-access"),
     path("<uuid:dataset_id>/share-with/", views.share_with_user, name="share-with-user"),

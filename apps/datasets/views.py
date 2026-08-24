@@ -1,15 +1,17 @@
 import os
 import uuid
 
+from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
-from .models import Bookmark, Contributor
+from .models import Bookmark, Contributor, DatasetWatcher
 from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import IsProfileComplete, IsResearcherOnly
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .services.diffing import compute_diff
 from .serializers import DatasetRevisionSerializer
-
+from rest_framework.permissions import AllowAny
+from django.db import models as django_models
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -24,7 +26,7 @@ from apps.accounts.views import log_activity, get_client_ip
 from .services.storage import presigned_download_url, minio_client
 import uuid as uuid_lib
 from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
-from .services.revisions import apply_revision, route_change
+from .services.revisions import route_change
 from .models import DatasetRevision, PendingContentUpdate
 
 from .models import Dataset, DatasetVersion
@@ -150,8 +152,6 @@ def accept_terms_and_submit(request, dataset_id):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def my_datasets(request):
     from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering
 
@@ -201,15 +201,19 @@ def my_datasets(request):
         apply_ordering(qs, order_by) if order_by else qs.order_by("-created_at"),
         many=True
     ).data)
-    )
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def dataset_detail(request, dataset_id):
-    dataset = get_object_or_404(
-        Dataset.objects.prefetch_related("files", "contributors"),
-        id=dataset_id, is_active=True
-    )
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
+    dataset.refresh_from_db(fields=["view_count"])
+
+    if request.user.is_authenticated:
+        ActivityLog.objects.create(
+            user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
+            ip_address=request.META.get("REMOTE_ADDR", "unknown"),
+        )
     return Response(DatasetSerializer(dataset).data)
 
 @api_view(["GET"])
@@ -218,6 +222,7 @@ def dataset_versions(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     versions = dataset.versions.select_related("changed_by", "changed_by__profile")
     return Response(DatasetVersionSerializer(versions, many=True).data)
+
 def _download_to_tmp(file_key):
     local_path = f"/tmp/{uuid_lib.uuid4().hex}"
     minio_client.fget_object(settings.MINIO_BUCKET, file_key, local_path)
@@ -237,19 +242,54 @@ def _build_proposed_metadata(dataset, request_data):
     return changed
 
 
+OWNER_EDITABLE_FIELDS = ("title", "visibility")
+SHARED_EDITABLE_METADATA_FIELDS = ("description", "category_id", "subject_id", "sponsor_or_grant")
+
+
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated, IsDatasetOwnerOrContributor])
 def update_dataset(request, dataset_id):
-    """Owner or a linked contributor edits the dataset directly. Minor changes apply
-    immediately. Changes at/above VERSION_BUMP_THRESHOLD_PCT are held for independent
-    reviewer clearance — this is what stops an owner (alone, or colluding with a
-    contributor or revision submitter) from pushing unreviewed content live."""
+    """Owner can change anything, including title/visibility. A linked
+    researcher-contributor can only change descriptive metadata — not
+    title/visibility, which are ownership-level decisions."""
     dataset = get_object_or_404(Dataset, id=dataset_id)
+    is_owner = dataset.owner_id == request.user.id
 
-    for field in ("title", "visibility"):
-        if field in request.data:
-            setattr(dataset, field, request.data[field])
+    changed_fields = []
+    if is_owner:
+        for field in OWNER_EDITABLE_FIELDS:
+            if field in request.data:
+                setattr(dataset, field, request.data[field])
+                changed_fields.append(field)
     dataset.save()
+
+    if hasattr(dataset, "metadata"):
+        metadata_changed = []
+        metadata = dataset.metadata
+        for field in SHARED_EDITABLE_METADATA_FIELDS:
+            if field in request.data:
+                setattr(metadata, field, request.data[field])
+                metadata_changed.append(field)
+        if metadata_changed:
+            metadata.save(update_fields=metadata_changed)
+            changed_fields.extend(metadata_changed)
+
+    if "language_ids" in request.data:
+        from apps.metadata.models import Language
+        dataset.languages.set(Language.objects.filter(id__in=request.data["language_ids"]))
+        changed_fields.append("languages")
+
+    if "characteristic_ids" in request.data:
+        from apps.metadata.models import DatasetCharacteristic
+        dataset.characteristics.set(DatasetCharacteristic.objects.filter(id__in=request.data["characteristic_ids"]))
+        changed_fields.append("characteristics")
+
+    if changed_fields:
+        log_activity(
+            user=request.user, action="dataset_metadata_updated",
+            target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request),
+            extra={"fields_changed": changed_fields},
+        )
 
     if "upload_session_id" in request.data:
         current_file = dataset.files.latest("uploaded_at")
@@ -279,23 +319,46 @@ def update_dataset(request, dataset_id):
             new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
             proposed_metadata=_build_proposed_metadata(dataset, request.data),
         )
-        new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
+        new_dataset_file.delete()
         return Response(result, status=202 if result["status"] == "pending_review" else 200)
 
-    return Response({"status": "updated"}, status=200)
+    return Response({"status": "updated", "fields_changed": changed_fields}, status=200)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def request_revision_permission(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if dataset.is_owned_by(request.user) or Contributor.objects.filter(dataset=dataset, user=request.user).exists():
+        return Response({"detail": "You already have edit access to this dataset."}, status=400)
+    reason = (request.data.get("reason") or "").strip()
+    if not reason:
+        return Response({"detail": "Please describe why you want to propose a change."}, status=400)
+    from .services.revisions import request_revision_permission as create_request
+    req = create_request(dataset, request.user, reason)
+    return Response({"status": "pending", "request_id": req.id}, status=201)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsResearcherOnly])
 def propose_revision(request, dataset_id):
-    """A researcher proposes a revision to a dataset they don't own. Requires prior
-    upload of the new file via the normal chunked-upload endpoints, plus a non-empty
-    submitter_message."""
+    """Phase 2: actually submitting the change, only allowed once Phase 1
+    (RevisionRequest) has been approved for this user+dataset, and the
+    submitter's profile is complete."""
+    from .services.revisions import has_revision_permission, consume_revision_permission
+
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+
+    if not request.user.profile.is_profile_complete():
+        return Response({"detail": "Please complete your profile before proposing a change."}, status=403)
+
+    if not has_revision_permission(dataset, request.user):
+        return Response({"detail": "You need reviewer-committee approval before proposing a change to this dataset."}, status=403)
+
     submitter_message = (request.data.get("submitter_message") or "").strip()
     if not submitter_message:
         return Response({"detail": "Please describe what you changed and why."}, status=400)
 
-    dataset = get_object_or_404(Dataset, id=dataset_id)
     current_file = dataset.files.latest("uploaded_at")
-
     try:
         new_dataset_file = finalize_upload(
             dataset_id=dataset_id, upload_session_id=request.data["upload_session_id"],
@@ -313,38 +376,49 @@ def propose_revision(request, dataset_id):
         if os.path.exists(p):
             os.remove(p)
 
-    revision = DatasetRevision.objects.create(
-        dataset=dataset, submitted_by=request.user,
-        previous_file_key=current_file.file_key, new_file_key=new_file_key,
-        diff_percentage=diff_pct, change_summary=summary, submitter_message=submitter_message,
+    result = route_change(
+        dataset=dataset, source=PendingContentUpdate.Source.REVISION, submitted_by=request.user,
+        new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
         proposed_metadata=_build_proposed_metadata(dataset, request.data),
-        status=DatasetRevision.Status.PENDING,
     )
-    new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
-    notify(
-        user=dataset.owner, notification_type=Notification.NotificationType.REVISION_PROPOSED,
-        message=f'{request.user.profile.full_name} proposed a revision to "{dataset.title}".', dataset=dataset,
-        link_path=f"/datasets/{dataset.id}/revisions/{revision.id}",
-    )
-    return Response(DatasetRevisionSerializer(revision).data, status=201)
+    new_dataset_file.delete()
+    consume_revision_permission(dataset, request.user)
+    return Response(result, status=202 if result["status"] == "pending_review" else 200)
 
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_watch(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    watcher, created = DatasetWatcher.objects.get_or_create(dataset=dataset, user=request.user)
+    if not created:
+        watcher.delete()
+        return Response({"watching": False})
+    return Response({"watching": True}, status=201)
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated, IsDatasetOwner])
-def revision_comparison(request, revision_id):
-    revision = get_object_or_404(DatasetRevision.objects.select_related("dataset", "submitted_by"), id=revision_id)
+@permission_classes([IsAuthenticated])
+def content_update_comparison(request, update_id):
+    update = get_object_or_404(PendingContentUpdate.objects.select_related("dataset", "submitted_by"), id=update_id)
+    profile = getattr(request.user, "profile", None)
+    is_reviewer = bool(profile and profile.has_role("checker", "admin"))
+    if not (update.dataset.is_owned_by(request.user) or is_reviewer):
+        return Response({"detail": "You don't have permission to view this."}, status=403)
+
+    current_file = update.dataset.files.latest("uploaded_at")
     return Response({
-        "dataset_title": revision.dataset.title,
-        "submitted_by": revision.submitted_by.profile.full_name,
-        "submitted_at": revision.created_at,
-        "submitter_message": revision.submitter_message,
-        "ai_change_summary": revision.change_summary,
-        "diff_percentage": revision.diff_percentage,
-        "will_trigger_content_review": revision.diff_percentage >= settings.VERSION_BUMP_THRESHOLD_PCT,
-        "previous_download_url": presigned_download_url(revision.previous_file_key),
-        "new_download_url": presigned_download_url(revision.new_file_key),
-        "metadata_diff": revision.proposed_metadata,
-        "status": revision.status,
+        "dataset_title": update.dataset.title,
+        "submitted_by": update.submitted_by.profile.full_name if update.submitted_by else None,
+        "submitted_at": update.created_at,
+        "source": update.source,
+        "ai_change_summary": update.change_summary,
+        "diff_percentage": update.diff_percentage,
+        "previous_download_url": presigned_download_url(current_file.file_key),
+        "new_download_url": presigned_download_url(update.new_file_key),
+        "metadata_diff": update.proposed_metadata,
+        "status": update.status,
+        "approve_votes": update.votes.filter(vote="approve").count(),
+        "reject_votes": update.votes.filter(vote="reject").count(),
     })
 
 

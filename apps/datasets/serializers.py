@@ -27,6 +27,10 @@ class ContributorSerializer(serializers.ModelSerializer):
 class DatasetSerializer(serializers.ModelSerializer):
     files = DatasetFileSerializer(many=True, read_only=True)
     contributors = ContributorSerializer(many=True, read_only=True)
+    category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
+    description = serializers.CharField(source="metadata.description", read_only=True, default=None)
+    languages = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
+    characteristics = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
     owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
     metadata = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
@@ -37,15 +41,48 @@ class DatasetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dataset
         fields = [
-            "id", "title", "owner", "owner_name", "visibility", "status", "is_active", "version",
-            "terms_accepted", "terms_version", "thumbnail_key", "view_count", "download_count",
-            "files", "contributors", "metadata", "views_delta_pct", "downloads_delta_pct",
-            "views_series", "downloads_series", "created_at", "updated_at",
+            "id",
+            "title",
+            "owner",
+            "owner_name",
+            "visibility",
+            "status",
+            "is_active",
+            "version",
+            "terms_accepted",
+            "terms_version",
+            "files",
+            "contributors",
+            "thumbnail_key",
+            "view_count",
+            "download_count",
+
+            # Dataset metadata
+            "category",
+            "description",
+            "languages",
+            "characteristics",
+            "metadata",
+
+            # Analytics
+            "views_delta_pct",
+            "downloads_delta_pct",
+            "views_series",
+            "downloads_series",
+
+            "created_at",
+            "updated_at",
         ]
-        read_only_fields = ["owner", "status", "version", "is_active"]
+
+        read_only_fields = [
+            "owner",
+            "status",
+            "version",
+            "is_active",
+        ]
 
     def get_metadata(self, obj):
-        if hasattr(obj, 'metadata'):
+        if hasattr(obj, "metadata"):
             from apps.metadata.serializers import MetadataSerializer
             return MetadataSerializer(obj.metadata).data
         return None

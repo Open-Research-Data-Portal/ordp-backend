@@ -21,17 +21,6 @@ from .services import user_can_freely_download, user_can_access_dataset, resolve
 User = get_user_model()
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def view_dataset(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
-    Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
-    dataset.refresh_from_db(fields=["view_count"])
-    ActivityLog.objects.create(
-        user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
-        ip_address=request.META.get("REMOTE_ADDR", "unknown"),
-    )
-    return Response({"view_count": dataset.view_count})
 
 
 @api_view(["GET"])
@@ -41,11 +30,11 @@ def download_dataset(request, dataset_id):
     profile = getattr(request.user, "profile", None)
     is_reviewer = profile.has_role("checker", "admin")
     is_free_access = user_can_freely_download(request.user, dataset)
-
+    reviewer_bypass = is_reviewer and dataset.visibility != Dataset.Visibility.RESTRICTED
     permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=request.user).first()
     has_active_share = bool(permission and permission.is_active_grant())
 
-    has_permission = is_free_access or is_reviewer or has_active_share
+    has_permission = is_free_access or reviewer_bypass or has_active_share
     if not has_permission:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
 
@@ -88,7 +77,7 @@ def request_share_access(request, dataset_id):
 
     if not request.user.profile.is_profile_complete():
         return Response(
-            {"detail": "Please complete your profile (academia and department) before requesting access to a restricted dataset."},
+            {"detail": "Please complete your profile before requesting access to a restricted dataset."},
             status=403,
         )
 
