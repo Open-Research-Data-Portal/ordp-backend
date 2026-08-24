@@ -64,11 +64,12 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
 
         # Automatically grant the researcher role
         # when all required profile fields are completed.
-        if (
-            instance.is_profile_complete()
-            and not instance.has_role(UserRole.RoleChoice.RESEARCHER)
-        ):
-            UserRole.objects.get_or_create(
+        if instance.is_profile_complete():
+            if not instance.profile_completed:
+                instance.profile_completed = True
+                instance.save(update_fields=["profile_completed"])
+
+            role, created = UserRole.objects.get_or_create(
                 profile=instance,
                 role=UserRole.RoleChoice.RESEARCHER,
             )

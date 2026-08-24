@@ -81,31 +81,31 @@ class DatasetSerializer(serializers.ModelSerializer):
             "is_active",
         ]
 
-        def get_metadata(self, obj):
-            if hasattr(obj, 'metadata'):
-                from apps.metadata.serializers import MetadataSerializer
-                return MetadataSerializer(obj.metadata).data
-            return None
+    def get_metadata(self, obj):
+        if hasattr(obj, "metadata"):
+            from apps.metadata.serializers import MetadataSerializer
+            return MetadataSerializer(obj.metadata).data
+        return None
 
-        def get_views_delta_pct(self, obj):
-            return 12
+    def get_views_delta_pct(self, obj):
+        return 12
 
-        def get_downloads_delta_pct(self, obj):
-            return 8
+    def get_downloads_delta_pct(self, obj):
+        return 8
 
-        def get_views_series(self, obj):
-            return [
-                { "date": "07/27", "value": 118 }, { "date": "07/29", "value": 160 },
-                { "date": "07/31", "value": 170 }, { "date": "08/02", "value": 140 },
-                { "date": "08/03", "value": 150 }, { "date": "08/05", "value": 110 },
-                { "date": "08/06", "value": 195 }, { "date": "08/08", "value": 145 },
-                { "date": "08/09", "value": 205 }, { "date": "08/10", "value": 150 },
-                { "date": "08/11", "value": 130 }, { "date": "08/12", "value": 165 },
-                { "date": "08/13", "value": 150 }, { "date": "08/14", "value": 195 },
-                { "date": "08/15", "value": 105 }, { "date": "08/17", "value": 150 },
-                { "date": "08/18", "value": 165 }, { "date": "08/19", "value": 190 },
-                { "date": "08/20", "value": 155 }, { "date": "08/21", "value": 105 },
-            ]
+    def get_views_series(self, obj):
+        return [
+            { "date": "07/27", "value": 118 }, { "date": "07/29", "value": 160 },
+            { "date": "07/31", "value": 170 }, { "date": "08/02", "value": 140 },
+            { "date": "08/03", "value": 150 }, { "date": "08/05", "value": 110 },
+            { "date": "08/06", "value": 195 }, { "date": "08/08", "value": 145 },
+            { "date": "08/09", "value": 205 }, { "date": "08/10", "value": 150 },
+            { "date": "08/11", "value": 130 }, { "date": "08/12", "value": 165 },
+            { "date": "08/13", "value": 150 }, { "date": "08/14", "value": 195 },
+            { "date": "08/15", "value": 105 }, { "date": "08/17", "value": 150 },
+            { "date": "08/18", "value": 165 }, { "date": "08/19", "value": 190 },
+            { "date": "08/20", "value": 155 }, { "date": "08/21", "value": 105 },
+        ]
 
     def get_downloads_series(self, obj):
         return [

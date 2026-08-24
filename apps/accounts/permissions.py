@@ -47,7 +47,7 @@ class IsProfileComplete(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
         profile = getattr(request.user, "profile", None)
-        if not profile or not profile.profile_completed:
+        if not profile or not (profile.profile_completed or profile.is_profile_complete()):
             self.message = "Complete your profile before uploading datasets."
             return False
         return True

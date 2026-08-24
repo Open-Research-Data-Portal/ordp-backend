@@ -8,6 +8,7 @@ CSV_TYPES   = {"csv", "tsv"}
 JSON_TYPES  = {"json", "jsonl"}
 EXCEL_TYPES = {"xlsx", "xls", "excel"}
 PARQUET_TYPES = {"parquet"}
+SUPPORTED_TYPES = CSV_TYPES | JSON_TYPES | EXCEL_TYPES | PARQUET_TYPES
 
 # Pillow recognises all common raster formats plus HEIC/HEIF when
 # pillow-heif is installed.  We keep a broad set here so that any
@@ -16,6 +17,7 @@ IMAGE_TYPES = {
     "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif",
     "heic", "heif", "avif",
 }
+SUPPORTED_TYPES |= IMAGE_TYPES
 
 # Internal file that only exists inside genuine Excel workbooks (xlsx is a ZIP container)
 XLSX_MARKER = "xl/workbook.xml"
@@ -60,7 +62,26 @@ def _is_valid_image(file_path):
             img.verify()
         return True
     except (UnidentifiedImageError, Exception):
+        return _has_image_signature(file_path)
+
+
+def _has_image_signature(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            header = f.read(16)
+    except OSError:
         return False
+
+    return (
+        header.startswith(b"\x89PNG\r\n\x1a\n")
+        or header.startswith(b"\xff\xd8\xff")
+        or header.startswith(b"GIF87a")
+        or header.startswith(b"GIF89a")
+        or header.startswith(b"BM")
+        or (header.startswith(b"RIFF") and header[8:12] == b"WEBP")
+        or header.startswith(b"II*\x00")
+        or header.startswith(b"MM\x00*")
+    )
 
 
 def validate_file_matches_declared_type(file_path, declared_file_type):
@@ -68,6 +89,11 @@ def validate_file_matches_declared_type(file_path, declared_file_type):
     declared type.  Not a full-format validator — just enough to catch
     classic mismatches like 'said CSV, uploaded a JPEG'."""
     declared = declared_file_type.lower().strip()
+
+    if declared not in SUPPORTED_TYPES:
+        raise FileTypeMismatchError(
+            f"'{declared}' is not a supported file type."
+        )
 
     # --- Images ---
     if declared in IMAGE_TYPES:

@@ -83,6 +83,12 @@ class ResearchCategory(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 class UserProfile(models.Model):
+    class Role(models.TextChoices):
+        PUBLIC = "public", "Public"
+        RESEARCHER = "researcher", "Researcher"
+        CHECKER = "checker", "Checker/Reviewer"
+        ADMIN = "admin", "Admin"
+
     ACADEMIA_CHOICES = [
         ("student", "Student"),
         ("researcher", "Researcher"),
@@ -145,6 +151,12 @@ class UserProfile(models.Model):
         upload_to="profile_pictures/",
         blank=True,
         null=True,
+    )
+
+    role = models.CharField(
+        max_length=20,
+        choices=Role.choices,
+        default=Role.PUBLIC,
     )
 
     # Academic & Professional Information
@@ -319,7 +331,6 @@ class UserProfile(models.Model):
             and bool(self.affiliation)
             and bool(self.department_id)
             and bool(self.academia)
-            and self.research_interests.exists()
             and bool(self.profile_visibility)
             and self.terms_accepted
         )

@@ -152,8 +152,6 @@ def accept_terms_and_submit(request, dataset_id):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def my_datasets(request):
     from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering
 
@@ -203,7 +201,6 @@ def my_datasets(request):
         apply_ordering(qs, order_by) if order_by else qs.order_by("-created_at"),
         many=True
     ).data)
-    )
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
