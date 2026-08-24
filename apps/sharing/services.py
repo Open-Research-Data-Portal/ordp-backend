@@ -18,6 +18,8 @@ def user_can_freely_download(user, dataset):
     is_researcher = bool(profile and profile.has_role("researcher", "admin"))
     if dataset.is_owned_by(user):
         return True
+    if dataset.visibility in (Dataset.Visibility.PUBLIC, Dataset.Visibility.INSTITUTIONAL):
+        return True
     if is_researcher and Contributor.objects.filter(dataset=dataset, user=user).exists():
         return True
     return False

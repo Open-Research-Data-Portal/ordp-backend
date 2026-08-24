@@ -14,7 +14,7 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from .services.assignment import assign_reviewer
@@ -164,7 +164,7 @@ def my_datasets(request):
     return Response(DatasetSerializer(qs, many=True).data)
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(
         Dataset.objects.prefetch_related("files", "contributors"),

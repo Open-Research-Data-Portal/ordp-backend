@@ -44,6 +44,9 @@ class Metadata(models.Model):
     subject = models.ForeignKey(Subject, on_delete=models.PROTECT)
     keywords = models.ManyToManyField(Keyword, blank=True, related_name="metadata_set")
     sponsor_or_grant = models.CharField(max_length=255, blank=True)
+    coverage = models.TextField(blank=True)
+    doi_citation = models.CharField(max_length=255, blank=True)
+    collaborators_text = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
