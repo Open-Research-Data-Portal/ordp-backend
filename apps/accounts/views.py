@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.conf import settings
@@ -117,12 +119,17 @@ class LoginView(APIView):
         security.reset()
         log_activity(user=user, action="login_success", target_object=str(user.id), ip_address=ip)
 
+        stay_logged_in = serializer.validated_data.get("stay_logged_in", False)
         refresh = RefreshToken.for_user(user)
+
+        if stay_logged_in:
+            refresh.set_exp(lifetime=timedelta(days=30))
 
         return Response({
             "access": str(refresh.access_token),
             "refresh": str(refresh),
             "user": {"id": user.id, "email": user.email},
+            "stay_logged_in": stay_logged_in,
         }, status=status.HTTP_200_OK)
 
 
