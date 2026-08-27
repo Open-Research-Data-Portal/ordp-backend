@@ -7,6 +7,8 @@ from .models import UserRole
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from django.utils import timezone
+from apps.metadata.models import Category
+
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     password = serializers.CharField(write_only=True)
@@ -30,13 +32,20 @@ class ProfileSerializer(serializers.ModelSerializer):
 
 
 class ExtendedProfileSerializer(serializers.ModelSerializer):
+
+    interests = serializers.PrimaryKeyRelatedField(
+    many=True,
+    queryset=Category.objects.filter(
+        status=Category.Status.APPROVED
+    ),
+    required=False,
+)
+
     class Meta:
         model = UserProfile
-
         fields = [
             "full_name",
             "profile_picture",
-
             "affiliation",
             "college",
             "center_of_excellence",
@@ -46,14 +55,22 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
             "academic_rank",
             "highest_degree",
             "orcid_id",
-
-            "research_interests",
+            "interests",
             "bio",
             "additional_link",
-
             "profile_visibility",
             "terms_accepted",
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        data["interests"] = CategorySerializer(
+    instance.interests.all(),
+    many=True
+).data
+
+        return data
 
     def save(self, **kwargs):
         instance = super().save(**kwargs)
@@ -62,8 +79,6 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
             instance.terms_accepted_at = timezone.now()
             instance.save(update_fields=["terms_accepted_at"])
 
-        # Automatically grant the researcher role
-        # when all required profile fields are completed.
         if instance.is_profile_complete():
             if not instance.profile_completed:
                 instance.profile_completed = True
@@ -122,3 +137,13 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
         validate_password(data["new_password"])
         return data
+
+
+
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ["id", "name", "description"]
+
+
+

@@ -406,7 +406,7 @@ def toggle_watch(request, dataset_id):
 def content_update_comparison(request, update_id):
     update = get_object_or_404(PendingContentUpdate.objects.select_related("dataset", "submitted_by"), id=update_id)
     profile = getattr(request.user, "profile", None)
-    is_reviewer = bool(profile and profile.has_role("checker", "admin"))
+    is_reviewer = bool(profile and profile.has_role("reviewer", "admin"))
     if not (update.dataset.is_owned_by(request.user) or is_reviewer):
         return Response({"detail": "You don't have permission to view this."}, status=403)
 

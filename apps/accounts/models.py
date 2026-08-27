@@ -70,23 +70,13 @@ class Department(models.Model):
 
     def __str__(self):
         return self.name
-class ResearchCategory(models.Model):
-    class Status(models.TextChoices):
-        APPROVED = "approved"
-        PENDING = "pending"
-        REJECTED = "rejected"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=128, unique=True)
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.APPROVED)
-    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
-    created_at = models.DateTimeField(auto_now_add=True)
 
 class UserProfile(models.Model):
     class Role(models.TextChoices):
         PUBLIC = "public", "Public"
         RESEARCHER = "researcher", "Researcher"
-        CHECKER = "checker", "Checker/Reviewer"
+        REVIEWER = "reviewer", "Reviewer"
         ADMIN = "admin", "Admin"
 
     ACADEMIA_CHOICES = [
@@ -239,12 +229,7 @@ class UserProfile(models.Model):
         on_delete=models.SET_NULL,
         related_name="sponsored_users",
     )
-        # Research Profile
-    research_interests = models.ManyToManyField(
-            ResearchCategory,
-            blank=True,
-            related_name="interested_users",
-        )
+    
 
     bio = models.CharField(
             max_length=300,
@@ -269,15 +254,15 @@ class UserProfile(models.Model):
             blank=True,
         )
 
-    expertise = models.ManyToManyField(
-            "metadata.Category",
-            blank=True,
-            related_name="reviewers",
-        )
+    interests = models.ManyToManyField(
+    "metadata.Category",
+    blank=True,
+    related_name="users_with_interests",
+)
 
     email_verified = models.BooleanField(default=False)
 
-    research_interests_completed = models.BooleanField(default=False)
+    interests_completed = models.BooleanField(default=False)
 
         # --------------------------------------------------
         # ROLE CHECKING
@@ -339,7 +324,7 @@ class UserRole(models.Model):
     class RoleChoice(models.TextChoices):
         PUBLIC = "public"
         RESEARCHER = "researcher"
-        CHECKER = "checker"
+        REVIEWER = "reviewer"
         ADMIN = "admin"
 
     profile = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name="roles")

@@ -30,8 +30,8 @@ class IsAdminOnly(HasRole):
     allowed_roles = ["admin"]
 
 
-class IsCheckerOrAdmin(HasRole):
-    allowed_roles = ["checker", "admin"]
+class IsReviewerOrAdmin(HasRole):
+    allowed_roles = ["reviewer", "admin"]
 
 
 class IsResearcherOnly(HasRole):

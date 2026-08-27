@@ -22,27 +22,36 @@ from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from django.utils import timezone
 from .models import LoginSecurity, UserProfile, ActivityLog, EmailVerificationToken,PasswordResetToken
-from .serializers import (
-    LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,
-    PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
-)
+from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
+
 
 User = get_user_model()
 
-
-@api_view(["POST"]) 
-@permission_classes([IsAuthenticated]) 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def add_other_interest(request):
     from apps.metadata.services import get_or_create_pending_category
+
     name = (request.data.get("name") or "").strip()
+
     if not name:
-        return Response({"detail": "name is required."}, status=400)
+        return Response(
+            {"detail": "name is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     category = get_or_create_pending_category(name, request.user)
-    request.user.profile.expertise.add(category)
-    return Response({
-        "status": "added", "category_id": category.id,
-        "pending_review": category.status == category.Status.PENDING,
-    }, status=201)
+
+    request.user.profile.interests.add(category)
+
+    return Response(
+        {
+            "status": "added",
+            "category_id": category.id,
+            "pending_review": category.status == category.Status.PENDING,
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 def log_activity(user, action, target_object, ip_address, extra=None):
     ActivityLog.objects.create(
@@ -212,7 +221,7 @@ class CustomTokenRefreshView(TokenRefreshView):
                 token = RefreshTokenObj(refresh_str)
                 user_id = token.get("user_id")
             except TokenError:
-                pass  # invalid token — let the real view below handle the actual error response
+                pass 
 
         response = super().post(request, *args, **kwargs)
 
@@ -244,7 +253,8 @@ class RegisterView(APIView):
                 password=data["password"],
                 is_active=False,
             )
-            UserProfile.objects.create(user=user, full_name=data["full_name"])
+            user.profile.full_name = data["full_name"]
+            user.profile.save(update_fields=["full_name"])
 
         
         verification = EmailVerificationToken.objects.create(
@@ -310,12 +320,34 @@ class VerifyEmailView(APIView):
 
         verification.is_used = True
         verification.save(update_fields=["is_used"])
+
         user = verification.user
         user.is_active = True
         user.save(update_fields=["is_active"])
-        log_activity(user=user, action="email_verified", target_object=str(user.id), ip_address=ip)
 
-        return Response({"detail": "Email verified. You can now log in."}, status=status.HTTP_200_OK)
+        log_activity(
+            user=user,
+            action="email_verified",
+            target_object=str(user.id),
+            ip_address=ip,
+        )
+
+        # Automatically log the user in after successful email verification
+        refresh = RefreshToken.for_user(user)
+
+        return Response(
+            {
+                "detail": "Email verified successfully.",
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                },
+                "stay_logged_in": False,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class PasswordResetRequestView(APIView):
@@ -410,21 +442,6 @@ class PasswordResetConfirmView(APIView):
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def add_other_interest(request):
-    from apps.metadata.services import get_or_create_pending_category
-    name = (request.data.get("name") or "").strip()
-    if not name:
-        return Response({"detail": "name is required."}, status=400)
-    category = get_or_create_pending_category(name, request.user)
-    request.user.profile.expertise.add(category)
-    return Response({
-        "status": "added", "category_id": category.id,
-        "pending_review": category.status == category.Status.PENDING,
-    }, status=201)
-
 
 
 @api_view(["GET"])

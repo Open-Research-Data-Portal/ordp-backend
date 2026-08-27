@@ -6,37 +6,54 @@ from rest_framework import status
 from .factories import make_user
 from apps.accounts.models import UserProfile, Department, College
 from .models import Dataset
-from apps.accounts.models import UserProfile, Department
+
 User = get_user_model()
 
 
-def make_researcher(username, email, completed=True):
-    user = User.objects.create_user(username=username, email=email, password="pw12345!")
-    department = None
-    if completed:
-        college, _ = College.objects.get_or_create(name="Test College")
-        department, _ = Department.objects.get_or_create(name="Computer Science", college=college)
-    profile = UserProfile.objects.create(
-        user=user, full_name=username.title(), role="researcher",
-        academia="researcher" if completed else "",
-        department=department,
-        terms_accepted=completed,
+def make_researcher(username, email):
+    user = User.objects.create_user(
+        username=username,
+        email=email,
+        password="pw12345!"
     )
+
+    college = College.objects.create(
+        name=f"{username} College"
+    )
+
+    department = Department.objects.create(
+        name=f"{username} Department",
+        college=college,
+    )
+
+    profile = user.profile
+
+    profile.full_name = username.title()
+    profile.role = UserProfile.Role.RESEARCHER
+    profile.academia = "researcher"
+    profile.department = department
+    profile.terms_accepted = True
+    profile.save()
+
     return user, profile
 
 
 class InitUploadTests(APITestCase):
-    def test_public_role_cannot_upload(self):
-        user = User.objects.create_user(username="pubuser", email="pub@aastu.edu.et", password="pw12345!")
-        college, _ = College.objects.get_or_create(name="Test College")
-        department, _ = Department.objects.get_or_create(name="Computer Science", college=college)
-        UserProfile.objects.create(
-            user=user, full_name="Pub User", role="public",
-            academia="student", department=department, terms_accepted=True,
-        )
-        self.client.force_authenticate(user)
-        resp = self.client.post("/api/datasets/upload/init/", {"title": "Test Dataset"})
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+  def test_public_role_cannot_upload(self):
+    user = User.objects.create_user(
+        username="pubuser",
+        email="pub@aastu.edu.et",
+        password="pw12345!",
+    )
+
+    self.client.force_authenticate(user)
+
+    resp = self.client.post(
+        "/api/datasets/upload/init/",
+        {"title": "Test Dataset"},
+    )
+
+    self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_complete_researcher_can_init_upload(self):
         user, _ = make_researcher("completeuser", "complete@aastu.edu.et")

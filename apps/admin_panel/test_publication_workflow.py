@@ -20,7 +20,7 @@ def make_submittable_dataset(owner, title="Workflow DS"):
 class ModerationDecisionTests(APITestCase):
     def test_approve_sets_published_status(self):
         owner = make_user("pwowner", "pwowner@aastu.edu.et")
-        checker = make_user("pwchecker", "pwchecker@aastu.edu.et", role="checker")
+        checker = make_user("pwchecker", "pwchecker@aastu.edu.et", role="reviewer")
         dataset = make_submittable_dataset(owner)
         dataset.status = Dataset.Status.PENDING
         dataset.save(update_fields=["status"])
@@ -34,7 +34,7 @@ class ModerationDecisionTests(APITestCase):
 
     def test_changes_requested_sets_status_and_requires_reason(self):
         owner = make_user("cwowner", "cwowner@aastu.edu.et")
-        checker = make_user("cwchecker", "cwchecker@aastu.edu.et", role="checker")
+        checker = make_user("cwchecker", "cwchecker@aastu.edu.et", role="reviewer")
         dataset = make_submittable_dataset(owner)
         dataset.status = Dataset.Status.PENDING
         dataset.save(update_fields=["status"])
@@ -51,7 +51,7 @@ class ModerationDecisionTests(APITestCase):
 
     def test_reject_still_requires_reason(self):
         owner = make_user("rwowner", "rwowner@aastu.edu.et")
-        checker = make_user("rwchecker", "rwchecker@aastu.edu.et", role="checker")
+        checker = make_user("rwchecker", "rwchecker@aastu.edu.et", role="reviewer")
         dataset = make_submittable_dataset(owner)
         dataset.status = Dataset.Status.PENDING
         dataset.save(update_fields=["status"])
@@ -62,7 +62,7 @@ class ModerationDecisionTests(APITestCase):
 
     def test_invalid_decision_rejected(self):
         owner = make_user("iwowner", "iwowner@aastu.edu.et")
-        checker = make_user("iwchecker", "iwchecker@aastu.edu.et", role="checker")
+        checker = make_user("iwchecker", "iwchecker@aastu.edu.et", role="reviewer")
         dataset = make_submittable_dataset(owner)
         dataset.status = Dataset.Status.PENDING
         dataset.save(update_fields=["status"])
@@ -75,7 +75,7 @@ class ModerationDecisionTests(APITestCase):
 class ResubmissionAfterChangesRequestedTests(APITestCase):
     def test_owner_can_resubmit_after_changes_requested(self):
         owner = make_user("resowner", "resowner@aastu.edu.et", role="researcher")
-        checker = make_user("reschecker", "reschecker@aastu.edu.et", role="checker")
+        checker = make_user("reschecker", "reschecker@aastu.edu.et", role="reviewer")
         dataset = make_submittable_dataset(owner)
         dataset.status = Dataset.Status.PENDING
         dataset.save(update_fields=["status"])

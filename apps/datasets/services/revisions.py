@@ -78,7 +78,7 @@ def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage
             proposed_metadata=proposed_metadata, diff_percentage=diff_percentage,
             change_summary=change_summary,
         )
-        for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+        for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
             notify(
                 user=reviewer, notification_type=Notification.NotificationType.CONTENT_UPDATE_PENDING,
                 message=f'A significant content change to "{dataset.title}" awaits review.', dataset=dataset,
@@ -99,7 +99,7 @@ def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage
 
 def request_revision_permission(dataset, requester, reason):
     request = RevisionRequest.objects.create(dataset=dataset, requester=requester, reason=reason)
-    for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
         notify(
             user=reviewer, notification_type=Notification.NotificationType.CONTENT_UPDATE_PENDING,
             message=f'{requester.profile.full_name} is requesting permission to propose changes to "{dataset.title}".',
@@ -112,7 +112,7 @@ def resolve_revision_request_votes(request: RevisionRequest):
     if request.status != RevisionRequest.Status.PENDING:
         return {"status": request.status}
 
-    total_reviewers = User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct().count()
+    total_reviewers = User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct().count()
     quorum = min(MIN_REVIEWER_QUORUM, total_reviewers) or 1
     approve_votes = request.votes.filter(vote="approve").count()
     reject_votes = request.votes.filter(vote="reject").count()
@@ -173,7 +173,7 @@ def resolve_content_update_votes(update: PendingContentUpdate):
     if update.status != PendingContentUpdate.Status.PENDING:
         return {"status": update.status}
 
-    total_reviewers = User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct().count()
+    total_reviewers = User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct().count()
     quorum = min(MIN_REVIEWER_QUORUM, total_reviewers) or 1
     approve_votes = update.votes.filter(vote="approve").count()
     reject_votes = update.votes.filter(vote="reject").count()

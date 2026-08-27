@@ -19,9 +19,14 @@ def attach_metadata(request, dataset_id):
     if not category_id and not other_category:
         return Response({"detail": "category_id or other_category is required."}, status=400)
     category = (
-        get_object_or_404(Category, id=category_id) if category_id
-        else get_or_create_pending_category(other_category, request.user)
+    get_object_or_404(
+        Category,
+        id=category_id,
+        status=Category.Status.APPROVED,
     )
+    if category_id
+    else get_or_create_pending_category(other_category, request.user)
+)
 
     serializer = MetadataSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)

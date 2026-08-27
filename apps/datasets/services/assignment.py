@@ -27,12 +27,15 @@ def assign_reviewer(dataset):
         min_load = min(c.pending_count for c in candidates)
         return random.choice([c for c in candidates if c.pending_count == min_load])
 
-    reviewer_roles = [UserRole.RoleChoice.CHECKER, UserRole.RoleChoice.ADMIN]
+    reviewer_roles = [
+    UserRole.RoleChoice.REVIEWER,
+    UserRole.RoleChoice.ADMIN,
+]
     base = UserProfile.objects.filter(roles__role__in=reviewer_roles)
 
     chosen_profile = None
     if category is not None:
-        chosen_profile = least_loaded(base.filter(expertise=category))
+        chosen_profile = least_loaded(base.filter(interests=category))
 
     if chosen_profile is None:
         chosen_profile = least_loaded(base)

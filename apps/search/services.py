@@ -188,7 +188,7 @@ def _serialize_feed_item(dataset, file_stats):
 
 def build_discovery_feed(user, limit=20):
     profile = getattr(user, "profile", None)
-    interest_category_ids = list(profile.expertise.values_list("id", flat=True)) if profile else []
+    interest_category_ids = list(profile.interests.values_list("id", flat=True)) if profile else []
 
     visible = visible_datasets_queryset().exclude(owner=user)
     trending = visible.annotate(popularity=F("view_count") + F("download_count")).order_by("-popularity", "-created_at")

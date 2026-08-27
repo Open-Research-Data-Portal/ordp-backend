@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.accounts.models import ActivityLog
-from apps.accounts.permissions import IsCheckerOrAdmin
+from apps.accounts.permissions import IsReviewerOrAdmin
 from apps.datasets.models import Dataset, Contributor, DatasetInvitation
 from apps.datasets.permissions import IsDatasetOwner
 from apps.datasets.services.storage import presigned_download_url
@@ -28,7 +28,7 @@ User = get_user_model()
 def download_dataset(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     profile = getattr(request.user, "profile", None)
-    is_reviewer = profile.has_role("checker", "admin")
+    is_reviewer = profile.has_role("reviewer", "admin")
     is_free_access = user_can_freely_download(request.user, dataset)
     reviewer_bypass = is_reviewer and dataset.visibility != Dataset.Visibility.RESTRICTED
     permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=request.user).first()
@@ -94,7 +94,7 @@ def request_share_access(request, dataset_id):
         requested_duration_days=serializer.validated_data.get("requested_duration_days"),
     )
 
-    for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
         notify(
             user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
             message=f'{request.user.profile.full_name} requested sharing access to "{dataset.title}".',
@@ -165,7 +165,7 @@ def share_with_user(request, dataset_id):
         requested_duration_days=serializer.validated_data.get("requested_duration_days"),
     )
 
-    for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
         notify(
             user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
             message=f'{request.user.profile.full_name} requested sharing "{dataset.title}" with {recipient.profile.full_name}.',
@@ -180,7 +180,7 @@ def share_with_user(request, dataset_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def access_request_queue(request):
     qs = DatasetAccessRequest.objects.filter(status=DatasetAccessRequest.Status.PENDING).select_related(
         "dataset", "requester__profile", "restricted_justification"
@@ -189,7 +189,7 @@ def access_request_queue(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def vote_on_access_request(request, request_id):
     access_request = get_object_or_404(DatasetAccessRequest, id=request_id)
     if access_request.status != DatasetAccessRequest.Status.PENDING:

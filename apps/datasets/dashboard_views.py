@@ -70,7 +70,7 @@ def feed(request):
     all visibility tiers, since restricted/institutional datasets can still be
     requested; the feed shows what exists, access control happens at request time."""
     profile = request.user.profile
-    interest_category_ids = list(profile.expertise.values_list("id", flat=True))
+    interest_category_ids = list(profile.interests.values_list("id", flat=True))
     my_ids = _my_dataset_ids(request.user)
 
     qs = Dataset.objects.filter(

@@ -13,7 +13,7 @@ def make_dataset(owner, title="Test DS"):
 class RequestDeletionTests(APITestCase):
     def test_checker_can_request_deletion(self):
         owner = make_user("delowner", "delowner@aastu.edu.et")
-        checker = make_user("delchecker", "delchecker@aastu.edu.et", role="checker")
+        checker = make_user("delchecker", "delchecker@aastu.edu.et", role="reviewer")
         dataset = make_dataset(owner)
 
         self.client.force_authenticate(checker)
@@ -23,7 +23,7 @@ class RequestDeletionTests(APITestCase):
 
     def test_reason_required(self):
         owner = make_user("delowner2", "delowner2@aastu.edu.et")
-        checker = make_user("delchecker2", "delchecker2@aastu.edu.et", role="checker")
+        checker = make_user("delchecker2", "delchecker2@aastu.edu.et", role="reviewer")
         dataset = make_dataset(owner)
 
         self.client.force_authenticate(checker)
@@ -44,9 +44,9 @@ class DeletionVotingTests(APITestCase):
     def setUp(self):
         self.owner = make_user("dvowner", "dvowner@aastu.edu.et")
         self.dataset = make_dataset(self.owner, "Deletion Vote DS")
-        self.requester = make_user("dvrequester", "dvrequester@aastu.edu.et", role="checker")
+        self.requester = make_user("dvrequester", "dvrequester@aastu.edu.et", role="reviewer")
         self.reviewers = [
-            make_user(f"dvreviewer{i}", f"dvreviewer{i}@aastu.edu.et", role="checker") for i in range(3)
+            make_user(f"dvreviewer{i}", f"dvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)
         ]
         self.admin = make_user("dvadmin", "dvadmin@aastu.edu.et", role="admin")
 
@@ -88,7 +88,7 @@ class DeletionVotingTests(APITestCase):
         for reviewer in self.reviewers:
             self.client.force_authenticate(reviewer)
             self.client.post(f"/api/admin-panel/deletion-requests/{self.request_id}/vote/", {"vote": "approve"})
-        late_reviewer = make_user("dvlate", "dvlate@aastu.edu.et", role="checker")
+        late_reviewer = make_user("dvlate", "dvlate@aastu.edu.et", role="reviewer")
         self.client.force_authenticate(late_reviewer)
         resp = self.client.post(f"/api/admin-panel/deletion-requests/{self.request_id}/vote/", {"vote": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -97,8 +97,8 @@ class ExecuteDeletionTests(APITestCase):
     def _approved_request(self):
         owner = make_user("exowner", "exowner@aastu.edu.et")
         dataset = make_dataset(owner, "Execute DS")
-        requester = make_user("exrequester", "exrequester@aastu.edu.et", role="checker")
-        reviewers = [make_user(f"exreviewer{i}", f"exreviewer{i}@aastu.edu.et", role="checker") for i in range(3)]
+        requester = make_user("exrequester", "exrequester@aastu.edu.et", role="reviewer")
+        reviewers = [make_user(f"exreviewer{i}", f"exreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)]
 
         self.client.force_authenticate(requester)
         resp = self.client.post(f"/api/admin-panel/datasets/{dataset.id}/request-deletion/", {"reason": "test"})
@@ -119,7 +119,7 @@ class ExecuteDeletionTests(APITestCase):
 
     def test_checker_cannot_execute(self):
         dataset, request_id = self._approved_request()
-        checker = make_user("exchecker2", "exchecker2@aastu.edu.et", role="checker")
+        checker = make_user("exchecker2", "exchecker2@aastu.edu.et", role="reviewer")
 
         self.client.force_authenticate(checker)
         resp = self.client.post(f"/api/admin-panel/deletion-requests/{request_id}/execute/")
@@ -128,7 +128,7 @@ class ExecuteDeletionTests(APITestCase):
     def test_cannot_execute_pending_request(self):
         owner = make_user("exowner2", "exowner2@aastu.edu.et")
         dataset = make_dataset(owner, "Still Pending DS")
-        requester = make_user("exrequester2", "exrequester2@aastu.edu.et", role="checker")
+        requester = make_user("exrequester2", "exrequester2@aastu.edu.et", role="reviewer")
         admin = make_user("exadmin2", "exadmin2@aastu.edu.et", role="admin")
 
         self.client.force_authenticate(requester)
