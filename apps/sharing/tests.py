@@ -1,7 +1,8 @@
 from rest_framework.test import APITestCase
 from rest_framework import status
 
-from apps.datasets.factories import make_user
+from apps.accounts.models import UserProfile
+from apps.datasets.factories import make_user, make_college_and_department
 from apps.datasets.models import Dataset, Contributor, PendingContentUpdate, PendingContentUpdateVote
 from apps.datasets.services.revisions import resolve_content_update_votes, route_change
 from apps.notifications.models import Notification
@@ -37,14 +38,49 @@ class FreeDownloadTests(APITestCase):
         resp = self.client.get(f"/api/sharing/{dataset.id}/download/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
-    def test_researcher_contributor_downloads_own_restricted_dataset_freely(self):
-        owner = make_user("fdowner2", "fdowner2@aastu.edu.et")
-        contributor = make_user("fdcontrib", "fdcontrib@aastu.edu.et")
+    def test_contributor_downloads_own_restricted_dataset_freely(self):
+        owner = make_user(
+            "fdowner2",
+            "fdowner2@aastu.edu.et",
+        )
+
+        contributor = make_user(
+            "contributor",
+            "contributor@aastu.edu.et",
+            role="public",
+        )
+
+        # Contributor must have a completed profile and upload permission.
+        college, department = make_college_and_department(
+            "Contributor College",
+            "Contributor Department",
+        )
+
+        profile = contributor.profile
+        profile.full_name = "Contributor"
+        profile.affiliation = "AASTU"
+        profile.academia = UserProfile.Academia.RESEARCHER
+        profile.department = department
+        profile.profile_visibility = "public"
+        profile.terms_accepted = True
+        profile.can_upload_datasets = True
+        profile.save()
+
         dataset = make_dataset_with_version(owner)
-        Contributor.objects.create(dataset=dataset, user=contributor, name="C", contributor_type="contributor")
+
+        Contributor.objects.create(
+            dataset=dataset,
+            user=contributor,
+            name="Contributor",
+            contributor_type="contributor",
+        )
 
         self.client.force_authenticate(contributor)
-        resp = self.client.get(f"/api/sharing/{dataset.id}/download/")
+
+        resp = self.client.get(
+            f"/api/sharing/{dataset.id}/download/"
+        )
+
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_public_role_contributor_cannot_download_freely(self):

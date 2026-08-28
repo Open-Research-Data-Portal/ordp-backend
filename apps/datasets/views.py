@@ -5,7 +5,7 @@ from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
 from .models import Bookmark, Contributor, DatasetWatcher
 from django.shortcuts import get_object_or_404
-from apps.accounts.permissions import IsProfileComplete, IsResearcherOnly
+from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .services.diffing import compute_diff
@@ -21,7 +21,7 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from .services.assignment import assign_reviewer
 
-from apps.accounts.permissions import IsResearcherOrAdmin
+
 from apps.accounts.views import log_activity, get_client_ip
 from .services.storage import (
     presigned_download_url,
@@ -40,7 +40,7 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 
 
 @api_view(["POST"])
-@permission_classes([IsResearcherOnly, IsProfileComplete])
+@permission_classes([CanUploadDatasets])
 def init_upload(request):
     """Step 1: create the Dataset shell (status=draft), open a chunked-upload session.
     The uploader IS the author/owner via dataset.owner — no separate Contributor row needed."""
@@ -60,7 +60,7 @@ def init_upload(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly, IsProfileComplete])
+@permission_classes([CanUploadDatasets])
 @parser_classes([MultiPartParser])
 def upload_chunk(request, upload_session_id):
     """Step 2: upload one chunk. Rejects early (413) once the running total exceeds
@@ -99,7 +99,7 @@ def upload_thumbnail(request, dataset_id):
     return Response({"status": "thumbnail uploaded"}, status=200)
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly, IsProfileComplete])
+@permission_classes([CanUploadDatasets])
 def complete_upload(request, upload_session_id):
     """Step 3: assemble chunks, verify size + declared-type match, checksum,
     push to backblaze, create DatasetFile."""
@@ -126,7 +126,7 @@ def complete_upload(request, upload_session_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly, IsProfileComplete])
+@permission_classes([CanUploadDatasets])
 def accept_terms_and_submit(request, dataset_id):
     """Step 4 (final step): accept dataset-level T&Cs, move draft/changes_requested -> pending.
     Also serves as the resubmit action after a reviewer requests changes."""
@@ -344,7 +344,7 @@ def request_revision_permission(request, dataset_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
 def propose_revision(request, dataset_id):
     """Phase 2: actually submitting the change, only allowed once Phase 1
     (RevisionRequest) has been approved for this user+dataset, and the

@@ -73,58 +73,49 @@ class Department(models.Model):
 
 
 class UserProfile(models.Model):
-    class Role(models.TextChoices):
-        PUBLIC = "public", "Public"
+    class Academia(models.TextChoices):
+        STUDENT = "student", "Student"
         RESEARCHER = "researcher", "Researcher"
-        REVIEWER = "reviewer", "Reviewer"
-        ADMIN = "admin", "Admin"
+        LECTURER = "lecturer", "Lecturer"
+        PROFESSOR = "professor", "Professor"
+        ASSISTANT_LECTURER = "assistant_lecturer", "Assistant Lecturer"
+        DATA_SCIENTIST = "data_scientist", "Data Scientist"
+        SOFTWARE_ENGINEER = "software_engineer", "Software Engineer"
+        GOVERNMENT_OFFICER = "government_officer", "Government Officer"
+        INDUSTRY_PROFESSIONAL = "industry_professional", "Industry Professional"
+        OTHER = "other", "Other"
 
-    ACADEMIA_CHOICES = [
-        ("student", "Student"),
-        ("researcher", "Researcher"),
-        ("lecturer", "Lecturer"),
-        ("professor", "Professor"),
-        ("assistant_lecturer", "Assistant Lecturer"),
-        ("data_scientist", "Data Scientist"),
-        ("software_engineer", "Software Engineer"),
-        ("government_officer", "Government Officer"),
-        ("industry_professional", "Industry Professional"),
-        ("other", "Other"),
-    ]
 
-    ACADEMIC_TITLE_CHOICES = [
-        ("none", "None"),
-        ("mr", "Mr."),
-        ("ms", "Ms."),
-        ("mrs", "Mrs."),
-        ("eng", "Eng."),
-        ("dr", "Dr."),
-        ("prof", "Prof."),
-    ]
+    class AcademicTitle(models.TextChoices):
+        NONE = "none", "None"
+        MR = "mr", "Mr."
+        MS = "ms", "Ms."
+        MRS = "mrs", "Mrs."
+        ENG = "eng", "Eng."
+        DR = "dr", "Dr."
+        PROF = "prof", "Prof."
 
-    ACADEMIC_RANK_CHOICES = [
-        ("none", "None"),
-        ("graduate_assistant", "Graduate Assistant"),
-        ("assistant_lecturer", "Assistant Lecturer"),
-        ("lecturer", "Lecturer"),
-        ("assistant_professor", "Assistant Professor"),
-        ("associate_professor", "Associate Professor"),
-        ("professor", "Professor"),
-    ]
 
-    DEGREE_CHOICES = [
-        ("high_school", "High School Diploma"),
-        ("diploma", "Diploma"),
-        ("bachelor", "Bachelor's Degree"),
-        ("master", "Master's Degree"),
-        ("phd", "PhD"),
-        ("postdoc", "Postdoctoral Fellowship"),
-        ("other", "Other"),
-    ]
+    class AcademicRank(models.TextChoices):
+        NONE = "none", "None"
+        GRADUATE_ASSISTANT = "graduate_assistant", "Graduate Assistant"
+        ASSISTANT_LECTURER = "assistant_lecturer", "Assistant Lecturer"
+        LECTURER = "lecturer", "Lecturer"
+        ASSISTANT_PROFESSOR = "assistant_professor", "Assistant Professor"
+        ASSOCIATE_PROFESSOR = "associate_professor", "Associate Professor"
+        PROFESSOR = "professor", "Professor"
 
+
+    class HighestDegree(models.TextChoices):
+        HIGH_SCHOOL = "high_school", "High School Diploma"
+        DIPLOMA = "diploma", "Diploma"
+        BACHELOR = "bachelor", "Bachelor's Degree"
+        MASTER = "master", "Master's Degree"
+        PHD = "phd", "PhD"
+        POSTDOC = "postdoc", "Postdoctoral Fellowship"
+        OTHER = "other", "Other"
     VISIBILITY_CHOICES = [
         ("public", "Everyone (Public)"),
-        ("trusted", "Trusted Parties"),
         ("private", "Only Me (Private)"),
     ]
 
@@ -143,11 +134,7 @@ class UserProfile(models.Model):
         null=True,
     )
 
-    role = models.CharField(
-        max_length=20,
-        choices=Role.choices,
-        default=Role.PUBLIC,
-    )
+    
 
     # Academic & Professional Information
 # Academic & Professional Information
@@ -180,30 +167,37 @@ class UserProfile(models.Model):
 
     academia = models.CharField(
         max_length=30,
-        choices=ACADEMIA_CHOICES,
+        choices=Academia.choices,
         blank=True,
     )
+    academia_other = models.CharField(
+    max_length=100,
+    blank=True,
+)
 
     academic_title = models.CharField(
         max_length=10,
-        choices=ACADEMIC_TITLE_CHOICES,
+        choices=AcademicTitle.choices,
         blank=True,
         default="none",
     )
 
     academic_rank = models.CharField(
         max_length=32,
-        choices=ACADEMIC_RANK_CHOICES,
+        choices=AcademicRank.choices,
         blank=True,
         default="none",
     )
 
     highest_degree = models.CharField(
         max_length=20,
-        choices=DEGREE_CHOICES,
+        choices=HighestDegree.choices,
         blank=True,
     )
-
+    highest_degree_other = models.CharField(
+    max_length=100,
+    blank=True,
+)
     orcid_id = models.CharField(
         max_length=19,
         blank=True,
@@ -213,10 +207,8 @@ class UserProfile(models.Model):
         max_length=255,
         blank=True,
     )
-
-    profile_completed = models.BooleanField(
-        default=False,
-    )
+    can_upload_datasets = models.BooleanField(default=False)
+    
 
     is_external = models.BooleanField(
         default=False,
@@ -323,7 +315,6 @@ class UserProfile(models.Model):
 class UserRole(models.Model):
     class RoleChoice(models.TextChoices):
         PUBLIC = "public"
-        RESEARCHER = "researcher"
         REVIEWER = "reviewer"
         ADMIN = "admin"
 
