@@ -14,15 +14,25 @@ MIN_REVIEWER_QUORUM = 3
 
 
 def user_can_freely_download(user, dataset):
+    if not user or not user.is_authenticated:
+        return False
+
     profile = getattr(user, "profile", None)
-    is_researcher = bool(profile and profile.has_role("researcher", "admin"))
-    if dataset.is_owned_by(user):
+    if not profile:
+        return False
+
+    if not profile.is_profile_complete():
+        return False
+
+    # Dataset owner can freely download.
+    if dataset.owner_id == user.id:
         return True
-    if dataset.visibility in (Dataset.Visibility.PUBLIC, Dataset.Visibility.INSTITUTIONAL):
-        return True
-    if is_researcher and Contributor.objects.filter(dataset=dataset, user=user).exists():
-        return True
-    return False
+
+    # A contributor can freely download.
+    return Contributor.objects.filter(
+        dataset=dataset,
+        user=user,
+    ).exists()
 
 
 def user_can_access_dataset(user, dataset):

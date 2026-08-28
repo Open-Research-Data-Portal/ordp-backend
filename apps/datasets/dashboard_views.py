@@ -1,12 +1,10 @@
 from django.db.models import Q, Sum, F
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-
-from apps.accounts.permissions import IsResearcherOnly
 from apps.accounts.models import ActivityLog
 from .models import Dataset, Contributor, DatasetRevision
 from .serializers import DatasetSerializer
-
+from apps.accounts.permissions import CanUploadDatasets
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 
 
@@ -20,7 +18,7 @@ def _my_dataset_ids(user):
 
 
 @api_view(["GET"])
-@permission_classes([IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
 def dashboard_stats(request):
     """Top-level numbers: how many datasets they hold, how much attention those
     datasets have received, and — separately — how much downloading THEY have
@@ -49,7 +47,7 @@ def dashboard_stats(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
 def recent_activity(request):
     """Interactions made ON datasets this researcher owns or co-owns — someone
     else downloading their work, a revision proposed against it, etc."""
@@ -64,7 +62,7 @@ def recent_activity(request):
     } for log in logs])
 
 @api_view(["GET"])
-@permission_classes([IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
 def feed(request):
     """Recently approved datasets matching this researcher's declared interests —
     all visibility tiers, since restricted/institutional datasets can still be
@@ -85,7 +83,7 @@ def feed(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
 def my_contributions(request):
     """'Uploads' tab per your spec — datasets this researcher has MODIFIED that
     belong to someone else. Distinct from 'mine' (owned/co-owned) and distinct

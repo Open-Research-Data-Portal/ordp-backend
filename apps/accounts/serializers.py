@@ -22,13 +22,35 @@ User = get_user_model()
 
 
 class ProfileSerializer(serializers.ModelSerializer):
-    role = serializers.CharField(source="profile.role", read_only=True)
-    full_name = serializers.CharField(source="profile.full_name", read_only=True)
+    full_name = serializers.CharField(
+        source="profile.full_name",
+        read_only=True,
+    )
+    roles = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "email", "username", "first_name", "last_name", "full_name", "role"]
-        read_only_fields = ["id", "email", "username"]
+        fields = [
+            "id",
+            "email",
+            "username",
+            "first_name",
+            "last_name",
+            "full_name",
+            "roles",
+        ]
+        read_only_fields = [
+            "id",
+            "email",
+            "username",
+            "full_name",
+            "roles",
+        ]
+
+    def get_roles(self, obj):
+        return list(
+            obj.profile.roles.values_list("role", flat=True)
+        )
 
 
 class ExtendedProfileSerializer(serializers.ModelSerializer):
@@ -51,6 +73,8 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
             "center_of_excellence",
             "department",
             "academia",
+            "academia_other",
+            "highest_degree_other",
             "academic_title",
             "academic_rank",
             "highest_degree",
@@ -71,32 +95,88 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
 ).data
 
         return data
+    def validate(self, attrs):
+        academia = attrs.get(
+            "academia",
+            self.instance.academia if self.instance else "",
+        )
+        academia_other = attrs.get(
+            "academia_other",
+            self.instance.academia_other if self.instance else "",
+        )
 
+        highest_degree = attrs.get(
+            "highest_degree",
+            self.instance.highest_degree if self.instance else "",
+        )
+        highest_degree_other = attrs.get(
+            "highest_degree_other",
+            self.instance.highest_degree_other if self.instance else "",
+        )
+
+        if academia == UserProfile.Academia.OTHER:
+            if not academia_other.strip():
+                raise serializers.ValidationError({
+                    "academia_other": "Please specify your academia."
+                })
+        else:
+            attrs["academia_other"] = ""
+
+        if highest_degree == UserProfile.HighestDegree.OTHER:
+            if not highest_degree_other.strip():
+                raise serializers.ValidationError({
+                    "highest_degree_other": "Please specify your highest degree."
+                })
+        else:
+            attrs["highest_degree_other"] = ""
+
+        college = attrs.get(
+    "college",
+    self.instance.college if self.instance else None,
+)
+
+        center_of_excellence = attrs.get(
+            "center_of_excellence",
+            self.instance.center_of_excellence if self.instance else None,
+        )
+
+        department = attrs.get(
+            "department",
+            self.instance.department if self.instance else None,
+        )
+
+        if college and center_of_excellence:
+            raise serializers.ValidationError(
+                "Select either a College or a Center of Excellence, not both."
+            )
+
+        if department:
+            if college and department.college_id != college.id:
+                raise serializers.ValidationError({
+                    "department": (
+                        "Department does not belong to the selected College."
+                    )
+                })
+
+            if (
+                center_of_excellence
+                and department.center_of_excellence_id
+                != center_of_excellence.id
+            ):
+                raise serializers.ValidationError({
+                    "department": (
+                        "Department does not belong to the selected "
+                        "Center of Excellence."
+                    )
+                })
+
+        return attrs
     def save(self, **kwargs):
         instance = super().save(**kwargs)
 
         if instance.terms_accepted and not instance.terms_accepted_at:
             instance.terms_accepted_at = timezone.now()
             instance.save(update_fields=["terms_accepted_at"])
-
-        if instance.is_profile_complete():
-            if not instance.profile_completed:
-                instance.profile_completed = True
-                instance.save(update_fields=["profile_completed"])
-
-            role, created = UserRole.objects.get_or_create(
-                profile=instance,
-                role=UserRole.RoleChoice.RESEARCHER,
-            )
-
-            notify(
-                user=instance.user,
-                notification_type=Notification.NotificationType.RESEARCHER_APPROVED,
-                message=(
-                    "Your profile is complete — "
-                    "you can now upload datasets."
-                ),
-            )
 
         return instance
 class RegisterSerializer(serializers.Serializer):
@@ -145,5 +225,23 @@ class CategorySerializer(serializers.ModelSerializer):
         model = Category
         fields = ["id", "name", "description"]
 
-
+class PublicProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserProfile
+        fields = [
+            "full_name",
+            "profile_picture",
+            "affiliation",
+            "college",
+            "center_of_excellence",
+            "department",
+            "academia",
+            "academic_title",
+            "academic_rank",
+            "highest_degree",
+            "orcid_id",
+            "interests",
+            "bio",
+            "additional_link",
+        ]
 

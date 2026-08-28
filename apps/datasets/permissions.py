@@ -33,13 +33,21 @@ class IsDatasetOwner(BasePermission):
 class IsDatasetOwnerOrContributor(BasePermission):
     def has_permission(self, request, view):
         from .models import Dataset, Contributor
+
         dataset_id = view.kwargs.get("dataset_id")
+
         if not dataset_id:
             return False
-        if Dataset.objects.filter(id=dataset_id, owner=request.user).exists():
+
+        # Dataset owner
+        if Dataset.objects.filter(
+            id=dataset_id,
+            owner=request.user
+        ).exists():
             return True
 
-        profile = getattr(request.user, "profile", None)
-        if not profile or not profile.has_role("researcher", "admin"):
-            return False
-        return Contributor.objects.filter(dataset_id=dataset_id, user=request.user).exists()
+        # Contributor to this specific dataset
+        return Contributor.objects.filter(
+            dataset_id=dataset_id,
+            user=request.user
+        ).exists()

@@ -2,9 +2,9 @@ from django.db.models.aggregates import Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from datetime import timedelta
-from apps.accounts.models import ActivityLog
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 from apps.accounts.views import get_client_ip
 from apps.datasets.models import Dataset, PendingContentUpdate
@@ -16,7 +16,15 @@ from io import BytesIO
 from django.db.models import Q
 from django.core.mail import send_mail
 from django.conf import settings
-from apps.accounts.models import UserProfile
+from apps.accounts.models import (
+    UserProfile,
+    College,
+    CenterOfExcellence,
+    Department,
+    PasswordResetToken,
+    ActivityLog,
+    UserRole
+)
 from django.http import HttpResponse
 from reportlab.lib import colors # type: ignore
 from reportlab.lib.pagesizes import landscape, letter # type: ignore
@@ -25,7 +33,6 @@ from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import IsAdminOnly, IsReviewerOrAdmin
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
-from apps.accounts.models import PasswordResetToken
 from apps.metadata.models import Category
 from apps.accounts.views import get_client_ip
 from apps.accounts.utils import generate_username
@@ -124,12 +131,25 @@ def reviewer_guidelines(request):
 def admin_create_user(request):
     email = request.data.get("email", "").strip().lower()
     full_name = request.data.get("full_name", "").strip()
-    role = request.data.get("role", UserProfile.Role.PUBLIC)
+    role = request.data.get("role", UserRole.RoleChoice.PUBLIC)
 
     if not email or not full_name:
-        return Response({"detail": "email and full_name are required."}, status=400)
+        return Response(
+            {"detail": "email and full_name are required."},
+            status=400,
+        )
+
     if User.objects.filter(email=email).exists():
-        return Response({"detail": "A user with this email already exists."}, status=400)
+        return Response(
+            {"detail": "A user with this email already exists."},
+            status=400,
+        )
+
+    if role not in UserRole.RoleChoice.values:
+        return Response(
+            {"detail": "Invalid role."},
+            status=400,
+        )
 
     username = generate_username(full_name)
 
@@ -138,24 +158,194 @@ def admin_create_user(request):
         email=email,
         is_active=True,
     )
+
     user.set_unusable_password()
     user.save()
-    user.profile.full_name = full_name
-    user.profile.role = role
-    user.profile.save(update_fields=["full_name", "role"])
+
+    profile = user.profile
+    profile.full_name = full_name
+    profile.save(update_fields=["full_name"])
+
+    UserRole.objects.get_or_create(
+        profile=profile,
+        role=role,
+    )
 
     uid = urlsafe_base64_encode(force_bytes(user.pk))
+
     reset_token = PasswordResetToken.objects.create(
-    user=user,
-    expires_at=timezone.now() + timedelta(hours=24),
-)
-    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token.token}"
+        user=user,
+        expires_at=timezone.now() + timedelta(hours=24),
+    )
+
+    reset_link = (
+        f"{settings.FRONTEND_URL}/reset-password"
+        f"?token={reset_token.token}"
+    )
     send_mail(
         subject="Your ORDP account has been created",
         message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
         from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
     )
     return Response({"status": "created", "user_id": user.id}, status=201)
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_colleges(request):
+    if request.method == "GET":
+        colleges = College.objects.all().order_by("name")
+
+        return Response([
+            {
+                "id": college.id,
+                "name": college.name,
+            }
+            for college in colleges
+        ])
+
+    name = request.data.get("name", "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "College name is required."},
+            status=400,
+        )
+
+    if College.objects.filter(name__iexact=name).exists():
+        return Response(
+            {"detail": "A college with this name already exists."},
+            status=400,
+        )
+
+    college = College.objects.create(name=name)
+
+    return Response(
+        {
+            "id": college.id,
+            "name": college.name,
+        },
+        status=201,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_centers_of_excellence(request):
+    if request.method == "GET":
+        centers = CenterOfExcellence.objects.all().order_by("name")
+
+        return Response([
+            {
+                "id": center.id,
+                "name": center.name,
+            }
+            for center in centers
+        ])
+
+    name = request.data.get("name", "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "Center of Excellence name is required."},
+            status=400,
+        )
+
+    if CenterOfExcellence.objects.filter(name__iexact=name).exists():
+        return Response(
+            {"detail": "A Center of Excellence with this name already exists."},
+            status=400,
+        )
+
+    center = CenterOfExcellence.objects.create(name=name)
+
+    return Response(
+        {
+            "id": center.id,
+            "name": center.name,
+        },
+        status=201,
+    )
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_departments(request):
+    if request.method == "GET":
+        departments = Department.objects.select_related(
+            "college",
+            "center_of_excellence",
+        ).order_by("name")
+
+        return Response([
+            {
+                "id": department.id,
+                "name": department.name,
+                "college": (
+                    {
+                        "id": department.college.id,
+                        "name": department.college.name,
+                    }
+                    if department.college
+                    else None
+                ),
+                "center_of_excellence": (
+                    {
+                        "id": department.center_of_excellence.id,
+                        "name": department.center_of_excellence.name,
+                    }
+                    if department.center_of_excellence
+                    else None
+                ),
+            }
+            for department in departments
+        ])
+
+    name = request.data.get("name", "").strip()
+    college_id = request.data.get("college_id")
+    center_id = request.data.get("center_of_excellence_id")
+
+    if not name:
+        return Response(
+            {"detail": "Department name is required."},
+            status=400,
+        )
+
+    # Exactly one parent must be provided.
+    if bool(college_id) == bool(center_id):
+        return Response(
+            {
+                "detail": (
+                    "A department must belong to exactly one parent: "
+                    "either a college or a Center of Excellence."
+                )
+            },
+            status=400,
+        )
+
+    college = None
+    center = None
+
+    if college_id:
+        college = get_object_or_404(College, id=college_id)
+
+    if center_id:
+        center = get_object_or_404(
+            CenterOfExcellence,
+            id=center_id,
+        )
+
+    department = Department.objects.create(
+        name=name,
+        college=college,
+        center_of_excellence=center,
+    )
+
+    return Response(
+        {
+            "id": department.id,
+            "name": department.name,
+            "college_id": department.college_id,
+            "center_of_excellence_id": department.center_of_excellence_id,
+        },
+        status=201,
+    )
 
 def _daily_counts(queryset, date_field, days=30):
     cutoff = (timezone.now() - timedelta(days=days)).date()
@@ -180,11 +370,21 @@ def _daily_counts(queryset, date_field, days=30):
 def admin_grant_role(request, user_id):
     target_user = get_object_or_404(User, id=user_id)
     role = request.data.get("role")
-    if role not in UserProfile.Role.values:
+
+    if role not in UserRole.RoleChoice.values:
         return Response({"detail": "Invalid role."}, status=400)
-    from apps.accounts.models import UserRole
-    UserRole.objects.get_or_create(profile=target_user.profile, role=role)
-    return Response({"status": "granted", "roles": list(target_user.profile.roles.values_list("role", flat=True))})
+
+    UserRole.objects.get_or_create(
+        profile=target_user.profile,
+        role=role,
+    )
+
+    return Response({
+        "status": "granted",
+        "roles": list(
+            target_user.profile.roles.values_list("role", flat=True)
+        ),
+    })
 
 
 @api_view(["POST"])
@@ -516,3 +716,38 @@ def vote_on_content_update(request, update_id):
         update=update, reviewer=request.user, defaults={"vote": vote_value}
     )
     return Response(resolve_content_update_votes(update))
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_create_language(request):
+    from apps.metadata.models import Language
+
+    name = request.data.get("name", "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "Language name is required."},
+            status=400
+        )
+
+    if Language.objects.filter(name__iexact=name).exists():
+        return Response(
+            {"detail": "A language with this name already exists."},
+            status=400
+        )
+
+    language = Language.objects.create(
+        name=name,
+        status=Language.Status.APPROVED,
+    )
+
+    return Response(
+        {
+            "id": language.id,
+            "name": language.name,
+            "status": language.status,
+        },
+        status=201,
+    )

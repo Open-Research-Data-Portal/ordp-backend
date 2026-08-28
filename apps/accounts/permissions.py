@@ -7,25 +7,37 @@ class HasRole(BasePermission):
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
-            self.message = "You must be logged in to do this."
             return False
-        try:
-            profile = UserProfile.objects.get(user=request.user)
-        except UserProfile.DoesNotExist:
-            self.message = "No profile is associated with this account. Please contact support."
+
+        profile = getattr(request.user, "profile", None)
+
+        if not profile:
             return False
-        request.user_profile = profile
-        if not profile.has_role(*self.allowed_roles):
-            role_names = " or ".join(role.replace("_", " ").title() for role in self.allowed_roles)
-            self.message = f"You must be a {role_names} to do this."
+
+        return profile.has_role(*self.allowed_roles)
+class CanUploadDatasets(BasePermission):
+    message = "You do not have permission to upload datasets."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            self.message = "You must be logged in to upload datasets."
             return False
+
+        profile = getattr(request.user, "profile", None)
+
+        if not profile:
+            self.message = "No profile is associated with this account."
+            return False
+
+        if not profile.is_profile_complete():
+            self.message = "Complete your profile before uploading datasets."
+            return False
+
+        if not profile.can_upload_datasets:
+            self.message = "You do not currently have permission to upload datasets."
+            return False
+
         return True
-
-
-class IsResearcherOrAdmin(HasRole):
-    allowed_roles = ["researcher", "admin"]
-
-
 class IsAdminOnly(HasRole):
     allowed_roles = ["admin"]
 
@@ -34,30 +46,3 @@ class IsReviewerOrAdmin(HasRole):
     allowed_roles = ["reviewer", "admin"]
 
 
-class IsResearcherOnly(HasRole):
-    allowed_roles = ["researcher"]
-
-    def has_permission(self, request, view):
-        result = super().has_permission(request, view)
-
-        if not result:
-            if request.user and request.user.is_authenticated:
-                profile = getattr(request.user, "profile", None)
-
-                if profile and not profile.is_profile_complete():
-                    self.message = "Complete your profile to start uploading."
-                else:
-                    self.message = "You must be a researcher to upload datasets."
-
-        return result
-class IsProfileComplete(BasePermission):
-    def has_permission(self, request, view):
-        if not request.user or not request.user.is_authenticated:
-            return False
-
-        profile = getattr(request.user, "profile", None)
-
-        if not profile or not (profile.profile_completed or profile.is_profile_complete()):
-            self.message = "Complete your profile before uploading datasets."
-            return False
-        return True

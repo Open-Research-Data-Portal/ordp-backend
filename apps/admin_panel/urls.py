@@ -23,8 +23,6 @@ urlpatterns = [
     path("dashboard/admin/audit-log/export/", dashboard_views.audit_log_export, name="admin-audit-log-export"),
     path("users/", dashboard_views.list_users, name="admin-list-users"),
     path("users/create/", dashboard_views.admin_create_user, name="admin-create-user"),
-    path("users/<int:user_id>/grant-role/", dashboard_views.admin_grant_role, name="admin-grant-role"),
-    path("users/<int:user_id>/revoke-role/", dashboard_views.admin_revoke_role, name="admin-revoke-role"),
     path("users/<int:user_id>/deactivate/", dashboard_views.admin_deactivate_user, name="admin-deactivate-user"),
     path("categories/pending/", dashboard_views.pending_categories, name="pending-categories"),
     path("categories/create/", dashboard_views.admin_create_category, name="admin-create-category"),  
@@ -37,5 +35,14 @@ urlpatterns = [
     path("content-updates/<uuid:update_id>/vote/", dashboard_views.vote_on_content_update, name="content-update-vote"),
     path("languages/<uuid:language_id>/decide/", dashboard_views.decide_pending_language, name="decide-pending-language"),
     path("notifications/broadcast/", dashboard_views.admin_broadcast_notification, name="admin-broadcast-notification"),
+    path("colleges/", dashboard_views.admin_colleges, name="admin-colleges"),
+    path("centers-of-excellence/",dashboard_views.admin_centers_of_excellence,name="admin-centers-of-excellence"),
+    path("departments/",dashboard_views.admin_departments,name="admin-departments"),
+    path(
+    "languages/create/",
+    dashboard_views.admin_create_language,
+    name="admin-create-language",
+),
+    
 ]
    

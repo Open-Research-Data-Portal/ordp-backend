@@ -1,5 +1,5 @@
 from datetime import timedelta
-
+from .serializers import ExtendedProfileSerializer, PublicProfileSerializer
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.conf import settings
@@ -21,7 +21,17 @@ from apps.datasets.models import Contributor
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from django.utils import timezone
-from .models import LoginSecurity, UserProfile, ActivityLog, EmailVerificationToken,PasswordResetToken
+from django.shortcuts import get_object_or_404
+from .models import (
+    LoginSecurity,
+    UserProfile,
+    ActivityLog,
+    EmailVerificationToken,
+    PasswordResetToken,
+    College,
+    CenterOfExcellence,
+    Department,
+)
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 
 
@@ -190,15 +200,22 @@ class CompleteProfileView(APIView):
 
     def get(self, request):
         data = ExtendedProfileSerializer(request.user.profile).data
-        data["role"] = request.user.profile.role
-        data["roles"] = list(request.user.profile.roles.values_list("role", flat=True))
+        roles = list(
+    request.user.profile.roles.values_list("role", flat=True)
+)
+
+        data["roles"] = roles
+        data["role"] = roles[0] if roles else None
         return Response(data)
 
     def patch(self, request):
         old_full_name = request.user.profile.full_name
+        profile_was_complete = request.user.profile.is_profile_complete()
         serializer = ExtendedProfileSerializer(request.user.profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+
+        profile_is_complete = request.user.profile.is_profile_complete()
         new_full_name = request.user.profile.full_name
         if new_full_name != old_full_name:
             log_activity(
@@ -206,10 +223,14 @@ class CompleteProfileView(APIView):
             target_object=str(request.user.id), ip_address=get_client_ip(request),
             extra={"old": old_full_name, "new": new_full_name},
         )
-        log_activity(
-            user=request.user, action="profile_completed",
-            target_object=str(request.user.id), ip_address=get_client_ip(request),
-        )
+            
+        if not profile_was_complete and profile_is_complete:
+            log_activity(
+                user=request.user,
+                action="profile_completed",
+                target_object=str(request.user.id),
+                ip_address=get_client_ip(request),
+            )
         return Response(serializer.data)
 
 class CustomTokenRefreshView(TokenRefreshView):
@@ -457,3 +478,133 @@ def search_users(request):
         {"id": u.id, "full_name": u.profile.full_name, "email": u.email}
         for u in qs if hasattr(u, "profile")
     ])
+
+
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_colleges(request):
+    colleges = College.objects.order_by("name").values("id", "name")
+
+    return Response({
+        "results": list(colleges)
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_centers_of_excellence(request):
+    centers = CenterOfExcellence.objects.order_by("name").values("id", "name")
+
+    return Response({
+        "results": list(centers)
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_departments(request):
+    parent_type = request.query_params.get("parent_type")
+    parent_id = request.query_params.get("parent_id")
+
+    departments = Department.objects.select_related(
+        "college",
+        "center_of_excellence",
+    )
+
+    if parent_type and parent_id:
+        if parent_type == "college":
+            departments = departments.filter(college_id=parent_id)
+
+        elif parent_type == "center_of_excellence":
+            departments = departments.filter(
+                center_of_excellence_id=parent_id
+            )
+
+        else:
+            return Response(
+                {
+                    "detail": (
+                        "parent_type must be either 'college' "
+                        "or 'center_of_excellence'."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    departments = departments.order_by("name")
+
+    return Response({
+        "results": [
+            {
+                "id": department.id,
+                "name": department.name,
+                "college_id": department.college_id,
+                "center_of_excellence_id": department.center_of_excellence_id,
+            }
+            for department in departments
+        ]
+    })
+
+
+
+class UserPublicProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        user = get_object_or_404(
+            User.objects.select_related("profile"),
+            id=user_id,
+        )
+
+        profile = user.profile
+
+        # Owner and admin can always view the profile
+        if (
+            user.id == request.user.id
+            or request.user.profile.has_role("admin")
+        ):
+            serializer = ExtendedProfileSerializer(profile)
+            return Response(serializer.data)
+
+        # Other users can only view public profiles
+        if profile.profile_visibility != "public":
+            return Response(
+                {
+                    "detail": "This profile is private."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PublicProfileSerializer(profile)
+        return Response(serializer.data)
+
+
+
+class ProfileOptionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "academia": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.Academia.choices
+            ],
+            "academic_title": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.AcademicTitle.choices
+            ],
+            "academic_rank": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.AcademicRank.choices
+            ],
+            "highest_degree": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.HighestDegree.choices
+            ],
+            "profile_visibility": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.VISIBILITY_CHOICES
+            ],
+        })
