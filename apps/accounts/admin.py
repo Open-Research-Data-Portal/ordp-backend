@@ -13,8 +13,15 @@ class UserProfileInline(admin.StackedInline):
     model = UserProfile
     can_delete = False
     fk_name = "user"
-    filter_horizontal = ("expertise",)
-    fields = ("full_name", "role", "academia", "department", "expertise", "terms_accepted")
+    filter_horizontal = ("interests",)
+    fields = (
+    "full_name",
+    "role",
+    "academia",
+    "department",
+    "interests",
+    "terms_accepted",
+)
 
 
 class CustomUserAdmin(BaseUserAdmin):

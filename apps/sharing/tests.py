@@ -18,7 +18,7 @@ def make_dataset_with_version(owner, title="Test DS", visibility="restricted"):
         checker = make_user(
             f"{title.replace(' ', '')}setupchecker{i}",
             f"{title.replace(' ', '')}setupchecker{i}@aastu.edu.et",
-            role="checker",
+            role="reviewer",
         )
         PendingContentUpdateVote.objects.create(update=update, reviewer=checker, vote="approve")
     resolve_content_update_votes(update)
@@ -109,7 +109,7 @@ class RestrictedShareVotingTests(APITestCase):
         self.requester = make_user("rsvreq", "rsvreq@aastu.edu.et")
         self.dataset = make_dataset_with_version(self.owner, "Restricted DS")
         self.reviewers = [
-            make_user(f"rsvreviewer{i}", f"rsvreviewer{i}@aastu.edu.et", role="checker") for i in range(3)
+            make_user(f"rsvreviewer{i}", f"rsvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)
         ]
 
     def _submit_request(self, purpose_type="read"):
@@ -197,7 +197,7 @@ class RestrictedShareVotingTests(APITestCase):
         self.client.force_authenticate(self.owner)
         self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
 
-        late_reviewer = make_user("rsvlatereviewer", "rsvlatereviewer@aastu.edu.et", role="checker")
+        late_reviewer = make_user("rsvlatereviewer", "rsvlatereviewer@aastu.edu.et", role="reviewer")
         self.client.force_authenticate(late_reviewer)
         resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)

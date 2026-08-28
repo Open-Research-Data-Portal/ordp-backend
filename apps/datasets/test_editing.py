@@ -64,7 +64,7 @@ class RevisionRequestVotingTests(APITestCase):
         self.owner = make_user("rrvowner", "rrvowner@aastu.edu.et")
         self.requester = make_user("rrvrequester", "rrvrequester@aastu.edu.et", role="researcher")
         self.dataset = make_published_dataset(self.owner, "RRV DS")
-        self.reviewers = [make_user(f"rrvreviewer{i}", f"rrvreviewer{i}@aastu.edu.et", role="checker") for i in range(3)]
+        self.reviewers = [make_user(f"rrvreviewer{i}", f"rrvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)]
 
         self.client.force_authenticate(self.requester)
         resp = self.client.post(f"/api/datasets/{self.dataset.id}/request-revision-permission/", {"reason": "test"})
@@ -91,7 +91,7 @@ class RevisionRequestVotingTests(APITestCase):
         for reviewer in self.reviewers:
             self.client.force_authenticate(reviewer)
             self.client.post(f"/api/admin-panel/revision-requests/{self.request_id}/vote/", {"vote": "approve"})
-        late_reviewer = make_user("rrvlate", "rrvlate@aastu.edu.et", role="checker")
+        late_reviewer = make_user("rrvlate", "rrvlate@aastu.edu.et", role="reviewer")
         self.client.force_authenticate(late_reviewer)
         resp = self.client.post(f"/api/admin-panel/revision-requests/{self.request_id}/vote/", {"vote": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -181,7 +181,7 @@ class ContentUpdateVotingTests(APITestCase):
     def setUp(self):
         self.owner = make_user("cuvowner", "cuvowner@aastu.edu.et")
         self.dataset = make_published_dataset(self.owner, "CUV DS")
-        self.reviewers = [make_user(f"cuvreviewer{i}", f"cuvreviewer{i}@aastu.edu.et", role="checker") for i in range(3)]
+        self.reviewers = [make_user(f"cuvreviewer{i}", f"cuvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)]
         self.update = PendingContentUpdate.objects.create(
             dataset=self.dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=self.owner,
             new_file_key="new-key", diff_percentage=90.0, change_summary={}, proposed_metadata={},

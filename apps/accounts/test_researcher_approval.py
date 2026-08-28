@@ -10,7 +10,9 @@ User = get_user_model()
 
 def make_incomplete_user(username, email):
     user = User.objects.create_user(username=username, email=email, password="pw12345!")
-    UserProfile.objects.create(user=user, full_name=username.title())
+    profile = user.profile
+    profile.full_name = username.title()
+    profile.save()
     return user
 
 

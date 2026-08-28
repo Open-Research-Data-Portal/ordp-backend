@@ -11,10 +11,10 @@ User = get_user_model()
 class ModerationTests(APITestCase):
     def setUp(self):
         self.owner = make_user("modowner", "modowner@aastu.edu.et", "researcher")
-        self.checker = make_user("checker1", "checker1@aastu.edu.et", "checker")
+        self.checker = make_user("checker1", "checker1@aastu.edu.et", "reviewer")
         self.researcher = make_user("plainresearcher", "plain@aastu.edu.et", "researcher")
         self.category = Category.objects.create(name="Health")
-        self.checker.profile.expertise.add(self.category)
+        self.checker.profile.interests.add(self.category)
         self.dataset = Dataset.objects.create(
             title="Under Review", owner=self.owner, status=Dataset.Status.PENDING,
             assigned_reviewer=self.checker,

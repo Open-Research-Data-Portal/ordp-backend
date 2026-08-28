@@ -38,6 +38,47 @@ def apply_common_filters(qs, params, user):
     if file_type:
         qs = qs.filter(files__file_type__iexact=file_type)
 
+    subject = params.get("subject", "").strip()
+    if subject:
+        qs = qs.filter(metadata__subject__name__icontains=subject)
+
+    keyword = params.get("keyword", "").strip()
+    if keyword:
+        qs = qs.filter(metadata__keywords__word__icontains=keyword)
+
+    language = params.get("language", "").strip()
+    if language:
+        qs = qs.filter(languages__name__icontains=language)
+
+    sponsor = params.get("sponsor", "").strip()
+    if sponsor:
+        qs = qs.filter(metadata__sponsor_or_grant__icontains=sponsor)
+
+    coverage = params.get("coverage", "").strip()
+    if coverage:
+        qs = qs.filter(metadata__coverage__icontains=coverage)
+
+    doi = params.get("doi", "").strip()
+    if doi:
+        qs = qs.filter(metadata__doi_citation__icontains=doi)
+
+    owner = params.get("owner", "").strip()
+    if owner:
+        qs = qs.filter(
+            Q(owner__username__icontains=owner) |
+            Q(owner__email__icontains=owner) |
+            Q(owner__profile__full_name__icontains=owner)
+        )
+
+    min_file_count = params.get("min_file_count", "").strip()
+    max_file_count = params.get("max_file_count", "").strip()
+    if min_file_count.isdigit() or max_file_count.isdigit():
+        qs = qs.annotate(search_file_count=Count("files", distinct=True))
+        if min_file_count.isdigit():
+            qs = qs.filter(search_file_count__gte=int(min_file_count))
+        if max_file_count.isdigit():
+            qs = qs.filter(search_file_count__lte=int(max_file_count))
+
     date_from = params.get("date_from", "").strip()
     date_to = params.get("date_to", "").strip()
     if date_from:
@@ -147,7 +188,7 @@ def _serialize_feed_item(dataset, file_stats):
 
 def build_discovery_feed(user, limit=20):
     profile = getattr(user, "profile", None)
-    interest_category_ids = list(profile.expertise.values_list("id", flat=True)) if profile else []
+    interest_category_ids = list(profile.interests.values_list("id", flat=True)) if profile else []
 
     visible = visible_datasets_queryset().exclude(owner=user)
     trending = visible.annotate(popularity=F("view_count") + F("download_count")).order_by("-popularity", "-created_at")

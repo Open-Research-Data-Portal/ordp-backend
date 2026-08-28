@@ -74,7 +74,7 @@ class ProfileOtherInterestTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         self.assertTrue(resp.data["pending_review"])
         researcher.profile.refresh_from_db()
-        self.assertTrue(researcher.profile.expertise.filter(name="Applied Cryptozoology").exists())
+        self.assertTrue(researcher.profile.interests.filter(name="Applied Cryptozoology").exists())
 
     def test_add_other_interest_reuses_existing_approved_category(self):
         researcher = make_user("piresearcher2", "piresearcher2@aastu.edu.et", role="researcher")

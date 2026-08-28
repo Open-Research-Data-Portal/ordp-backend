@@ -30,7 +30,7 @@ class AdminCardsTests(APITestCase):
         self.assertEqual(resp.data["recent_activity_count_24h"], 1)
 
     def test_checker_cannot_access_admin_cards(self):
-        checker = make_user("cardchecker", "cardchecker@aastu.edu.et", role="checker")
+        checker = make_user("cardchecker", "cardchecker@aastu.edu.et", role="reviewer")
         self.client.force_authenticate(checker)
         resp = self.client.get("/api/admin-panel/dashboard/admin/cards/")
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)

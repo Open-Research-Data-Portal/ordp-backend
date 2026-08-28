@@ -13,8 +13,8 @@ def make_dataset(owner, title="Test DS", status=Dataset.Status.PENDING, assigned
 class ReviewerOverviewTests(APITestCase):
     def test_counts_only_datasets_assigned_to_this_reviewer(self):
         owner = make_user("rowowner", "rowowner@aastu.edu.et")
-        checker = make_user("rowchecker", "rowchecker@aastu.edu.et", role="checker")
-        other_checker = make_user("rowother", "rowother@aastu.edu.et", role="checker")
+        checker = make_user("rowchecker", "rowchecker@aastu.edu.et", role="reviewer")
+        other_checker = make_user("rowother", "rowother@aastu.edu.et", role="reviewer")
 
         make_dataset(owner, "Assigned To Me", assigned_reviewer=checker)
         make_dataset(owner, "Assigned To Other", assigned_reviewer=other_checker)
@@ -37,7 +37,7 @@ class ReviewerOverviewTests(APITestCase):
         from apps.sharing.models import DatasetAccessRequest, AccessRequestVote, UsabilityFormResponse, RestrictedAccessJustification
 
         owner = make_user("rowowner2", "rowowner2@aastu.edu.et")
-        checker = make_user("rowchecker2", "rowchecker2@aastu.edu.et", role="checker")
+        checker = make_user("rowchecker2", "rowchecker2@aastu.edu.et", role="reviewer")
         requester = make_user("rowrequester", "rowrequester@aastu.edu.et")
         dataset = make_dataset(owner, "Access DS", status=Dataset.Status.APPROVED)
 
@@ -59,8 +59,8 @@ class ReviewerOverviewTests(APITestCase):
 class ReviewerMetricsTests(APITestCase):
     def test_metrics_reflect_only_this_reviewers_decisions(self):
         owner = make_user("rmowner", "rmowner@aastu.edu.et")
-        checker = make_user("rmchecker", "rmchecker@aastu.edu.et", role="checker")
-        other_checker = make_user("rmother", "rmother@aastu.edu.et", role="checker")
+        checker = make_user("rmchecker", "rmchecker@aastu.edu.et", role="reviewer")
+        other_checker = make_user("rmother", "rmother@aastu.edu.et", role="reviewer")
         ds1 = make_dataset(owner, "RM DS 1")
         ds2 = make_dataset(owner, "RM DS 2")
         ds3 = make_dataset(owner, "RM DS 3")
@@ -78,7 +78,7 @@ class ReviewerMetricsTests(APITestCase):
 
 class ReviewerGuidelinesTests(APITestCase):
     def test_guidelines_accessible_to_checker(self):
-        checker = make_user("rgchecker", "rgchecker@aastu.edu.et", role="checker")
+        checker = make_user("rgchecker", "rgchecker@aastu.edu.et", role="reviewer")
         self.client.force_authenticate(checker)
         resp = self.client.get("/api/admin-panel/dashboard/reviewer/guidelines/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)

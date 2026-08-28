@@ -10,9 +10,13 @@ User = get_user_model()
 class AttachMetadataTests(APITestCase):
     def setUp(self):
         self.owner = User.objects.create_user(username="owner1", email="owner1@aastu.edu.et", password="pw12345!")
-        UserProfile.objects.create(user=self.owner, full_name="Owner One")
+        profile = self.owner.profile
+        profile.full_name = "Owner One"
+        profile.save()
         self.other = User.objects.create_user(username="other1", email="other1@aastu.edu.et", password="pw12345!")
-        UserProfile.objects.create(user=self.other, full_name="Other One")
+        profile = self.other.profile
+        profile.full_name = "Other One"
+        profile.save()
         self.dataset = Dataset.objects.create(title="Test DS", owner=self.owner)
         self.category = Category.objects.create(name="Health", status=Category.Status.APPROVED)
         self.subject = Subject.objects.create(name="Public Health")

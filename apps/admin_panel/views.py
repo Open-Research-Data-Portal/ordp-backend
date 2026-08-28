@@ -2,13 +2,11 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
-from apps.accounts.permissions import IsCheckerOrAdmin
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
-
-from apps.accounts.permissions import IsCheckerOrAdmin, IsAdminOnly
+from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly
 from apps.datasets.models import Dataset, PendingContentUpdate
 from apps.datasets.serializers import PendingContentUpdateSerializer
 from apps.metadata.models import FallbackThumbnail
@@ -41,7 +39,7 @@ def _resolve_thumbnail_suggestions(dataset):
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def moderation_queue(request):
     qs = Dataset.objects.filter(status=Dataset.Status.PENDING, is_active=True)
     if not request.user.profile.has_role("admin"):
@@ -51,7 +49,7 @@ def moderation_queue(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def moderate_dataset(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id)
     decision = request.data.get("decision")
@@ -94,7 +92,7 @@ def moderate_dataset(request, dataset_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def suggest_thumbnail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, status=Dataset.Status.PENDING)
     fallback_id = request.data.get("fallback_thumbnail_id")
@@ -106,7 +104,7 @@ def suggest_thumbnail(request, dataset_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def content_update_queue(request):
     qs = PendingContentUpdate.objects.filter(status="pending").select_related("dataset", "submitted_by")
     return Response(PendingContentUpdateSerializer(qs, many=True).data)
@@ -114,7 +112,7 @@ def content_update_queue(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def request_dataset_deletion(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     reason = (request.data.get("reason") or "").strip()
@@ -124,7 +122,7 @@ def request_dataset_deletion(request, dataset_id):
     deletion_request = DatasetDeletionRequest.objects.create(
         dataset=dataset, dataset_title=dataset.title, requested_by=request.user, reason=reason,
     )
-    for reviewer in get_user_model().objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+    for reviewer in get_user_model().objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
         if reviewer != request.user:
             notify(
                 user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
@@ -135,7 +133,7 @@ def request_dataset_deletion(request, dataset_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def vote_on_deletion_request(request, request_id):
     deletion_request = get_object_or_404(DatasetDeletionRequest, id=request_id)
     if deletion_request.status != DatasetDeletionRequest.Status.PENDING:

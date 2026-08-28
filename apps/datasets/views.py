@@ -23,7 +23,11 @@ from .services.assignment import assign_reviewer
 
 from apps.accounts.permissions import IsResearcherOrAdmin
 from apps.accounts.views import log_activity, get_client_ip
-from .services.storage import presigned_download_url, minio_client
+from .services.storage import (
+    presigned_download_url,
+    upload_fileobj,
+    download_to_file,
+)
 import uuid as uuid_lib
 from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
 from .services.revisions import route_change
@@ -56,7 +60,7 @@ def init_upload(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([IsAuthenticated, IsResearcherOnly, IsProfileComplete])
 @parser_classes([MultiPartParser])
 def upload_chunk(request, upload_session_id):
     """Step 2: upload one chunk. Rejects early (413) once the running total exceeds
@@ -88,17 +92,17 @@ def upload_thumbnail(request, dataset_id):
     if image is None:
         return Response({"detail": "thumbnail file is required."}, status=400)
     key = f"thumbnails/{dataset.id}/{image.name}"
-    minio_client().put_object(settings.MINIO_BUCKET, key, image, image.size)
+    upload_fileobj(image, key, getattr(image, "content_type", None))
     dataset.thumbnail_key = key
     dataset.thumbnail_source = Dataset.ThumbnailSource.UPLOADED
     dataset.save(update_fields=["thumbnail_key", "thumbnail_source"])
     return Response({"status": "thumbnail uploaded"}, status=200)
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([IsAuthenticated, IsResearcherOnly, IsProfileComplete])
 def complete_upload(request, upload_session_id):
     """Step 3: assemble chunks, verify size + declared-type match, checksum,
-    push to MinIO, create DatasetFile."""
+    push to backblaze, create DatasetFile."""
     try:
         dataset_file = finalize_upload(
             dataset_id=request.data["dataset_id"], upload_session_id=upload_session_id,
@@ -122,7 +126,7 @@ def complete_upload(request, upload_session_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([IsAuthenticated, IsResearcherOnly, IsProfileComplete])
 def accept_terms_and_submit(request, dataset_id):
     """Step 4 (final step): accept dataset-level T&Cs, move draft/changes_requested -> pending.
     Also serves as the resubmit action after a reviewer requests changes."""
@@ -148,6 +152,7 @@ def accept_terms_and_submit(request, dataset_id):
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
     return Response({"status": "submitted for review"}, status=200)
+
 
 
 @api_view(["GET"])
@@ -225,7 +230,7 @@ def dataset_versions(request, dataset_id):
 
 def _download_to_tmp(file_key):
     local_path = f"/tmp/{uuid_lib.uuid4().hex}"
-    minio_client.fget_object(settings.MINIO_BUCKET, file_key, local_path)
+    download_to_file(file_key, local_path)
     return local_path
 
 
@@ -401,7 +406,7 @@ def toggle_watch(request, dataset_id):
 def content_update_comparison(request, update_id):
     update = get_object_or_404(PendingContentUpdate.objects.select_related("dataset", "submitted_by"), id=update_id)
     profile = getattr(request.user, "profile", None)
-    is_reviewer = bool(profile and profile.has_role("checker", "admin"))
+    is_reviewer = bool(profile and profile.has_role("reviewer", "admin"))
     if not (update.dataset.is_owned_by(request.user) or is_reviewer):
         return Response({"detail": "You don't have permission to view this."}, status=403)
 
