@@ -208,6 +208,8 @@ class UserProfile(models.Model):
         blank=True,
     )
     can_upload_datasets = models.BooleanField(default=False)
+
+    upload_permission_revoked = models.BooleanField(default=False)
     
 
     is_external = models.BooleanField(

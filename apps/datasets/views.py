@@ -3,7 +3,7 @@ import uuid
 
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
-from .models import Bookmark, Contributor, DatasetWatcher
+from .models import Bookmark, Contributor, DatasetWatcher, UploadSession
 from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
@@ -19,7 +19,7 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from .services.assignment import assign_reviewer
+from .services.assignment import assign_reviewers
 
 
 from apps.accounts.views import log_activity, get_client_ip
@@ -42,46 +42,216 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
 def init_upload(request):
-    """Step 1: create the Dataset shell (status=draft), open a chunked-upload session.
-    The uploader IS the author/owner via dataset.owner — no separate Contributor row needed."""
+    """
+    Step 1:
+    Create the Dataset shell and open a chunked upload session.
+
+    Visibility is optional during draft creation.
+    It must be selected before final submission.
+    """
+
     serializer = InitUploadSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
     dataset = Dataset.objects.create(
-        title=serializer.validated_data["title"], owner=request.user,
-        visibility=serializer.validated_data["visibility"],
+        title=serializer.validated_data["title"],
+        owner=request.user,
+        visibility=serializer.validated_data.get("visibility"),
     )
+
     upload_session_id = uuid.uuid4().hex
-    os.makedirs(session_dir(upload_session_id), exist_ok=True)
 
-    log_activity(user=request.user, action="dataset_upload_initiated",
-                 target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
-    return Response({"dataset_id": dataset.id, "upload_session_id": upload_session_id}, status=201)
+    UploadSession.objects.create(
+        id=upload_session_id,
+        dataset=dataset,
+        uploader=request.user,
+    )
 
+    os.makedirs(
+        session_dir(upload_session_id),
+        exist_ok=True,
+    )
+
+    log_activity(
+        user=request.user,
+        action="dataset_upload_initiated",
+        target_object=f"Dataset:{dataset.id}",
+        ip_address=get_client_ip(request),
+    )
+
+    return Response(
+        {
+            "dataset_id": dataset.id,
+            "upload_session_id": upload_session_id,
+        },
+        status=201,
+    )
+
+@api_view(["POST"])
+@permission_classes([CanUploadDatasets])
+def init_existing_draft_upload(request, dataset_id):
+    """
+    Resume an existing editable dataset upload.
+
+    Reuses the latest unfinished upload session when available.
+    Otherwise, creates a new upload session.
+    """
+
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        owner=request.user,
+        is_active=True,
+    )
+
+    # Only editable datasets can start/resume an upload.
+    if dataset.status not in (
+        Dataset.Status.DRAFT,
+        Dataset.Status.CHANGES_REQUESTED,
+    ):
+        return Response(
+            {
+                "detail": (
+                    "You can only resume uploads for draft datasets "
+                    "or datasets with requested changes."
+                )
+            },
+            status=400,
+        )
+
+    # Look for the latest unfinished upload session.
+    session = (
+        UploadSession.objects
+        .filter(
+            dataset=dataset,
+            uploader=request.user,
+            completed_at__isnull=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+
+    # No unfinished session exists, so create one.
+    if session is None:
+        upload_session_id = uuid.uuid4().hex
+
+        session = UploadSession.objects.create(
+            id=upload_session_id,
+            dataset=dataset,
+            uploader=request.user,
+        )
+
+        os.makedirs(
+            session_dir(upload_session_id),
+            exist_ok=True,
+        )
+
+        log_activity(
+            user=request.user,
+            action="dataset_upload_session_initiated",
+            target_object=f"Dataset:{dataset.id}",
+            ip_address=get_client_ip(request),
+        )
+
+        status_code = 201
+
+    else:
+        # Make sure the directory still exists.
+        os.makedirs(
+            session_dir(session.id),
+            exist_ok=True,
+        )
+
+        status_code = 200
+
+    return Response(
+        {
+            "dataset_id": str(dataset.id),
+            "upload_session_id": session.id,
+        },
+        status=status_code,
+    )
 
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
 @parser_classes([MultiPartParser])
 def upload_chunk(request, upload_session_id):
-    """Step 2: upload one chunk. Rejects early (413) once the running total exceeds
-    MAX_DATASET_UPLOAD_SIZE, without waiting for the final chunk."""
+    """
+    Step 2:
+    Upload one chunk.
+
+    The upload session must belong to the authenticated user.
+    """
+
     chunk_index = request.data.get("chunk_index")
     chunk_file = request.FILES.get("chunk")
+
     if chunk_file is None or chunk_index is None:
-        return Response({"detail": "chunk and chunk_index are required."}, status=400)
+        return Response(
+            {"detail": "chunk and chunk_index are required."},
+            status=400,
+        )
+
+    try:
+        session = UploadSession.objects.select_related(
+            "dataset",
+            "uploader",
+        ).get(
+            id=upload_session_id,
+            uploader=request.user,
+        )
+    except UploadSession.DoesNotExist:
+        return Response(
+            {"detail": "Unknown upload session."},
+            status=404,
+        )
+
+    if session.completed_at is not None:
+        return Response(
+            {"detail": "This upload session has already been completed."},
+            status=400,
+        )
 
     d = session_dir(upload_session_id)
-    if not os.path.isdir(d):
-        return Response({"detail": "Unknown upload session."}, status=404)
 
-    if running_total(upload_session_id) + chunk_file.size > settings.MAX_DATASET_UPLOAD_SIZE:
-        return Response({"detail": "Upload exceeds maximum allowed size."}, status=413)
+    os.makedirs(d, exist_ok=True)
 
-    chunk_path = os.path.join(d, f"chunk_{int(chunk_index):06d}")
+    if (
+        running_total(upload_session_id) + chunk_file.size
+        > settings.MAX_DATASET_UPLOAD_SIZE
+    ):
+        return Response(
+            {"detail": "Upload exceeds maximum allowed size."},
+            status=413,
+        )
+
+    try:
+        chunk_index = int(chunk_index)
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "chunk_index must be an integer."},
+            status=400,
+        )
+
+    if chunk_index < 0:
+        return Response(
+            {"detail": "chunk_index cannot be negative."},
+            status=400,
+        )
+
+    chunk_path = os.path.join(
+        d,
+        f"chunk_{chunk_index:06d}",
+    )
+
     with open(chunk_path, "wb") as f:
         for part in chunk_file.chunks():
             f.write(part)
-    return Response({"status": "chunk received"}, status=200)
+
+    return Response(
+        {"status": "chunk received"},
+        status=200,
+    )
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsDatasetOwner])
@@ -101,28 +271,131 @@ def upload_thumbnail(request, dataset_id):
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
 def complete_upload(request, upload_session_id):
-    """Step 3: assemble chunks, verify size + declared-type match, checksum,
-    push to backblaze, create DatasetFile."""
+    """
+    Step 3:
+    Assemble chunks, validate the file, push it to storage,
+    and create DatasetFile.
+
+    A failed validation or temporary storage failure does NOT
+    destroy the upload session.
+    """
+
+    try:
+        session = UploadSession.objects.select_related(
+            "dataset",
+            "uploader",
+        ).get(
+            id=upload_session_id,
+            uploader=request.user,
+        )
+    except UploadSession.DoesNotExist:
+        return Response(
+            {"detail": "Upload session not found."},
+            status=404,
+        )
+
+    if session.completed_at is not None:
+        return Response(
+            {"detail": "This upload session has already been completed."},
+            status=400,
+        )
+
+    dataset_id = request.data.get("dataset_id")
+
+    if str(dataset_id) != str(session.dataset_id):
+        return Response(
+            {"detail": "This upload session does not belong to this dataset."},
+            status=403,
+        )
+
+    filename = request.data.get("filename")
+    file_type = request.data.get("file_type")
+
+    if not filename:
+        return Response(
+            {"detail": "filename is required."},
+            status=400,
+        )
+
+    if not file_type:
+        return Response(
+            {"detail": "file_type is required."},
+            status=400,
+        )
+
     try:
         dataset_file = finalize_upload(
-            dataset_id=request.data["dataset_id"], upload_session_id=upload_session_id,
-            uploader=request.user, original_filename=request.data["filename"],
-            declared_file_type=request.data["file_type"],
-            is_structured=request.data.get("is_structured", True),
+            dataset_id=session.dataset_id,
+            upload_session_id=upload_session_id,
+            uploader=request.user,
+            original_filename=filename,
+            declared_file_type=file_type,
+            is_structured=request.data.get(
+                "is_structured",
+                True,
+            ),
             column_count=request.data.get("column_count"),
             feature_names=request.data.get("feature_names"),
             item_count=request.data.get("item_count"),
         )
+
+    except FileNotFoundError:
+        return Response(
+            {
+                "detail": (
+                    "Upload session not found or contains no uploaded chunks."
+                )
+            },
+            status=404,
+        )
+
+    except PermissionError:
+        return Response(
+            {
+                "detail": (
+                    "You do not have permission to complete this upload."
+                )
+            },
+            status=403,
+        )
+
     except UploadTooLargeError:
-        return Response({"detail": "File exceeds size limit."}, status=413)
+        return Response(
+            {"detail": "File exceeds size limit."},
+            status=413,
+        )
+
     except FileTypeMismatchError as exc:
-        return Response({"detail": str(exc)}, status=400)
+        # IMPORTANT:
+        # Session remains available.
+        return Response(
+            {"detail": str(exc)},
+            status=400,
+        )
+
     except Exception:
         import logging
-        logging.exception("Upload finalize failed")
-        return Response({"detail": "Upload failed."}, status=500)
 
-    return Response({"file_id": dataset_file.id, "checksum": dataset_file.checksum}, status=201)
+        logging.exception("Upload finalize failed")
+
+        # IMPORTANT:
+        # Session remains available for retry.
+        return Response(
+            {"detail": "Upload failed. You can retry the completion step."},
+            status=500,
+        )
+
+    # Mark the session completed ONLY after everything succeeded.
+    session.completed_at = timezone.now()
+    session.save(update_fields=["completed_at"])
+
+    return Response(
+        {
+            "file_id": dataset_file.id,
+            "checksum": dataset_file.checksum,
+        },
+        status=201,
+    )
 
 
 @api_view(["POST"])
@@ -137,6 +410,11 @@ def accept_terms_and_submit(request, dataset_id):
         return Response({"detail": "Attach metadata before submitting."}, status=400)
     if not dataset.languages.exists():
         return Response({"detail": "At least one language is required before submitting."}, status=400)
+    if not dataset.visibility:
+        return Response(
+            {"detail": "Select a visibility option before submitting the dataset."},
+            status=400,
+        )
 
     serializer = TermsAcceptanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -148,7 +426,7 @@ def accept_terms_and_submit(request, dataset_id):
     dataset.terms_version = settings.CURRENT_TERMS_VERSION
     dataset.status = Dataset.Status.PENDING
     dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status"])
-    assign_reviewer(dataset)
+    assign_reviewers(dataset)
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
     return Response({"status": "submitted for review"}, status=200)
@@ -164,7 +442,6 @@ def my_datasets(request):
         Dataset.objects
         .filter(owner=request.user, is_active=True)
         .prefetch_related("files", "contributors")
-        .exclude(status=Dataset.Status.DRAFT, files__isnull=True)
         .distinct()
     )
 
@@ -237,18 +514,25 @@ def _download_to_tmp(file_key):
 def _build_proposed_metadata(dataset, request_data):
     if not hasattr(dataset, "metadata"):
         return {}
+
     changed = {}
     current = dataset.metadata
-    for field in ("description", "category_id", "subject_id", "sponsor_or_grant"):
+
+    for field in ("description", "category_id", "sponsor_or_grant"):
         new_value = request_data.get(field)
         old_value = getattr(current, field, None)
+
         if new_value is not None and str(new_value) != str(old_value):
-            changed[field] = {"old": old_value, "new": new_value}
+            changed[field] = {
+                "old": old_value,
+                "new": new_value,
+            }
+
     return changed
 
 
 OWNER_EDITABLE_FIELDS = ("title", "visibility")
-SHARED_EDITABLE_METADATA_FIELDS = ("description", "category_id", "subject_id", "sponsor_or_grant")
+SHARED_EDITABLE_METADATA_FIELDS = ("description", "category_id", "sponsor_or_grant")
 
 
 @api_view(["PATCH"])

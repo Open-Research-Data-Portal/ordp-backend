@@ -8,15 +8,14 @@ from apps.datasets.models import (
     Dataset, DatasetFile, Contributor, RevisionRequest, PendingContentUpdate,
 )
 from apps.datasets.services.revisions import route_change, resolve_revision_request_votes, resolve_content_update_votes
-from apps.metadata.models import Category, Subject, Metadata
+from apps.metadata.models import Category, Metadata
 
 
 def make_published_dataset(owner, title="Editing DS"):
     dataset = Dataset.objects.create(title=title, owner=owner, status=Dataset.Status.PUBLISHED)
     DatasetFile.objects.create(dataset=dataset, file_key="k1", file_type="csv", file_size=100, checksum="a")
     category = Category.objects.create(name=f"{title} Cat", status=Category.Status.APPROVED)
-    subject = Subject.objects.create(name=f"{title} Subj")
-    Metadata.objects.create(dataset=dataset, description="test", category=category, subject=subject)
+    Metadata.objects.create(dataset=dataset, description="test", category=category)
     return dataset
 
 

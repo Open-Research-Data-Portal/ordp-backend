@@ -4,8 +4,8 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
 from apps.datasets.models import Dataset
-from .models import Keyword, Metadata, Category, Subject, Language, DatasetCharacteristic
-from .serializers import MetadataSerializer, CategorySerializer, SubjectSerializer
+from .models import Keyword, Metadata, Category,Language, DatasetCharacteristic
+from .serializers import MetadataSerializer, CategorySerializer
 from .services import assign_fallback_thumbnail, get_or_create_pending_category, get_or_create_pending
 
 
@@ -53,11 +53,6 @@ def list_categories(request):
     qs = Category.objects.filter(status=Category.Status.APPROVED).order_by("name")
     return Response([{"id": c.id, "name": c.name} for c in qs])
 
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def list_subjects(request):
-    return Response(SubjectSerializer(Subject.objects.all(), many=True).data)
 
 
 @api_view(["GET"])

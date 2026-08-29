@@ -166,16 +166,16 @@ class SubmitDatasetTests(APITestCase):
         )
 
     def test_submit_without_accepting_terms_is_blocked(self):
-        from apps.metadata.models import Category, Subject, Metadata
+        from apps.metadata.models import Category, Metadata
 
         category = Category.objects.create(name="Cat")
-        subject = Subject.objects.create(name="Subj")
+      
 
         Metadata.objects.create(
             dataset=self.dataset,
             description="d",
             category=category,
-            subject=subject,
+            
         )
 
         self.client.force_authenticate(self.owner)

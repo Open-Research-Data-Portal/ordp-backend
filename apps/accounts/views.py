@@ -33,7 +33,7 @@ from .models import (
     Department,
 )
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
-
+from apps.accounts.permissions import IsAdminOnly
 
 User = get_user_model()
 
@@ -209,21 +209,46 @@ class CompleteProfileView(APIView):
         return Response(data)
 
     def patch(self, request):
-        old_full_name = request.user.profile.full_name
-        profile_was_complete = request.user.profile.is_profile_complete()
-        serializer = ExtendedProfileSerializer(request.user.profile, data=request.data, partial=True)
+        profile = request.user.profile
+
+        old_full_name = profile.full_name
+        profile_was_complete = profile.is_profile_complete()
+
+        serializer = ExtendedProfileSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        profile_is_complete = request.user.profile.is_profile_complete()
-        new_full_name = request.user.profile.full_name
+        profile.refresh_from_db()
+
+        profile_is_complete = profile.is_profile_complete()
+        new_full_name = profile.full_name
+
+        # Automatically grant upload permission only when the profile
+        # becomes complete, unless an admin has explicitly revoked it.
+        if (
+            not profile_was_complete
+            and profile_is_complete
+            and not profile.upload_permission_revoked
+        ):
+            profile.can_upload_datasets = True
+            profile.save(update_fields=["can_upload_datasets"])
+
         if new_full_name != old_full_name:
             log_activity(
-            user=request.user, action="full_name_changed",
-            target_object=str(request.user.id), ip_address=get_client_ip(request),
-            extra={"old": old_full_name, "new": new_full_name},
-        )
-            
+                user=request.user,
+                action="full_name_changed",
+                target_object=str(request.user.id),
+                ip_address=get_client_ip(request),
+                extra={
+                    "old": old_full_name,
+                    "new": new_full_name,
+                },
+            )
+
         if not profile_was_complete and profile_is_complete:
             log_activity(
                 user=request.user,
@@ -231,7 +256,11 @@ class CompleteProfileView(APIView):
                 target_object=str(request.user.id),
                 ip_address=get_client_ip(request),
             )
-        return Response(serializer.data)
+
+        return Response(
+            ExtendedProfileSerializer(profile).data,
+            status=status.HTTP_200_OK,
+        )
 
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
@@ -608,3 +637,68 @@ class ProfileOptionsView(APIView):
                 for value, label in UserProfile.VISIBILITY_CHOICES
             ],
         })
+
+
+
+class UpdateDatasetUploadPermissionView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOnly]
+
+    def patch(self, request, user_id):
+        user = get_object_or_404(
+            User.objects.select_related("profile"),
+            id=user_id,
+        )
+
+        can_upload = request.data.get("can_upload_datasets")
+
+        if not isinstance(can_upload, bool):
+            return Response(
+                {
+                    "detail": "can_upload_datasets must be true or false."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile = user.profile
+
+        profile.can_upload_datasets = can_upload
+
+        # If admin revokes permission, prevent automatic restoration.
+        if not can_upload:
+            profile.upload_permission_revoked = True
+
+        # If admin grants permission again, allow automatic permission
+        # logic to work again in the future.
+        else:
+            profile.upload_permission_revoked = False
+
+        profile.save(
+            update_fields=[
+                "can_upload_datasets",
+                "upload_permission_revoked",
+            ]
+        )
+
+        log_activity(
+            user=request.user,
+            action=(
+                "dataset_upload_permission_granted"
+                if can_upload
+                else "dataset_upload_permission_revoked"
+            ),
+            target_object=str(user.id),
+            ip_address=get_client_ip(request),
+            extra={
+                "target_user_id": str(user.id),
+                "can_upload_datasets": can_upload,
+            },
+        )
+
+        return Response(
+            {
+                "user_id": str(user.id),
+                "can_upload_datasets": profile.can_upload_datasets,
+                "upload_permission_revoked": profile.upload_permission_revoked,
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -4,6 +4,11 @@ from . import dashboard_views
 
 urlpatterns = [
     path("upload/init/", views.init_upload, name="upload-init"),
+    path(
+        "<uuid:dataset_id>/upload/init/",
+        views.init_existing_draft_upload,
+        name="existing-draft-upload-init",
+    ),
     path("upload/chunk/<str:upload_session_id>/", views.upload_chunk, name="upload-chunk"),
     path("upload/complete/<str:upload_session_id>/", views.complete_upload, name="upload-complete"),
     path("<uuid:dataset_id>/submit/", views.accept_terms_and_submit, name="dataset-submit"),
@@ -26,5 +31,6 @@ urlpatterns = [
     path("<uuid:dataset_id>/request-revision-permission/", views.request_revision_permission, name="request-revision-permission"),
     path("<uuid:dataset_id>/watch/", views.toggle_watch, name="toggle-watch"),
     path("content-updates/<uuid:update_id>/comparison/", views.content_update_comparison, name="content-update-comparison"),
+   
 ]
     
