@@ -95,6 +95,9 @@ DATABASES = {
         "PASSWORD": config("POSTGRES_PASSWORD", default="ordpaastu"),
         "HOST": config("POSTGRES_HOST", default="db"),
         "PORT": config("POSTGRES_PORT", default="5432"),
+        "OPTIONS": {
+    "sslmode": config("POSTGRES_SSLMODE", default="prefer"),
+},
     }
 }
 
