@@ -38,15 +38,23 @@ def _resolve_thumbnail_suggestions(dataset):
         FallbackThumbnail.objects.filter(id=winner.id).update(usage_count=F("usage_count") + 1)
 
 
-
 @api_view(["GET"])
 @permission_classes([IsReviewerOrAdmin])
 def moderation_queue(request):
-    qs = Dataset.objects.filter(
-        status=Dataset.Status.PENDING,
-        is_active=True,
-        reviewer_assignments__reviewer=request.user,
-    ).distinct()
+    profile = getattr(request.user, "profile", None)
+
+    if profile and profile.has_role("admin"):
+        # Admins can see all active datasets regardless of status.
+        qs = Dataset.objects.filter(
+            is_active=True,
+        ).distinct()
+    else:
+        # Reviewers only see pending datasets assigned to them.
+        qs = Dataset.objects.filter(
+            status=Dataset.Status.PENDING,
+            is_active=True,
+            reviewer_assignments__reviewer=request.user,
+        ).distinct()
 
     return Response(
         ModerationQueueItemSerializer(
@@ -54,7 +62,29 @@ def moderation_queue(request):
             many=True,
         ).data
     )
+@api_view(["GET"])
+@permission_classes([IsReviewerOrAdmin])
+def my_reviews(request):
+    decisions = (
+        ModerationDecision.objects
+        .filter(reviewer=request.user)
+        .select_related("dataset")
+        .order_by("-decided_at")
+    )
 
+    data = [
+        {
+            "dataset_id": str(decision.dataset.id),
+            "dataset_title": decision.dataset.title,
+            "decision": decision.decision,
+            "reason": decision.reason,
+            "dataset_status": decision.dataset.status,
+            "decided_at": decision.decided_at,
+        }
+        for decision in decisions
+    ]
+
+    return Response(data)
 
 @api_view(["POST"])
 @permission_classes([IsReviewerOrAdmin])
@@ -143,15 +173,9 @@ def moderate_dataset(request, dataset_id):
 
     if assigned_count < 3:
         return Response(
-            {
-                "status": "pending",
-                "approve_votes": approve_votes,
-                "reject_votes": reject_votes,
-                "votes_cast": votes_cast,
-                "required_reviewers": 3,
-            },
-            status=200,
-        )
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
 
     if approve_votes >= 2:
         dataset.status = Dataset.Status.PUBLISHED
@@ -194,14 +218,9 @@ def moderate_dataset(request, dataset_id):
         )
 
         return Response(
-            {
-                "status": "changes_requested",
-                "approve_votes": approve_votes,
-                "reject_votes": reject_votes,
-                "votes_cast": votes_cast,
-            },
-            status=200,
-        )
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
 
     if ModerationDecision.objects.filter(
         dataset=dataset,
@@ -220,14 +239,9 @@ def moderate_dataset(request, dataset_id):
         )
 
         return Response(
-            {
-                "status": "changes_requested",
-                "approve_votes": approve_votes,
-                "reject_votes": reject_votes,
-                "votes_cast": votes_cast,
-            },
-            status=200,
-        )
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
 
     if reject_votes >= 2:
         dataset.status = Dataset.Status.REJECTED
@@ -253,15 +267,9 @@ def moderate_dataset(request, dataset_id):
         )
 
     return Response(
-        {
-            "status": "pending",
-            "approve_votes": approve_votes,
-            "reject_votes": reject_votes,
-            "votes_cast": votes_cast,
-            "required_reviewers": 3,
-        },
-        status=200,
-    )
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
 
 @api_view(["POST"])
 @permission_classes([IsReviewerOrAdmin])

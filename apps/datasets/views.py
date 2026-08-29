@@ -87,6 +87,90 @@ def init_upload(request):
         status=201,
     )
 
+@api_view(["POST"])
+@permission_classes([CanUploadDatasets])
+def init_existing_draft_upload(request, dataset_id):
+    """
+    Resume an existing editable dataset upload.
+
+    Reuses the latest unfinished upload session when available.
+    Otherwise, creates a new upload session.
+    """
+
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        owner=request.user,
+        is_active=True,
+    )
+
+    # Only editable datasets can start/resume an upload.
+    if dataset.status not in (
+        Dataset.Status.DRAFT,
+        Dataset.Status.CHANGES_REQUESTED,
+    ):
+        return Response(
+            {
+                "detail": (
+                    "You can only resume uploads for draft datasets "
+                    "or datasets with requested changes."
+                )
+            },
+            status=400,
+        )
+
+    # Look for the latest unfinished upload session.
+    session = (
+        UploadSession.objects
+        .filter(
+            dataset=dataset,
+            uploader=request.user,
+            completed_at__isnull=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+
+    # No unfinished session exists, so create one.
+    if session is None:
+        upload_session_id = uuid.uuid4().hex
+
+        session = UploadSession.objects.create(
+            id=upload_session_id,
+            dataset=dataset,
+            uploader=request.user,
+        )
+
+        os.makedirs(
+            session_dir(upload_session_id),
+            exist_ok=True,
+        )
+
+        log_activity(
+            user=request.user,
+            action="dataset_upload_session_initiated",
+            target_object=f"Dataset:{dataset.id}",
+            ip_address=get_client_ip(request),
+        )
+
+        status_code = 201
+
+    else:
+        # Make sure the directory still exists.
+        os.makedirs(
+            session_dir(session.id),
+            exist_ok=True,
+        )
+
+        status_code = 200
+
+    return Response(
+        {
+            "dataset_id": str(dataset.id),
+            "upload_session_id": session.id,
+        },
+        status=status_code,
+    )
 
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
@@ -358,7 +442,6 @@ def my_datasets(request):
         Dataset.objects
         .filter(owner=request.user, is_active=True)
         .prefetch_related("files", "contributors")
-        .exclude(status=Dataset.Status.DRAFT, files__isnull=True)
         .distinct()
     )
 
