@@ -32,4 +32,9 @@ urlpatterns = [
         views.ProfileOptionsView.as_view(),
         name="profile-options",
     ),
+    path(
+    "users/<int:user_id>/upload-permission/",
+    views.UpdateDatasetUploadPermissionView.as_view(),
+    name="update-dataset-upload-permission",
+),
 ]

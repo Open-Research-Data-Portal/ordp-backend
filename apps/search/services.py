@@ -38,10 +38,6 @@ def apply_common_filters(qs, params, user):
     if file_type:
         qs = qs.filter(files__file_type__iexact=file_type)
 
-    subject = params.get("subject", "").strip()
-    if subject:
-        qs = qs.filter(metadata__subject__name__icontains=subject)
-
     keyword = params.get("keyword", "").strip()
     if keyword:
         qs = qs.filter(metadata__keywords__word__icontains=keyword)
@@ -141,7 +137,6 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
             SearchVector("metadata__description", config="english") +
             SearchVector("metadata__sponsor_or_grant", config="english") +
             SearchVector("metadata__category__name", config="english") +
-            SearchVector("metadata__subject__name", config="english") +
             SearchVector("metadata__keywords__word", config="english")
         )
         base_qs = (
@@ -151,7 +146,6 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
                 Q(metadata__description__icontains=query) |
                 Q(metadata__sponsor_or_grant__icontains=query) |
                 Q(metadata__category__name__icontains=query) |
-                Q(metadata__subject__name__icontains=query) |
                 Q(metadata__keywords__word__icontains=query) |
                 Q(rank__gt=0)
             )

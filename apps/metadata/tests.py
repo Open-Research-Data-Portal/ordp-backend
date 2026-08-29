@@ -3,7 +3,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 from apps.accounts.models import UserProfile
 from apps.datasets.models import Dataset
-from .models import Category, Subject
+from .models import Category
 
 User = get_user_model()
 
@@ -19,14 +19,13 @@ class AttachMetadataTests(APITestCase):
         profile.save()
         self.dataset = Dataset.objects.create(title="Test DS", owner=self.owner)
         self.category = Category.objects.create(name="Health", status=Category.Status.APPROVED)
-        self.subject = Subject.objects.create(name="Public Health")
+
 
     def test_owner_can_attach_metadata(self):
         self.client.force_authenticate(self.owner)
         resp = self.client.post(f"/api/metadata/{self.dataset.id}/attach/", {
             "description": "A dataset about health outcomes.",
             "category_id": str(self.category.id),
-            "subject": str(self.subject.id),
             "sponsor_or_grant": "NIH Grant #123",
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -36,6 +35,6 @@ class AttachMetadataTests(APITestCase):
     def test_non_owner_cannot_attach_metadata(self):
         self.client.force_authenticate(self.other)
         resp = self.client.post(f"/api/metadata/{self.dataset.id}/attach/", {
-            "description": "x", "category_id": str(self.category.id), "subject": str(self.subject.id),
+            "description": "x", "category_id": str(self.category.id), 
         })
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)

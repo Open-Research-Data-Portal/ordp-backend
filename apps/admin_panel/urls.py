@@ -43,6 +43,11 @@ urlpatterns = [
     dashboard_views.admin_create_language,
     name="admin-create-language",
 ),
+    path(
+        "users/<int:user_id>/grant-role/",
+        dashboard_views.admin_grant_role,
+        name="admin-grant-role",
+    ),
     
 ]
    

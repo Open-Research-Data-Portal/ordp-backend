@@ -128,7 +128,13 @@ class DatasetSerializer(serializers.ModelSerializer):
 
 class InitUploadSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
-    visibility = serializers.ChoiceField(choices=Dataset.Visibility.choices, default=Dataset.Visibility.RESTRICTED)
+
+    visibility = serializers.ChoiceField(
+        choices=Dataset.Visibility.choices,
+        required=False,
+        allow_null=True,
+        default=Dataset.Visibility.RESTRICTED,
+    )
 
 
 class TermsAcceptanceSerializer(serializers.Serializer):

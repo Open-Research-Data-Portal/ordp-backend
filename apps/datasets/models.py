@@ -56,7 +56,13 @@ class Dataset(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="datasets")
-    visibility = models.CharField(max_length=16, choices=Visibility.choices, default=Visibility.RESTRICTED)
+    visibility = models.CharField(
+    max_length=16,
+    choices=Visibility.choices,
+    null=True,
+    blank=True,
+    default=Visibility.RESTRICTED,
+)
     status = models.CharField(max_length=18, choices=Status.choices, default=Status.DRAFT)
     is_active = models.BooleanField(default=True)
     version = models.IntegerField(default=1)
@@ -282,3 +288,48 @@ class DatasetWatcher(models.Model):
 
     class Meta:
         unique_together = ["dataset", "user"]
+
+
+
+
+class UploadSession(models.Model):
+    id = models.CharField(
+        max_length=32,
+        primary_key=True,
+    )
+
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name="upload_sessions",
+    )
+
+    uploader = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dataset_upload_sessions",
+    )
+
+    original_filename = models.CharField(
+        max_length=255,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.id

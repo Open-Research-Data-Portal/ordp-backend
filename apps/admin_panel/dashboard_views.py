@@ -114,7 +114,6 @@ def reviewer_guidelines(request):
 
     return Response({
         "moderation_guidelines": [
-            "Check that the dataset's declared category and subject genuinely match its content.",
             "Confirm the file(s) uploaded match the declared file type — the system already "
             "blocks an obvious mismatch (e.g. an image declared as CSV), but review for subtler cases.",
             "A rejection requires a clear, specific reason — the requester needs to know what to fix.",
@@ -183,7 +182,6 @@ def admin_create_user(request):
         f"?token={reset_token.token}"
     )
     send_mail(
-        subject="Your ORDP account has been created",
         message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
         from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
     )
@@ -378,6 +376,10 @@ def admin_grant_role(request, user_id):
         profile=target_user.profile,
         role=role,
     )
+
+    if role == UserRole.RoleChoice.REVIEWER:
+        from apps.datasets.services.retry_assignment import retry_pending_assignments
+        retry_pending_assignments()
 
     return Response({
         "status": "granted",

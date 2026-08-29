@@ -7,6 +7,7 @@ from rest_framework import status
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset, DatasetFile
 from apps.accounts.models import ActivityLog
+from apps.admin_panel.models import DatasetReviewerAssignment
 
 
 def make_dataset(owner, title="Test DS", status=Dataset.Status.APPROVED):
@@ -72,3 +73,89 @@ class AdminGraphsTests(APITestCase):
         resp = self.client.get("/api/admin-panel/dashboard/admin/graphs/")
         total = sum(day["count"] for day in resp.data["downloads"])
         self.assertEqual(total, 0)
+
+
+
+class ReviewerAssignmentRetryTests(APITestCase):
+    def test_granting_third_reviewer_assigns_pending_dataset(self):
+        admin = make_user(
+            "retryadmin",
+            "retryadmin@aastu.edu.et",
+            role="admin",
+        )
+
+        owner = make_user(
+            "retryowner",
+            "retryowner@aastu.edu.et",
+            role="researcher",
+        )
+
+        reviewer1 = make_user(
+            "retryreviewer1",
+            "retryreviewer1@aastu.edu.et",
+            role="reviewer",
+        )
+
+        reviewer2 = make_user(
+            "retryreviewer2",
+            "retryreviewer2@aastu.edu.et",
+            role="reviewer",
+        )
+
+        reviewer3 = make_user(
+            "retryreviewer3",
+            "retryreviewer3@aastu.edu.et",
+            role="public",
+        )
+
+        dataset = Dataset.objects.create(
+            title="Retry Assignment DS",
+            owner=owner,
+            status=Dataset.Status.PENDING,
+        )
+
+        from apps.datasets.services.assignment import assign_reviewers
+
+        # Only two eligible reviewers exist, so assignment must wait.
+        assignments = assign_reviewers(dataset)
+
+        self.assertEqual(assignments, [])
+        self.assertEqual(
+            DatasetReviewerAssignment.objects.filter(dataset=dataset).count(),
+            0,
+        )
+
+        self.client.force_authenticate(admin)
+
+        # Grant reviewer role to the third user.
+        resp = self.client.post(
+            f"/api/admin-panel/users/{reviewer3.id}/grant-role/",
+            {"role": "reviewer"},
+        )
+
+        self.assertEqual(
+            resp.status_code,
+            status.HTTP_200_OK,
+        )
+
+        self.assertTrue(
+            reviewer3.profile.roles.filter(role="reviewer").exists()
+        )
+
+        dataset.refresh_from_db()
+
+        self.assertEqual(
+            DatasetReviewerAssignment.objects.filter(dataset=dataset).count(),
+            3,
+        )
+
+        assigned_ids = set(
+            DatasetReviewerAssignment.objects.filter(
+                dataset=dataset
+            ).values_list("reviewer_id", flat=True)
+        )
+
+        self.assertEqual(
+            assigned_ids,
+            {reviewer1.id, reviewer2.id, reviewer3.id},
+        )

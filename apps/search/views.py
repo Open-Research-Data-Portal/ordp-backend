@@ -38,7 +38,6 @@ def list_datasets(request):
 
     extra_params = {
         "file_type":             request.query_params.get("file_type", "").strip(),
-        "subject":               request.query_params.get("subject", "").strip(),
         "keyword":               request.query_params.get("keyword", "").strip(),
         "language":              request.query_params.get("language", "").strip(),
         "sponsor":               request.query_params.get("sponsor", "").strip(),

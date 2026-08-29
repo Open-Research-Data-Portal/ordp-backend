@@ -3,13 +3,11 @@ from rest_framework import status
 
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset
-from .models import Category, Subject
+from .models import Category
 
 
 class DatasetOtherCategoryTests(APITestCase):
-    def setUp(self):
-        self.subject = Subject.objects.create(name="General")
-
+    
     def test_new_category_created_as_pending_and_still_usable(self):
         researcher = make_user("ocresearcher", "ocresearcher@aastu.edu.et", role="researcher")
         dataset = Dataset.objects.create(title="OC DS", owner=researcher)
@@ -17,7 +15,7 @@ class DatasetOtherCategoryTests(APITestCase):
         self.client.force_authenticate(researcher)
         resp = self.client.post(f"/api/metadata/{dataset.id}/attach/", {
             "description": "test data", "other_category": "Quantum Beekeeping",
-            "subject": self.subject.id,
+            
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         category = Category.objects.get(name="Quantum Beekeeping")
@@ -32,7 +30,7 @@ class DatasetOtherCategoryTests(APITestCase):
 
         self.client.force_authenticate(researcher)
         resp = self.client.post(f"/api/metadata/{dataset.id}/attach/", {
-            "description": "test data", "category_id": category.id, "subject": self.subject.id,
+            "description": "test data", "category_id": category.id, 
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         dataset.refresh_from_db()
@@ -44,7 +42,7 @@ class DatasetOtherCategoryTests(APITestCase):
 
         self.client.force_authenticate(researcher)
         resp = self.client.post(f"/api/metadata/{dataset.id}/attach/", {
-            "description": "test data", "subject": self.subject.id,
+            "description": "test data", 
         })
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -56,11 +54,11 @@ class DatasetOtherCategoryTests(APITestCase):
 
         self.client.force_authenticate(researcher1)
         self.client.post(f"/api/metadata/{dataset1.id}/attach/", {
-            "description": "a", "other_category": "Marine Robotics", "subject": self.subject.id,
+            "description": "a", "other_category": "Marine Robotics", 
         })
         self.client.force_authenticate(researcher2)
         self.client.post(f"/api/metadata/{dataset2.id}/attach/", {
-            "description": "b", "other_category": "marine robotics", "subject": self.subject.id,  # different casing
+            "description": "b", "other_category": "marine robotics",  # different casing
         })
 
         self.assertEqual(Category.objects.filter(name__iexact="Marine Robotics").count(), 1)

@@ -16,6 +16,7 @@ from django.contrib.auth import get_user_model
 
 from .models import (
     ModerationDecision,
+    DatasetReviewerAssignment,
     ThumbnailSuggestion,
     DatasetDeletionRequest,
     DeletionRequestVote,
@@ -41,55 +42,226 @@ def _resolve_thumbnail_suggestions(dataset):
 @api_view(["GET"])
 @permission_classes([IsReviewerOrAdmin])
 def moderation_queue(request):
-    qs = Dataset.objects.filter(status=Dataset.Status.PENDING, is_active=True)
-    if not request.user.profile.has_role("admin"):
-        qs = qs.filter(assigned_reviewer=request.user)
-    qs = qs.order_by("created_at")
-    return Response(ModerationQueueItemSerializer(qs, many=True).data)
+    qs = Dataset.objects.filter(
+        status=Dataset.Status.PENDING,
+        is_active=True,
+        reviewer_assignments__reviewer=request.user,
+    ).distinct()
+
+    return Response(
+        ModerationQueueItemSerializer(
+            qs.order_by("created_at"),
+            many=True,
+        ).data
+    )
 
 
 @api_view(["POST"])
 @permission_classes([IsReviewerOrAdmin])
 def moderate_dataset(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id)
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        status=Dataset.Status.PENDING,
+    )
+
     decision = request.data.get("decision")
     reason = (request.data.get("reason") or "").strip()
 
     if decision not in ModerationDecision.Decision.values:
-        return Response({"detail": "decision must be 'approved', 'changes_requested', or 'rejected'."}, status=400)
-    if decision in (ModerationDecision.Decision.REJECTED, ModerationDecision.Decision.CHANGES_REQUESTED) and not reason:
-        return Response({"detail": "A reason is required to reject or request changes on a dataset."}, status=400)
+        return Response(
+            {
+                "detail": (
+                    "decision must be 'approved', "
+                    "'changes_requested', or 'rejected'."
+                )
+            },
+            status=400,
+        )
 
-    ModerationDecision.objects.create(dataset=dataset, reviewer=request.user, decision=decision, reason=reason or None)
+    if (
+        decision in (
+            ModerationDecision.Decision.REJECTED,
+            ModerationDecision.Decision.CHANGES_REQUESTED,
+        )
+        and not reason
+    ):
+        return Response(
+            {
+                "detail": (
+                    "A reason is required to reject or "
+                    "request changes on a dataset."
+                )
+            },
+            status=400,
+        )
 
-    if decision == ModerationDecision.Decision.APPROVED:
+    assigned = DatasetReviewerAssignment.objects.filter(
+        dataset=dataset,
+        reviewer=request.user,
+    ).exists()
+
+    if not assigned:
+        return Response(
+            {"detail": "You are not assigned to review this dataset."},
+            status=403,
+        )
+
+    if ModerationDecision.objects.filter(
+        dataset=dataset,
+        reviewer=request.user,
+    ).exists():
+        return Response(
+            {"detail": "You have already submitted a decision for this dataset."},
+            status=400,
+        )
+
+    ModerationDecision.objects.create(
+        dataset=dataset,
+        reviewer=request.user,
+        decision=decision,
+        reason=reason or None,
+    )
+
+    approve_votes = ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.APPROVED,
+    ).count()
+
+    reject_votes = ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.REJECTED,
+    ).count()
+
+    votes_cast = ModerationDecision.objects.filter(
+        dataset=dataset,
+    ).count()
+
+    assigned_count = DatasetReviewerAssignment.objects.filter(
+        dataset=dataset,
+    ).count()
+
+    if assigned_count < 3:
+        return Response(
+            {
+                "status": "pending",
+                "approve_votes": approve_votes,
+                "reject_votes": reject_votes,
+                "votes_cast": votes_cast,
+                "required_reviewers": 3,
+            },
+            status=200,
+        )
+
+    if approve_votes >= 2:
         dataset.status = Dataset.Status.PUBLISHED
         dataset.save(update_fields=["status"])
+
         _resolve_thumbnail_suggestions(dataset)
+
         notify(
-            user=dataset.owner, notification_type=Notification.NotificationType.DATASET_APPROVED,
-            message=f'Your dataset "{dataset.title}" has been published.', dataset=dataset,
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.DATASET_APPROVED,
+            message=f'Your dataset "{dataset.title}" has been published.',
+            dataset=dataset,
             link_path=f"/datasets/{dataset.id}",
         )
-    elif decision == ModerationDecision.Decision.CHANGES_REQUESTED:
+
+        return Response(
+            {
+                "status": "approved",
+                "approve_votes": approve_votes,
+                "reject_votes": reject_votes,
+                "votes_cast": votes_cast,
+            },
+            status=200,
+        )
+
+    if ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.CHANGES_REQUESTED,
+    ).count() >= 2:
         dataset.status = Dataset.Status.CHANGES_REQUESTED
         dataset.save(update_fields=["status"])
+
         notify(
-            user=dataset.owner, notification_type=Notification.NotificationType.CHANGES_REQUESTED,
-            message=f'Changes were requested on "{dataset.title}": {reason}', dataset=dataset, reason=reason,
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.CHANGES_REQUESTED,
+            message=f'Changes were requested on "{dataset.title}".',
+            dataset=dataset,
+            reason=reason,
             link_path=f"/datasets/{dataset.id}",
         )
-    else:
+
+        return Response(
+            {
+                "status": "changes_requested",
+                "approve_votes": approve_votes,
+                "reject_votes": reject_votes,
+                "votes_cast": votes_cast,
+            },
+            status=200,
+        )
+
+    if ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.CHANGES_REQUESTED,
+    ).count() >= 2:
+        dataset.status = Dataset.Status.CHANGES_REQUESTED
+        dataset.save(update_fields=["status"])
+
+        notify(
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.CHANGES_REQUESTED,
+            message=f'Changes were requested on "{dataset.title}".',
+            dataset=dataset,
+            reason=reason,
+            link_path=f"/datasets/{dataset.id}",
+        )
+
+        return Response(
+            {
+                "status": "changes_requested",
+                "approve_votes": approve_votes,
+                "reject_votes": reject_votes,
+                "votes_cast": votes_cast,
+            },
+            status=200,
+        )
+
+    if reject_votes >= 2:
         dataset.status = Dataset.Status.REJECTED
         dataset.save(update_fields=["status"])
+
         notify(
-            user=dataset.owner, notification_type=Notification.NotificationType.DATASET_REJECTED,
-            message=f'Your dataset "{dataset.title}" was rejected: {reason}', dataset=dataset, reason=reason,
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.DATASET_REJECTED,
+            message=f'Your dataset "{dataset.title}" was rejected: {reason}',
+            dataset=dataset,
+            reason=reason,
             link_path=f"/datasets/{dataset.id}",
         )
 
-    return Response({"status": decision}, status=200)
+        return Response(
+            {
+                "status": "rejected",
+                "approve_votes": approve_votes,
+                "reject_votes": reject_votes,
+                "votes_cast": votes_cast,
+            },
+            status=200,
+        )
 
+    return Response(
+        {
+            "status": "pending",
+            "approve_votes": approve_votes,
+            "reject_votes": reject_votes,
+            "votes_cast": votes_cast,
+            "required_reviewers": 3,
+        },
+        status=200,
+    )
 
 @api_view(["POST"])
 @permission_classes([IsReviewerOrAdmin])

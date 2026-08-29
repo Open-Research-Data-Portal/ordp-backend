@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Category, Subject, Metadata, Keyword
+from .models import Category, Metadata, Keyword
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -8,10 +8,7 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ["id", "name", "description"]
 
 
-class SubjectSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Subject
-        fields = ["id", "name"]
+
 
 
 class KeywordsField(serializers.ListField):
@@ -35,17 +32,27 @@ class KeywordsField(serializers.ListField):
         data = super().to_internal_value(data)
         return [item.strip() for item in data if item.strip()]
 
-
 class MetadataSerializer(serializers.ModelSerializer):
     keywords = KeywordsField(child=serializers.CharField(), required=False)
-    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all(), required=False, allow_null=True)
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.all(),
+        required=False,
+        allow_null=True
+    )
     category_name = serializers.CharField(source="category.name", read_only=True)
 
     class Meta:
         model = Metadata
         fields = [
-            "id", "description", "category", "category_name", "subject",
-            "keywords", "sponsor_or_grant", "coverage", "doi_citation", "collaborators_text"
+            "id",
+            "description",
+            "category",
+            "category_name",
+            "keywords",
+            "sponsor_or_grant",
+            "coverage",
+            "doi_citation",
+            "collaborators_text",
         ]
 
     def _set_keywords(self, instance, keyword_words):
