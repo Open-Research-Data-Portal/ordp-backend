@@ -177,7 +177,4 @@ def validate_file_matches_declared_type(file_path, declared_file_type):
             )
         return
 
-    # --- Unknown declared type — skip strict validation ---
-    # We accept the file as-is and let reviewers verify it manually.
-    # This avoids confusing errors for valid but uncommon formats.
     return

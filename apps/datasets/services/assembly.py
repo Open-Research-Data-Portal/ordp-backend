@@ -6,7 +6,8 @@ from django.conf import settings
 
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
-from ..models import Dataset, DatasetFile
+
+from ..models import Dataset, DatasetFile, UploadSession
 from .storage import push_to_storage
 from .file_validation import (
     validate_file_matches_declared_type,
@@ -18,19 +19,37 @@ class UploadTooLargeError(Exception):
     pass
 
 
+class MissingChunksError(Exception):
+    def __init__(self, missing_indexes):
+        self.missing_indexes = missing_indexes
+        super().__init__(
+            f"Missing chunks: {', '.join(map(str, missing_indexes))}"
+        )
+
+
 def session_dir(upload_session_id):
-    return os.path.join(settings.UPLOAD_TMP_DIR, upload_session_id)
+    return os.path.join(
+        settings.UPLOAD_TMP_DIR,
+        str(upload_session_id),
+    )
 
 
 def running_total(upload_session_id):
     d = session_dir(upload_session_id)
+
     if not os.path.isdir(d):
         return 0
 
-    return sum(
-        os.path.getsize(os.path.join(d, f))
-        for f in os.listdir(d)
-    )
+    total = 0
+
+    for filename in os.listdir(d):
+        path = os.path.join(d, filename)
+
+        # Only count actual chunk files.
+        if filename.startswith("chunk_") and os.path.isfile(path):
+            total += os.path.getsize(path)
+
+    return total
 
 
 def finalize_upload(
@@ -45,24 +64,98 @@ def finalize_upload(
     item_count=None,
 ):
     dataset = Dataset.objects.get(id=dataset_id)
+
+    # ---------------------------------------------------------
+    # 0. Get upload session
+    # ---------------------------------------------------------
+
+    try:
+        session = UploadSession.objects.select_related(
+            "dataset",
+            "uploader",
+        ).get(
+            id=upload_session_id,
+            dataset=dataset,
+            uploader=uploader,
+        )
+    except UploadSession.DoesNotExist:
+        raise FileNotFoundError(
+            f"Upload session not found: {upload_session_id}"
+        )
+
     d = session_dir(upload_session_id)
 
-    # Session must exist
     if not os.path.isdir(d):
         raise FileNotFoundError(
             f"Upload session not found: {upload_session_id}"
         )
 
-    chunk_paths = sorted(
-        os.path.join(d, f)
-        for f in os.listdir(d)
-        if f.startswith("chunk_")
+    # ---------------------------------------------------------
+    # 1. Verify upload was prepared
+    # ---------------------------------------------------------
+
+    if session.total_chunks is None:
+        raise FileNotFoundError(
+            f"Total chunk count is not set for session: "
+            f"{upload_session_id}"
+        )
+
+    # ---------------------------------------------------------
+    # 2. Verify ALL expected chunks are present
+    # ---------------------------------------------------------
+
+    expected_indexes = set(range(session.total_chunks))
+
+    received_indexes = set()
+
+    for filename in os.listdir(d):
+        if not filename.startswith("chunk_"):
+            continue
+
+        path = os.path.join(d, filename)
+
+        if not os.path.isfile(path):
+            continue
+
+        try:
+            index = int(filename[len("chunk_"):])
+        except ValueError:
+            continue
+
+        received_indexes.add(index)
+
+    missing_indexes = sorted(
+        expected_indexes - received_indexes
     )
 
-    if not chunk_paths:
-        raise FileNotFoundError(
-            f"No uploaded chunks found for session: {upload_session_id}"
+    if missing_indexes:
+        raise MissingChunksError(missing_indexes)
+
+    # ---------------------------------------------------------
+    # 3. Build ordered chunk paths
+    # ---------------------------------------------------------
+
+    chunk_paths = [
+        os.path.join(
+            d,
+            f"chunk_{index:06d}",
         )
+        for index in range(session.total_chunks)
+    ]
+
+    # Make absolutely sure every expected file exists.
+    missing_files = [
+        index
+        for index, path in enumerate(chunk_paths)
+        if not os.path.isfile(path)
+    ]
+
+    if missing_files:
+        raise MissingChunksError(missing_files)
+
+    # ---------------------------------------------------------
+    # 4. Calculate total size
+    # ---------------------------------------------------------
 
     total_size = sum(
         os.path.getsize(path)
@@ -70,12 +163,16 @@ def finalize_upload(
     )
 
     # ---------------------------------------------------------
-    # 1. Size validation
+    # 5. Size validation
     # ---------------------------------------------------------
+
     if total_size > settings.MAX_DATASET_UPLOAD_SIZE:
         shutil.rmtree(d, ignore_errors=True)
 
-        limit_gb = settings.MAX_DATASET_UPLOAD_SIZE // (1024 ** 3)
+        limit_gb = (
+            settings.MAX_DATASET_UPLOAD_SIZE
+            // (1024 ** 3)
+        )
 
         notify(
             user=uploader,
@@ -90,9 +187,13 @@ def finalize_upload(
         raise UploadTooLargeError(total_size)
 
     # ---------------------------------------------------------
-    # 2. Assemble chunks
+    # 6. Assemble chunks in order + calculate final SHA-256
     # ---------------------------------------------------------
-    assembled_path = os.path.join(d, "_assembled")
+
+    assembled_path = os.path.join(
+        d,
+        "_assembled",
+    )
 
     sha256 = hashlib.sha256()
 
@@ -111,8 +212,34 @@ def finalize_upload(
     checksum = sha256.hexdigest()
 
     # ---------------------------------------------------------
-    # 3. Validate declared file type
+    # 7. Verify complete-file checksum
     # ---------------------------------------------------------
+
+    if session.file_checksum:
+        expected_checksum = (
+            session.file_checksum.strip().lower()
+        )
+
+        if checksum.lower() != expected_checksum:
+            notify(
+                user=uploader,
+                notification_type=Notification.NotificationType.UPLOAD_FAILURE,
+                message=(
+                    f'Upload of "{original_filename}" failed '
+                    f'final checksum verification.'
+                ),
+                dataset=dataset,
+            )
+
+            raise ValueError(
+                "Final file checksum does not match "
+                "the expected checksum."
+            )
+
+    # ---------------------------------------------------------
+    # 8. Validate declared file type
+    # ---------------------------------------------------------
+
     try:
         validate_file_matches_declared_type(
             assembled_path,
@@ -120,9 +247,6 @@ def finalize_upload(
         )
 
     except FileTypeMismatchError as exc:
-        # IMPORTANT:
-        # Keep the upload session so the user can correct
-        # the selected file type and retry.
         notify(
             user=uploader,
             notification_type=Notification.NotificationType.UPLOAD_FAILURE,
@@ -132,12 +256,16 @@ def finalize_upload(
             dataset=dataset,
         )
 
+        # Keep the session so the user can retry.
         raise
 
     # ---------------------------------------------------------
-    # 4. Push to Backblaze/storage
+    # 9. Push assembled file to storage
     # ---------------------------------------------------------
-    object_key = f"datasets/{dataset.id}/{original_filename}"
+
+    object_key = (
+        f"datasets/{dataset.id}/{original_filename}"
+    )
 
     try:
         push_to_storage(
@@ -146,10 +274,6 @@ def finalize_upload(
         )
 
     except Exception as exc:
-        # IMPORTANT:
-        # Keep the session so the user does NOT have to
-        # upload the chunks again after a temporary
-        # storage/network failure.
         notify(
             user=uploader,
             notification_type=Notification.NotificationType.UPLOAD_FAILURE,
@@ -160,11 +284,13 @@ def finalize_upload(
             dataset=dataset,
         )
 
+        # Keep session for retry.
         raise
 
     # ---------------------------------------------------------
-    # 5. Create DatasetFile
+    # 10. Create DatasetFile
     # ---------------------------------------------------------
+
     dataset_file = DatasetFile.objects.create(
         dataset=dataset,
         file_key=object_key,
@@ -179,9 +305,13 @@ def finalize_upload(
     )
 
     # ---------------------------------------------------------
-    # 6. SUCCESS → now delete temporary session
+    # 11. Success -> delete temporary upload session
     # ---------------------------------------------------------
-    shutil.rmtree(d, ignore_errors=True)
+
+    shutil.rmtree(
+        d,
+        ignore_errors=True,
+    )
 
     notify(
         user=uploader,

@@ -120,15 +120,40 @@ class ChunkUploadSizeLimitTests(APITestCase):
         self.dataset_id = init_resp.data["dataset_id"]
         self.session_id = init_resp.data["upload_session_id"]
 
+
     def test_chunk_exceeding_limit_is_rejected(self):
+        import hashlib
+
+        content = b"x" * 100
+        checksum = hashlib.sha256(content).hexdigest()
+
+        # Prepare while the normal upload limit is active.
+        prepare_resp = self.client.post(
+            f"/api/datasets/upload/prepare/{self.session_id}/",
+            {
+                "filename": "large.bin",
+                "file_size": len(content),
+                "file_checksum": checksum,
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            prepare_resp.status_code,
+            status.HTTP_200_OK,
+            prepare_resp.data,
+        )
+
+        # Now lower the limit so the chunk itself exceeds it.
         with override_settings(MAX_DATASET_UPLOAD_SIZE=10):
-            chunk = io.BytesIO(b"x" * 100)
+            chunk = io.BytesIO(content)
             chunk.name = "chunk_0.bin"
 
             resp = self.client.post(
                 f"/api/datasets/upload/chunk/{self.session_id}/",
                 {
                     "chunk_index": 0,
+                    "chunk_checksum": checksum,
                     "chunk": chunk,
                 },
                 format="multipart",
@@ -137,7 +162,10 @@ class ChunkUploadSizeLimitTests(APITestCase):
             self.assertEqual(
                 resp.status_code,
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                resp.data,
             )
+
+
 
 
 class SubmitDatasetTests(APITestCase):
@@ -169,13 +197,13 @@ class SubmitDatasetTests(APITestCase):
         from apps.metadata.models import Category, Metadata
 
         category = Category.objects.create(name="Cat")
-      
+
 
         Metadata.objects.create(
             dataset=self.dataset,
             description="d",
             category=category,
-            
+
         )
 
         self.client.force_authenticate(self.owner)

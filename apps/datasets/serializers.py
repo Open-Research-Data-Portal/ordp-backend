@@ -128,14 +128,23 @@ class DatasetSerializer(serializers.ModelSerializer):
 
 class InitUploadSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
-
     visibility = serializers.ChoiceField(
         choices=Dataset.Visibility.choices,
         required=False,
         allow_null=True,
         default=Dataset.Visibility.RESTRICTED,
     )
+class PrepareUploadSerializer(serializers.Serializer):
+    filename = serializers.CharField(max_length=255)
 
+    file_size = serializers.IntegerField(
+        min_value=1,
+    )
+
+    file_checksum = serializers.CharField(
+        min_length=64,
+        max_length=64,
+    )
 
 class TermsAcceptanceSerializer(serializers.Serializer):
     terms_accepted = serializers.BooleanField()

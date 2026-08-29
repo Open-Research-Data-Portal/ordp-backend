@@ -31,6 +31,11 @@ urlpatterns = [
     path("<uuid:dataset_id>/request-revision-permission/", views.request_revision_permission, name="request-revision-permission"),
     path("<uuid:dataset_id>/watch/", views.toggle_watch, name="toggle-watch"),
     path("content-updates/<uuid:update_id>/comparison/", views.content_update_comparison, name="content-update-comparison"),
+    path(
+    "upload/prepare/<str:upload_session_id>/",
+    views.prepare_upload,
+    name="upload-prepare",
+),
    
 ]
     

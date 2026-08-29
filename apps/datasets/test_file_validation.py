@@ -1,5 +1,6 @@
 import io
 import json
+import hashlib
 
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -13,17 +14,64 @@ VALID_CSV = b"name,age,city\nAlice,30,Addis Ababa\nBob,25,Jimma\n"
 VALID_JSON = json.dumps({"a": 1, "b": [1, 2, 3]}).encode()
 
 
-def upload_and_complete(client, session_id, dataset_id, content, filename, file_type, extra=None):
+
+def upload_and_complete(
+    client,
+    session_id,
+    dataset_id,
+    content,
+    filename,
+    file_type,
+    extra=None,
+):
+    checksum = hashlib.sha256(content).hexdigest()
+
+    # Step 1: Prepare the upload
+    prepare_resp = client.post(
+        f"/api/datasets/upload/prepare/{session_id}/",
+        {
+            "filename": filename,
+            "file_size": len(content),
+            "file_checksum": checksum,
+        },
+        format="json",
+    )
+
+    assert prepare_resp.status_code == status.HTTP_200_OK, prepare_resp.data
+
+    # Step 2: Upload the chunk
     chunk = io.BytesIO(content)
     chunk.name = "chunk_0.bin"
-    client.post(
+
+    chunk_resp = client.post(
         f"/api/datasets/upload/chunk/{session_id}/",
-        {"chunk_index": 0, "chunk": chunk}, format="multipart",
+        {
+            "chunk_index": 0,
+            "chunk_checksum": checksum,
+            "chunk": chunk,
+        },
+        format="multipart",
     )
-    payload = {"dataset_id": dataset_id, "filename": filename, "file_type": file_type}
+
+    assert chunk_resp.status_code == status.HTTP_200_OK, chunk_resp.data
+
+    # Step 3: Complete the upload
+    payload = {
+        "dataset_id": dataset_id,
+        "filename": filename,
+        "file_type": file_type,
+    }
+
     if extra:
         payload.update(extra)
-    return client.post(f"/api/datasets/upload/complete/{session_id}/", payload, format="json")
+
+    return client.post(
+        f"/api/datasets/upload/complete/{session_id}/",
+        payload,
+        format="json",
+    )
+
+
 
 
 class FileTypeMismatchTests(APITestCase):

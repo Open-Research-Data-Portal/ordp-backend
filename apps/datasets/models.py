@@ -315,6 +315,16 @@ class UploadSession(models.Model):
         blank=True,
     )
 
+    total_chunks = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+    )
+
+    file_checksum = models.CharField(
+        max_length=64,
+        blank=True,
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
     )

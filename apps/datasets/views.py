@@ -1,5 +1,7 @@
 import os
 import uuid
+import math
+import hashlib
 
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
@@ -9,8 +11,7 @@ from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .services.diffing import compute_diff
-from .serializers import DatasetRevisionSerializer
-from rest_framework.permissions import AllowAny
+from .serializers import DatasetRevisionSerializer, PrepareUploadSerializer
 from django.db import models as django_models
 from django.conf import settings
 from django.utils import timezone
@@ -36,7 +37,13 @@ from .models import DatasetRevision, PendingContentUpdate
 from .models import Dataset, DatasetVersion
 from .permissions import IsDatasetOwner
 from .serializers import DatasetSerializer, InitUploadSerializer, TermsAcceptanceSerializer, DatasetVersionSerializer
-from .services.assembly import finalize_upload, session_dir, running_total, UploadTooLargeError
+from .services.assembly import (
+    finalize_upload,
+    session_dir,
+    running_total,
+    UploadTooLargeError,
+    MissingChunksError,
+)
 
 
 @api_view(["POST"])
@@ -172,25 +179,19 @@ def init_existing_draft_upload(request, dataset_id):
         status=status_code,
     )
 
+
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
-@parser_classes([MultiPartParser])
-def upload_chunk(request, upload_session_id):
+def prepare_upload(request, upload_session_id):
     """
-    Step 2:
-    Upload one chunk.
+    Prepare a file upload after the user has selected a file.
 
-    The upload session must belong to the authenticated user.
+    The dataset remains a draft. This endpoint only determines
+    the chunk size and total number of chunks.
     """
 
-    chunk_index = request.data.get("chunk_index")
-    chunk_file = request.FILES.get("chunk")
-
-    if chunk_file is None or chunk_index is None:
-        return Response(
-            {"detail": "chunk and chunk_index are required."},
-            status=400,
-        )
+    serializer = PrepareUploadSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
 
     try:
         session = UploadSession.objects.select_related(
@@ -212,17 +213,70 @@ def upload_chunk(request, upload_session_id):
             status=400,
         )
 
-    d = session_dir(upload_session_id)
+    filename = serializer.validated_data["filename"]
+    file_size = serializer.validated_data["file_size"]
+    file_checksum = serializer.validated_data["file_checksum"]
 
-    os.makedirs(d, exist_ok=True)
-
-    if (
-        running_total(upload_session_id) + chunk_file.size
-        > settings.MAX_DATASET_UPLOAD_SIZE
-    ):
+    if file_size > settings.MAX_DATASET_UPLOAD_SIZE:
         return Response(
-            {"detail": "Upload exceeds maximum allowed size."},
+            {"detail": "File exceeds maximum allowed size."},
             status=413,
+        )
+
+    chunk_size = calculate_chunk_size(file_size)
+    total_chunks = math.ceil(file_size / chunk_size)
+
+    session.original_filename = filename
+    session.total_chunks = total_chunks
+    session.file_checksum = file_checksum
+
+    session.save(
+        update_fields=[
+            "original_filename",
+            "total_chunks",
+            "file_checksum",
+            "updated_at",
+        ]
+    )
+
+    return Response(
+        {
+            "upload_session_id": session.id,
+            "chunk_size": chunk_size,
+            "total_chunks": total_chunks,
+        },
+        status=200,
+    )
+
+@api_view(["POST"])
+@permission_classes([CanUploadDatasets])
+@parser_classes([MultiPartParser])
+def upload_chunk(request, upload_session_id):
+    """
+    Step 2:
+    Upload one chunk with checksum verification.
+
+    Behavior:
+    - Validates chunk_index.
+    - Rejects indexes outside the expected range.
+    - Verifies the received chunk checksum.
+    - Detects identical duplicate chunks.
+    - Rejects a duplicate index containing different data.
+    """
+
+    chunk_index = request.data.get("chunk_index")
+    chunk_checksum = request.data.get("chunk_checksum")
+    chunk_file = request.FILES.get("chunk")
+
+    if chunk_file is None or chunk_index is None or not chunk_checksum:
+        return Response(
+            {
+                "detail": (
+                    "chunk, chunk_index, and chunk_checksum "
+                    "are required."
+                )
+            },
+            status=400,
         )
 
     try:
@@ -233,23 +287,159 @@ def upload_chunk(request, upload_session_id):
             status=400,
         )
 
-    if chunk_index < 0:
+    try:
+        session = UploadSession.objects.select_related(
+            "dataset",
+            "uploader",
+        ).get(
+            id=upload_session_id,
+            uploader=request.user,
+        )
+    except UploadSession.DoesNotExist:
         return Response(
-            {"detail": "chunk_index cannot be negative."},
+            {"detail": "Unknown upload session."},
+            status=404,
+        )
+
+    if session.completed_at is not None:
+        return Response(
+            {
+                "detail": (
+                    "This upload session has already been completed."
+                )
+            },
             status=400,
         )
+
+    # ---------------------------------------------------------
+    # 1. Validate chunk index
+    # ---------------------------------------------------------
+
+    if session.total_chunks is None:
+        return Response(
+            {
+                "detail": (
+                    "Upload must be prepared before chunks "
+                    "can be uploaded."
+                )
+            },
+            status=400,
+        )
+
+    if chunk_index < 0 or chunk_index >= session.total_chunks:
+        return Response(
+            {
+                "detail": (
+                    f"chunk_index must be between 0 and "
+                    f"{session.total_chunks - 1}."
+                )
+            },
+            status=400,
+        )
+
+    # ---------------------------------------------------------
+    # 2. Calculate checksum of received chunk
+    # ---------------------------------------------------------
+
+    sha256 = hashlib.sha256()
+
+    for part in chunk_file.chunks():
+        sha256.update(part)
+
+    received_checksum = sha256.hexdigest()
+
+    # Reset the uploaded file so it can be read again below.
+    chunk_file.seek(0)
+
+    # Normalize the supplied checksum.
+    chunk_checksum = str(chunk_checksum).strip().lower()
+
+    if received_checksum != chunk_checksum:
+        return Response(
+            {
+                "detail": "Chunk checksum mismatch.",
+                "chunk_index": chunk_index,
+            },
+            status=400,
+        )
+
+    # ---------------------------------------------------------
+    # 3. Determine chunk path
+    # ---------------------------------------------------------
+
+    d = session_dir(upload_session_id)
+    os.makedirs(d, exist_ok=True)
 
     chunk_path = os.path.join(
         d,
         f"chunk_{chunk_index:06d}",
     )
 
+    # ---------------------------------------------------------
+    # 4. Duplicate detection
+    # ---------------------------------------------------------
+
+    if os.path.exists(chunk_path):
+        existing_sha256 = hashlib.sha256()
+
+        with open(chunk_path, "rb") as existing_chunk:
+            while True:
+                data = existing_chunk.read(1024 * 1024)
+
+                if not data:
+                    break
+
+                existing_sha256.update(data)
+
+        existing_checksum = existing_sha256.hexdigest()
+
+        if existing_checksum == received_checksum:
+            return Response(
+                {
+                    "status": "duplicate",
+                    "chunk_index": chunk_index,
+                },
+                status=200,
+            )
+
+        return Response(
+            {
+                "detail": (
+                    "A different chunk already exists at "
+                    "this chunk_index."
+                ),
+                "chunk_index": chunk_index,
+            },
+            status=409,
+        )
+
+    # ---------------------------------------------------------
+    # 5. Check total upload size
+    # ---------------------------------------------------------
+
+    if (
+        running_total(upload_session_id) + chunk_file.size
+        > settings.MAX_DATASET_UPLOAD_SIZE
+    ):
+        return Response(
+            {"detail": "Upload exceeds maximum allowed size."},
+            status=413,
+        )
+
+    # ---------------------------------------------------------
+    # 6. Save chunk
+    # ---------------------------------------------------------
+
     with open(chunk_path, "wb") as f:
         for part in chunk_file.chunks():
             f.write(part)
 
     return Response(
-        {"status": "chunk received"},
+        {
+            "status": "chunk received",
+            "chunk_index": chunk_index,
+            "checksum": received_checksum,
+        },
         status=200,
     )
 
@@ -267,6 +457,19 @@ def upload_thumbnail(request, dataset_id):
     dataset.thumbnail_source = Dataset.ThumbnailSource.UPLOADED
     dataset.save(update_fields=["thumbnail_key", "thumbnail_source"])
     return Response({"status": "thumbnail uploaded"}, status=200)
+def calculate_chunk_size(file_size):
+    MB = 1024 * 1024
+
+    if file_size <= 10 * MB:
+        return file_size
+
+    if file_size <= 100 * MB:
+        return 5 * MB
+
+    if file_size <= 500 * MB:
+        return 10 * MB
+
+    return 20 * MB
 
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
@@ -337,6 +540,15 @@ def complete_upload(request, upload_session_id):
             column_count=request.data.get("column_count"),
             feature_names=request.data.get("feature_names"),
             item_count=request.data.get("item_count"),
+        )
+
+    except MissingChunksError as exc:
+        return Response(
+            {
+                "detail": "Missing chunks.",
+                "missing_chunks": exc.missing_indexes,
+            },
+            status=400,
         )
 
     except FileNotFoundError:
