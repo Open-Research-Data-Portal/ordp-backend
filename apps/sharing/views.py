@@ -4,6 +4,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from apps.datasets.services.access import is_under_embargo
 
 from apps.accounts.models import ActivityLog
 from apps.accounts.permissions import IsReviewerOrAdmin
@@ -37,7 +38,14 @@ def download_dataset(request, dataset_id):
     has_permission = is_free_access or reviewer_bypass or has_active_share
     if not has_permission:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
-
+    if is_under_embargo(dataset):
+        return Response(
+            {
+                "detail": "This dataset is currently under embargo.",
+                "embargo_end_date": dataset.embargo_end_date,
+            },
+            status=403,
+        )
     if dataset.current_version is None:
         return Response({"detail": "This dataset has no published file yet."}, status=404)
 

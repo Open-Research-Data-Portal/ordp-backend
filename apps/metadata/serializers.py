@@ -6,11 +6,6 @@ class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
         fields = ["id", "name", "description"]
-
-
-
-
-
 class KeywordsField(serializers.ListField):
     """
     keywords is a ManyToManyField on the model. Django gives us a
@@ -44,16 +39,27 @@ class MetadataSerializer(serializers.ModelSerializer):
     class Meta:
         model = Metadata
         fields = [
-            "id",
-            "description",
-            "category",
-            "category_name",
-            "keywords",
-            "sponsor_or_grant",
-            "coverage",
-            "doi_citation",
-            "collaborators_text",
-        ]
+        "id",
+        "description",
+        "category",
+        "category_name",
+        "keywords",
+        "sponsor_or_grant",
+        "doi_citation",
+        "collaborators_text",
+
+        "related_resources",
+        "geographic_coverage",
+        "temporal_coverage",
+        "has_header",
+        "has_missing_values",
+        "instances_represent",
+        "collection_method",
+        "recommended_data_splits",
+        "sensitive_data_disclosure",
+        "data_preprocessing",
+        "citation_notes",
+]
 
     def _set_keywords(self, instance, keyword_words):
         keyword_objs = [

@@ -3,6 +3,7 @@ import uuid
 import math
 import hashlib
 
+from django.utils import timezone
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
 from .models import Bookmark, Contributor, DatasetWatcher, UploadSession
@@ -36,7 +37,14 @@ from .models import DatasetRevision, PendingContentUpdate
 
 from .models import Dataset, DatasetVersion
 from .permissions import IsDatasetOwner
-from .serializers import DatasetSerializer, InitUploadSerializer, TermsAcceptanceSerializer, DatasetVersionSerializer
+from .serializers import (
+    DatasetSerializer,
+    InitUploadSerializer,
+    TermsAcceptanceSerializer,
+    DatasetVersionSerializer,
+)
+
+from apps.metadata.serializers import MetadataSerializer
 from .services.assembly import (
     finalize_upload,
     session_dir,
@@ -61,10 +69,11 @@ def init_upload(request):
     serializer.is_valid(raise_exception=True)
 
     dataset = Dataset.objects.create(
-        title=serializer.validated_data["title"],
-        owner=request.user,
-        visibility=serializer.validated_data.get("visibility"),
-    )
+    title=serializer.validated_data["title"],
+    owner=request.user,
+    visibility=serializer.validated_data.get("visibility"),
+    embargo_end_date=serializer.validated_data.get("embargo_end_date"),
+)
 
     upload_session_id = uuid.uuid4().hex
 
@@ -628,6 +637,27 @@ def accept_terms_and_submit(request, dataset_id):
             status=400,
         )
 
+    if dataset.embargo_end_date is not None:
+        if dataset.visibility != Dataset.Visibility.PUBLIC:
+            return Response(
+                {
+                    "detail": (
+                        "An embargo can only be set for public datasets."
+                    )
+                },
+                status=400,
+            )
+
+        if dataset.embargo_end_date <= timezone.now():
+            return Response(
+                {
+                    "detail": (
+                        "The embargo end date must be in the future."
+                    )
+                },
+                status=400,
+            )
+
     serializer = TermsAcceptanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     if not serializer.validated_data["terms_accepted"]:
@@ -730,7 +760,7 @@ def _build_proposed_metadata(dataset, request_data):
     changed = {}
     current = dataset.metadata
 
-    for field in ("description", "category_id", "sponsor_or_grant"):
+    for field in SHARED_EDITABLE_METADATA_FIELDS:
         new_value = request_data.get(field)
         old_value = getattr(current, field, None)
 
@@ -743,8 +773,27 @@ def _build_proposed_metadata(dataset, request_data):
     return changed
 
 
-OWNER_EDITABLE_FIELDS = ("title", "visibility")
-SHARED_EDITABLE_METADATA_FIELDS = ("description", "category_id", "sponsor_or_grant")
+OWNER_EDITABLE_FIELDS = (
+    "title",
+    "visibility",
+    "embargo_end_date",
+)
+SHARED_EDITABLE_METADATA_FIELDS = (
+    "description",
+    "category_id",
+    "sponsor_or_grant",
+    "related_resources",
+    "geographic_coverage",
+    "temporal_coverage",
+    "has_header",
+    "has_missing_values",
+    "instances_represent",
+    "collection_method",
+    "recommended_data_splits",
+    "sensitive_data_disclosure",
+    "data_preprocessing",
+    "citation_notes",
+)
 
 
 @api_view(["PATCH"])
@@ -757,23 +806,80 @@ def update_dataset(request, dataset_id):
     is_owner = dataset.owner_id == request.user.id
 
     changed_fields = []
+
     if is_owner:
+        new_visibility = request.data.get("visibility", dataset.visibility)
+        new_embargo_end_date = request.data.get(
+            "embargo_end_date",
+            dataset.embargo_end_date,
+        )
+
+        if new_embargo_end_date is not None:
+            embargo_serializer = InitUploadSerializer(
+                data={
+                    "title": dataset.title,
+                    "visibility": new_visibility,
+                    "embargo_end_date": new_embargo_end_date,
+                }
+            )
+            embargo_serializer.is_valid(raise_exception=True)
+
+            if new_visibility != Dataset.Visibility.PUBLIC:
+                return Response(
+                    {
+                        "detail": "An embargo can only be set for public datasets."
+                    },
+                    status=400,
+                )
+
+            new_embargo_end_date = embargo_serializer.validated_data[
+                "embargo_end_date"
+            ]
+
         for field in OWNER_EDITABLE_FIELDS:
             if field in request.data:
                 setattr(dataset, field, request.data[field])
                 changed_fields.append(field)
-    dataset.save()
+
+        if new_visibility != Dataset.Visibility.PUBLIC:
+            dataset.embargo_end_date = None
+            if "embargo_end_date" not in changed_fields:
+                changed_fields.append("embargo_end_date")
+
+        dataset.save()
 
     if hasattr(dataset, "metadata"):
-        metadata_changed = []
         metadata = dataset.metadata
-        for field in SHARED_EDITABLE_METADATA_FIELDS:
-            if field in request.data:
-                setattr(metadata, field, request.data[field])
-                metadata_changed.append(field)
-        if metadata_changed:
-            metadata.save(update_fields=metadata_changed)
-            changed_fields.extend(metadata_changed)
+
+        metadata_data = {
+            field: request.data[field]
+            for field in SHARED_EDITABLE_METADATA_FIELDS
+            if field in request.data
+        }
+
+        if "category_id" in request.data:
+            from apps.metadata.models import Category
+
+            category_id = request.data["category_id"]
+
+            category = get_object_or_404(
+                Category,
+                id=category_id,
+                status=Category.Status.APPROVED,
+            )
+
+            metadata_data["category"] = category
+
+    if metadata_data:
+        metadata_serializer = MetadataSerializer(
+            metadata,
+            data=metadata_data,
+            partial=True,
+        )
+        metadata_serializer.is_valid(raise_exception=True)
+        metadata_serializer.save()
+
+        changed_fields.extend(metadata_data.keys())
 
     if "language_ids" in request.data:
         from apps.metadata.models import Language
@@ -1008,3 +1114,4 @@ def remove_contributor(request, dataset_id, contributor_id):
     contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
     contributor.delete()
     return Response(status=204)
+

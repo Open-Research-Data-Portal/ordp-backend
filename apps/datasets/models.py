@@ -63,6 +63,10 @@ class Dataset(models.Model):
     blank=True,
     default=Visibility.RESTRICTED,
 )
+    embargo_end_date = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
     status = models.CharField(max_length=18, choices=Status.choices, default=Status.DRAFT)
     is_active = models.BooleanField(default=True)
     version = models.IntegerField(default=1)
