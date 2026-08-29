@@ -36,7 +36,6 @@ from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, R
 from apps.accounts.permissions import IsAdminOnly
 
 User = get_user_model()
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def add_other_interest(request):
@@ -62,6 +61,7 @@ def add_other_interest(request):
         },
         status=status.HTTP_201_CREATED,
     )
+
 
 def log_activity(user, action, target_object, ip_address, extra=None):
     ActivityLog.objects.create(
@@ -282,6 +282,13 @@ class CustomTokenRefreshView(TokenRefreshView):
                 target_object=str(user_id) if user_id else "unknown",
                 ip_address=get_client_ip(request),
             )
+        else:
+            log_activity(
+                user=None,
+                action="token_refresh_failure",
+                target_object=str(user_id) if user_id else "unknown",
+                ip_address=get_client_ip(request),
+            )
 
         return response
 
@@ -357,9 +364,10 @@ class VerifyEmailView(APIView):
         except (EmailVerificationToken.DoesNotExist, ValueError):
             log_activity(user=None, action="email_verification_failure", target_object=str(token_str), ip_address=ip, extra={"reason": "invalid_link"})
             return Response(
-                {"error": {"code": "INVALID_LINK", "message": "This verification link is invalid.", "field": None}},
+                {"error": {"code": "INVALID_LINK","message": "This verification link is invalid.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
 
         if not verification.is_valid():
             log_activity(user=verification.user, action="email_verification_failure", target_object=str(verification.user.id), ip_address=ip, extra={"reason": "expired_or_used"})
@@ -412,10 +420,12 @@ class PasswordResetRequestView(APIView):
         try:
             user = User.objects.get(email__iexact=email_addr)
         except User.DoesNotExist:
+            log_activity(user=None, action="password_reset_requested_unknown_email", target_object=email_addr, ip_address=ip, extra={"reason": "no_account"})
             return Response(
                 {"detail": "If an account exists with that email, a reset link has been sent."},
                 status=status.HTTP_200_OK,
             )
+
 
                 # Invalidate any previous unused reset tokens for this user
         PasswordResetToken.objects.filter(user=user, is_used=False).update(is_used=True)
@@ -464,18 +474,21 @@ class PasswordResetConfirmView(APIView):
             )
 
         try:
+
             reset_token = PasswordResetToken.objects.select_related("user").get(token=token_str)
         except (PasswordResetToken.DoesNotExist, ValueError):
             log_activity(user=None, action="password_reset_confirm_failure", target_object=str(token_str), ip_address=ip, extra={"reason": "invalid_link"})
+
             return Response(
-                {"error": {"code": "INVALID_LINK", "message": "This reset link is invalid.", "field": None}},
+                {"error": {"code": "INVALID_LINK","message": "This reset link is invalid.", "field":None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
 
         if not reset_token.is_valid():
             log_activity(user=reset_token.user, action="password_reset_confirm_failure", target_object=str(reset_token.user.id), ip_address=ip, extra={"reason": "expired_or_used"})
             return Response(
-                {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This reset link is invalid or has expired.", "field": None}},
+                {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This reset link is invalidor has expired.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
