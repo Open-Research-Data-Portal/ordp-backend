@@ -1,28 +1,42 @@
-from django.utils import timezone
-from .models import ResearcherRequest, UserProfile
+from requests import Response
+
+from apps.accounts.permissions import IsAdminOnly
+
+from .models import UserRole
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
+from rest_framework.decorators import api_view, permission_classes
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_grant_upload_access(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    profile = target_user.profile
+
+    if not profile.is_profile_complete():
+        return Response(
+            {"detail": "User must complete their profile first."},
+            status=400,
+        )
+
+    profile.can_upload_datasets = True
+    profile.save(update_fields=["can_upload_datasets"])
+
+    return Response({
+        "status": "granted",
+        "can_upload_datasets": True,
+    })
 
 
-def decide_researcher_request(req, decision, decided_by, reason=""):
-    reason = (reason or "").strip()
-    if decision == "reject" and not reason:
-        raise ValueError("A reason is required to reject a researcher request.")
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_revoke_upload_access(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    profile = target_user.profile
 
-    req.decided_by = decided_by
-    req.decided_at = timezone.now()
+    profile.can_upload_datasets = False
+    profile.save(update_fields=["can_upload_datasets"])
 
-    if decision == "approve":
-        req.status = ResearcherRequest.Status.APPROVED
-        req.user.profile.role = UserProfile.Role.RESEARCHER
-        req.user.profile.save(update_fields=["role"])
-        notify(user=req.user, notification_type=Notification.NotificationType.RESEARCHER_APPROVED,
-               message="Your researcher access request has been approved. You can now upload datasets.")
-    else:
-        req.status = ResearcherRequest.Status.REJECTED
-        req.reason = reason
-        notify(user=req.user, notification_type=Notification.NotificationType.RESEARCHER_REJECTED,
-               message=f"Your researcher access request was declined: {reason}", reason=reason)
-
-    req.save()
-    return req
+    return Response({
+        "status": "revoked",
+        "can_upload_datasets": False,
+    })

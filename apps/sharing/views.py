@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.accounts.models import ActivityLog
-from apps.accounts.permissions import IsCheckerOrAdmin
+from apps.accounts.permissions import IsReviewerOrAdmin
 from apps.datasets.models import Dataset, Contributor, DatasetInvitation
 from apps.datasets.permissions import IsDatasetOwner
 from apps.datasets.services.storage import presigned_download_url
@@ -21,17 +21,6 @@ from .services import user_can_freely_download, user_can_access_dataset, resolve
 User = get_user_model()
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def view_dataset(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
-    Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
-    dataset.refresh_from_db(fields=["view_count"])
-    ActivityLog.objects.create(
-        user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
-        ip_address=request.META.get("REMOTE_ADDR", "unknown"),
-    )
-    return Response({"view_count": dataset.view_count})
 
 
 @api_view(["GET"])
@@ -39,13 +28,13 @@ def view_dataset(request, dataset_id):
 def download_dataset(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     profile = getattr(request.user, "profile", None)
-    is_reviewer = profile.has_role("checker", "admin")
+    is_reviewer = profile.has_role("reviewer", "admin")
     is_free_access = user_can_freely_download(request.user, dataset)
-
+    reviewer_bypass = is_reviewer and dataset.visibility != Dataset.Visibility.RESTRICTED
     permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=request.user).first()
     has_active_share = bool(permission and permission.is_active_grant())
 
-    has_permission = is_free_access or is_reviewer or has_active_share
+    has_permission = is_free_access or reviewer_bypass or has_active_share
     if not has_permission:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
 
@@ -88,7 +77,7 @@ def request_share_access(request, dataset_id):
 
     if not request.user.profile.is_profile_complete():
         return Response(
-            {"detail": "Please complete your profile (academia and department) before requesting access to a restricted dataset."},
+            {"detail": "Please complete your profile before requesting access to a restricted dataset."},
             status=403,
         )
 
@@ -105,7 +94,7 @@ def request_share_access(request, dataset_id):
         requested_duration_days=serializer.validated_data.get("requested_duration_days"),
     )
 
-    for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
         notify(
             user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
             message=f'{request.user.profile.full_name} requested sharing access to "{dataset.title}".',
@@ -176,7 +165,7 @@ def share_with_user(request, dataset_id):
         requested_duration_days=serializer.validated_data.get("requested_duration_days"),
     )
 
-    for reviewer in User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
         notify(
             user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
             message=f'{request.user.profile.full_name} requested sharing "{dataset.title}" with {recipient.profile.full_name}.',
@@ -191,7 +180,7 @@ def share_with_user(request, dataset_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def access_request_queue(request):
     qs = DatasetAccessRequest.objects.filter(status=DatasetAccessRequest.Status.PENDING).select_related(
         "dataset", "requester__profile", "restricted_justification"
@@ -200,7 +189,7 @@ def access_request_queue(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def vote_on_access_request(request, request_id):
     access_request = get_object_or_404(DatasetAccessRequest, id=request_id)
     if access_request.status != DatasetAccessRequest.Status.PENDING:

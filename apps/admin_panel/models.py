@@ -17,7 +17,22 @@ class ModerationDecision(models.Model):
     reason = models.TextField(blank=True, null=True)
     decided_at = models.DateTimeField(auto_now_add=True)
 
+class DatasetReviewerAssignment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name="reviewer_assignments",
+    )
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dataset_reviewer_assignments",
+    )
+    assigned_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        unique_together = ["dataset", "reviewer"]
 class ThumbnailSuggestion(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.ForeignKey("datasets.Dataset", on_delete=models.CASCADE, related_name="thumbnail_suggestions")

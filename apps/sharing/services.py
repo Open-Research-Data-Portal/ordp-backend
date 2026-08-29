@@ -14,20 +14,32 @@ MIN_REVIEWER_QUORUM = 3
 
 
 def user_can_freely_download(user, dataset):
+    if not user or not user.is_authenticated:
+        return False
+
     profile = getattr(user, "profile", None)
-    is_researcher = bool(profile and profile.has_role("researcher", "admin"))
-    if dataset.is_owned_by(user):
+    if not profile:
+        return False
+
+    if not profile.is_profile_complete():
+        return False
+
+    # Dataset owner can freely download.
+    if dataset.owner_id == user.id:
         return True
-    if is_researcher and Contributor.objects.filter(dataset=dataset, user=user).exists():
-        return True
-    return False
+
+    # A contributor can freely download.
+    return Contributor.objects.filter(
+        dataset=dataset,
+        user=user,
+    ).exists()
 
 
 def user_can_access_dataset(user, dataset):
     """Broader check used for version-history / metadata reads / share-eligibility.
     Only counts an ACTIVE (non-expired, non-revoked) SharePermission."""
     profile = getattr(user, "profile", None)
-    is_reviewer = bool(profile and profile.has_role("checker", "admin"))
+    is_reviewer = bool(profile and profile.has_role("reviewer", "admin"))
     if user_can_freely_download(user, dataset) or is_reviewer:
         return True
     permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=user).first()
@@ -45,7 +57,7 @@ def resolve_access_request_votes(access_request: DatasetAccessRequest):
         _reject(access_request)
         return {"status": "rejected", "reason": "owner_declined"}
 
-    total_reviewers = User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct().count()
+    total_reviewers = User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct().count()
     quorum = min(MIN_REVIEWER_QUORUM, total_reviewers) or 1
     approve_votes = access_request.votes.filter(vote="approve").count()
     reject_votes = access_request.votes.filter(vote="reject").count()

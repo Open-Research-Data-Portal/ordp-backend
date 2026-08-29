@@ -2,7 +2,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 
 from apps.datasets.factories import make_user
-from apps.metadata.models import Category, Subject, Metadata
+from apps.metadata.models import Category,Metadata
 from .models import Dataset, Contributor, DatasetRevision
 
 
@@ -81,16 +81,16 @@ class FeedTests(APITestCase):
     def setUp(self):
         self.category = Category.objects.create(name="Agriculture")
         self.other_category = Category.objects.create(name="Health")
-        self.subject = Subject.objects.create(name="Crop Yield")
+
 
     def _dataset_with_category(self, owner, title, category, visibility=Dataset.Visibility.PUBLIC):
         dataset = make_dataset(owner, title, visibility=visibility)
-        Metadata.objects.create(dataset=dataset, description="test", category=category, subject=self.subject)
+        Metadata.objects.create(dataset=dataset, description="test", category=category)
         return dataset
 
     def test_feed_includes_all_visibility_tiers_matching_interest(self):
         researcher = make_user("feedresearcher", "feedresearcher@aastu.edu.et", role="researcher")
-        researcher.profile.expertise.set([self.category])
+        researcher.profile.interests.set([self.category])
         other_owner = make_user("feedowner", "feedowner@aastu.edu.et", role="researcher")
 
         public_ds = self._dataset_with_category(other_owner, "Public Ag DS", self.category, Dataset.Visibility.PUBLIC)
@@ -106,7 +106,7 @@ class FeedTests(APITestCase):
 
     def test_own_dataset_excluded_from_own_feed(self):
         researcher = make_user("feedresearcher2", "feedresearcher2@aastu.edu.et", role="researcher")
-        researcher.profile.expertise.set([self.category])
+        researcher.profile.interests.set([self.category])
         own_ds = self._dataset_with_category(researcher, "My Own Ag DS", self.category)
 
         self.client.force_authenticate(researcher)

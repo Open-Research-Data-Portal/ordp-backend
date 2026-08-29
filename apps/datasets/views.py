@@ -1,30 +1,36 @@
 import os
 import uuid
 
+from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
-from .models import Bookmark, Contributor
+from .models import Bookmark, Contributor, DatasetWatcher, UploadSession
 from django.shortcuts import get_object_or_404
-from apps.accounts.permissions import IsProfileComplete, IsResearcherOnly
+from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .services.diffing import compute_diff
 from .serializers import DatasetRevisionSerializer
-
+from rest_framework.permissions import AllowAny
+from django.db import models as django_models
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from .services.assignment import assign_reviewer
+from .services.assignment import assign_reviewers
 
-from apps.accounts.permissions import IsResearcherOrAdmin
+
 from apps.accounts.views import log_activity, get_client_ip
-from .services.storage import presigned_download_url, minio_client
+from .services.storage import (
+    presigned_download_url,
+    upload_fileobj,
+    download_to_file,
+)
 import uuid as uuid_lib
 from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
-from .services.revisions import apply_revision, route_change
+from .services.revisions import route_change
 from .models import DatasetRevision, PendingContentUpdate
 
 from .models import Dataset, DatasetVersion
@@ -34,48 +40,218 @@ from .services.assembly import finalize_upload, session_dir, running_total, Uplo
 
 
 @api_view(["POST"])
-@permission_classes([IsResearcherOnly, IsProfileComplete])
+@permission_classes([CanUploadDatasets])
 def init_upload(request):
-    """Step 1: create the Dataset shell (status=draft), open a chunked-upload session.
-    The uploader IS the author/owner via dataset.owner — no separate Contributor row needed."""
+    """
+    Step 1:
+    Create the Dataset shell and open a chunked upload session.
+
+    Visibility is optional during draft creation.
+    It must be selected before final submission.
+    """
+
     serializer = InitUploadSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
     dataset = Dataset.objects.create(
-        title=serializer.validated_data["title"], owner=request.user,
-        visibility=serializer.validated_data["visibility"],
+        title=serializer.validated_data["title"],
+        owner=request.user,
+        visibility=serializer.validated_data.get("visibility"),
     )
+
     upload_session_id = uuid.uuid4().hex
-    os.makedirs(session_dir(upload_session_id), exist_ok=True)
 
-    log_activity(user=request.user, action="dataset_upload_initiated",
-                 target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
-    return Response({"dataset_id": dataset.id, "upload_session_id": upload_session_id}, status=201)
+    UploadSession.objects.create(
+        id=upload_session_id,
+        dataset=dataset,
+        uploader=request.user,
+    )
 
+    os.makedirs(
+        session_dir(upload_session_id),
+        exist_ok=True,
+    )
+
+    log_activity(
+        user=request.user,
+        action="dataset_upload_initiated",
+        target_object=f"Dataset:{dataset.id}",
+        ip_address=get_client_ip(request),
+    )
+
+    return Response(
+        {
+            "dataset_id": dataset.id,
+            "upload_session_id": upload_session_id,
+        },
+        status=201,
+    )
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
+def init_existing_draft_upload(request, dataset_id):
+    """
+    Resume an existing editable dataset upload.
+
+    Reuses the latest unfinished upload session when available.
+    Otherwise, creates a new upload session.
+    """
+
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        owner=request.user,
+        is_active=True,
+    )
+
+    # Only editable datasets can start/resume an upload.
+    if dataset.status not in (
+        Dataset.Status.DRAFT,
+        Dataset.Status.CHANGES_REQUESTED,
+    ):
+        return Response(
+            {
+                "detail": (
+                    "You can only resume uploads for draft datasets "
+                    "or datasets with requested changes."
+                )
+            },
+            status=400,
+        )
+
+    # Look for the latest unfinished upload session.
+    session = (
+        UploadSession.objects
+        .filter(
+            dataset=dataset,
+            uploader=request.user,
+            completed_at__isnull=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+
+    # No unfinished session exists, so create one.
+    if session is None:
+        upload_session_id = uuid.uuid4().hex
+
+        session = UploadSession.objects.create(
+            id=upload_session_id,
+            dataset=dataset,
+            uploader=request.user,
+        )
+
+        os.makedirs(
+            session_dir(upload_session_id),
+            exist_ok=True,
+        )
+
+        log_activity(
+            user=request.user,
+            action="dataset_upload_session_initiated",
+            target_object=f"Dataset:{dataset.id}",
+            ip_address=get_client_ip(request),
+        )
+
+        status_code = 201
+
+    else:
+        # Make sure the directory still exists.
+        os.makedirs(
+            session_dir(session.id),
+            exist_ok=True,
+        )
+
+        status_code = 200
+
+    return Response(
+        {
+            "dataset_id": str(dataset.id),
+            "upload_session_id": session.id,
+        },
+        status=status_code,
+    )
+
+@api_view(["POST"])
+@permission_classes([CanUploadDatasets])
 @parser_classes([MultiPartParser])
 def upload_chunk(request, upload_session_id):
-    """Step 2: upload one chunk. Rejects early (413) once the running total exceeds
-    MAX_DATASET_UPLOAD_SIZE, without waiting for the final chunk."""
+    """
+    Step 2:
+    Upload one chunk.
+
+    The upload session must belong to the authenticated user.
+    """
+
     chunk_index = request.data.get("chunk_index")
     chunk_file = request.FILES.get("chunk")
+
     if chunk_file is None or chunk_index is None:
-        return Response({"detail": "chunk and chunk_index are required."}, status=400)
+        return Response(
+            {"detail": "chunk and chunk_index are required."},
+            status=400,
+        )
+
+    try:
+        session = UploadSession.objects.select_related(
+            "dataset",
+            "uploader",
+        ).get(
+            id=upload_session_id,
+            uploader=request.user,
+        )
+    except UploadSession.DoesNotExist:
+        return Response(
+            {"detail": "Unknown upload session."},
+            status=404,
+        )
+
+    if session.completed_at is not None:
+        return Response(
+            {"detail": "This upload session has already been completed."},
+            status=400,
+        )
 
     d = session_dir(upload_session_id)
-    if not os.path.isdir(d):
-        return Response({"detail": "Unknown upload session."}, status=404)
 
-    if running_total(upload_session_id) + chunk_file.size > settings.MAX_DATASET_UPLOAD_SIZE:
-        return Response({"detail": "Upload exceeds maximum allowed size."}, status=413)
+    os.makedirs(d, exist_ok=True)
 
-    chunk_path = os.path.join(d, f"chunk_{int(chunk_index):06d}")
+    if (
+        running_total(upload_session_id) + chunk_file.size
+        > settings.MAX_DATASET_UPLOAD_SIZE
+    ):
+        return Response(
+            {"detail": "Upload exceeds maximum allowed size."},
+            status=413,
+        )
+
+    try:
+        chunk_index = int(chunk_index)
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "chunk_index must be an integer."},
+            status=400,
+        )
+
+    if chunk_index < 0:
+        return Response(
+            {"detail": "chunk_index cannot be negative."},
+            status=400,
+        )
+
+    chunk_path = os.path.join(
+        d,
+        f"chunk_{chunk_index:06d}",
+    )
+
     with open(chunk_path, "wb") as f:
         for part in chunk_file.chunks():
             f.write(part)
-    return Response({"status": "chunk received"}, status=200)
+
+    return Response(
+        {"status": "chunk received"},
+        status=200,
+    )
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsDatasetOwner])
@@ -86,41 +262,144 @@ def upload_thumbnail(request, dataset_id):
     if image is None:
         return Response({"detail": "thumbnail file is required."}, status=400)
     key = f"thumbnails/{dataset.id}/{image.name}"
-    minio_client().put_object(settings.MINIO_BUCKET, key, image, image.size)
+    upload_fileobj(image, key, getattr(image, "content_type", None))
     dataset.thumbnail_key = key
     dataset.thumbnail_source = Dataset.ThumbnailSource.UPLOADED
     dataset.save(update_fields=["thumbnail_key", "thumbnail_source"])
     return Response({"status": "thumbnail uploaded"}, status=200)
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
 def complete_upload(request, upload_session_id):
-    """Step 3: assemble chunks, verify size + declared-type match, checksum,
-    push to MinIO, create DatasetFile."""
+    """
+    Step 3:
+    Assemble chunks, validate the file, push it to storage,
+    and create DatasetFile.
+
+    A failed validation or temporary storage failure does NOT
+    destroy the upload session.
+    """
+
+    try:
+        session = UploadSession.objects.select_related(
+            "dataset",
+            "uploader",
+        ).get(
+            id=upload_session_id,
+            uploader=request.user,
+        )
+    except UploadSession.DoesNotExist:
+        return Response(
+            {"detail": "Upload session not found."},
+            status=404,
+        )
+
+    if session.completed_at is not None:
+        return Response(
+            {"detail": "This upload session has already been completed."},
+            status=400,
+        )
+
+    dataset_id = request.data.get("dataset_id")
+
+    if str(dataset_id) != str(session.dataset_id):
+        return Response(
+            {"detail": "This upload session does not belong to this dataset."},
+            status=403,
+        )
+
+    filename = request.data.get("filename")
+    file_type = request.data.get("file_type")
+
+    if not filename:
+        return Response(
+            {"detail": "filename is required."},
+            status=400,
+        )
+
+    if not file_type:
+        return Response(
+            {"detail": "file_type is required."},
+            status=400,
+        )
+
     try:
         dataset_file = finalize_upload(
-            dataset_id=request.data["dataset_id"], upload_session_id=upload_session_id,
-            uploader=request.user, original_filename=request.data["filename"],
-            declared_file_type=request.data["file_type"],
-            is_structured=request.data.get("is_structured", True),
+            dataset_id=session.dataset_id,
+            upload_session_id=upload_session_id,
+            uploader=request.user,
+            original_filename=filename,
+            declared_file_type=file_type,
+            is_structured=request.data.get(
+                "is_structured",
+                True,
+            ),
             column_count=request.data.get("column_count"),
             feature_names=request.data.get("feature_names"),
             item_count=request.data.get("item_count"),
         )
+
+    except FileNotFoundError:
+        return Response(
+            {
+                "detail": (
+                    "Upload session not found or contains no uploaded chunks."
+                )
+            },
+            status=404,
+        )
+
+    except PermissionError:
+        return Response(
+            {
+                "detail": (
+                    "You do not have permission to complete this upload."
+                )
+            },
+            status=403,
+        )
+
     except UploadTooLargeError:
-        return Response({"detail": "File exceeds size limit."}, status=413)
+        return Response(
+            {"detail": "File exceeds size limit."},
+            status=413,
+        )
+
     except FileTypeMismatchError as exc:
-        return Response({"detail": str(exc)}, status=400)
+        # IMPORTANT:
+        # Session remains available.
+        return Response(
+            {"detail": str(exc)},
+            status=400,
+        )
+
     except Exception:
         import logging
-        logging.exception("Upload finalize failed")
-        return Response({"detail": "Upload failed."}, status=500)
 
-    return Response({"file_id": dataset_file.id, "checksum": dataset_file.checksum}, status=201)
+        logging.exception("Upload finalize failed")
+
+        # IMPORTANT:
+        # Session remains available for retry.
+        return Response(
+            {"detail": "Upload failed. You can retry the completion step."},
+            status=500,
+        )
+
+    # Mark the session completed ONLY after everything succeeded.
+    session.completed_at = timezone.now()
+    session.save(update_fields=["completed_at"])
+
+    return Response(
+        {
+            "file_id": dataset_file.id,
+            "checksum": dataset_file.checksum,
+        },
+        status=201,
+    )
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([CanUploadDatasets])
 def accept_terms_and_submit(request, dataset_id):
     """Step 4 (final step): accept dataset-level T&Cs, move draft/changes_requested -> pending.
     Also serves as the resubmit action after a reviewer requests changes."""
@@ -131,6 +410,11 @@ def accept_terms_and_submit(request, dataset_id):
         return Response({"detail": "Attach metadata before submitting."}, status=400)
     if not dataset.languages.exists():
         return Response({"detail": "At least one language is required before submitting."}, status=400)
+    if not dataset.visibility:
+        return Response(
+            {"detail": "Select a visibility option before submitting the dataset."},
+            status=400,
+        )
 
     serializer = TermsAcceptanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -142,34 +426,76 @@ def accept_terms_and_submit(request, dataset_id):
     dataset.terms_version = settings.CURRENT_TERMS_VERSION
     dataset.status = Dataset.Status.PENDING
     dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status"])
-    assign_reviewer(dataset)
+    assign_reviewers(dataset)
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
     return Response({"status": "submitted for review"}, status=200)
 
 
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_datasets(request):
+    from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering
+
     qs = (
         Dataset.objects
         .filter(owner=request.user, is_active=True)
         .prefetch_related("files", "contributors")
-        .order_by("-created_at")
-        .exclude(status=Dataset.Status.DRAFT, files__isnull=True)
-        .order_by("-created_at")
         .distinct()
-
     )
-    return Response(DatasetSerializer(qs, many=True).data)
+
+    # Status filter — owners can see all their own statuses
+    status = request.query_params.get("status", "").strip()
+    if status and status in Dataset.Status.values:
+        qs = qs.filter(status=status)
+
+    # Visibility filter
+    visibility = request.query_params.get("visibility", "").strip()
+    if visibility and visibility in Dataset.Visibility.values:
+        qs = qs.filter(visibility=visibility)
+
+    # File size validation
+    file_size = request.query_params.get("file_size", "").strip()
+    if file_size and file_size not in FILE_SIZE_MAP:
+        return Response({"detail": "file_size must be one of: small, medium, large."}, status=400)
+
+    extra_params = {
+        "file_type":             request.query_params.get("file_type", "").strip(),
+        "date_from":             request.query_params.get("date_from", "").strip(),
+        "date_to":               request.query_params.get("date_to", "").strip(),
+        "file_size":             file_size,
+        "has_contributors":      request.query_params.get("has_contributors", "").strip(),
+        "bookmarked":            request.query_params.get("bookmarked", "").strip(),
+        "has_multiple_versions": request.query_params.get("has_multiple_versions", "").strip(),
+        "download_min":          request.query_params.get("download_min", "").strip(),
+        "download_max":          request.query_params.get("download_max", "").strip(),
+    }
+
+    qs = apply_common_filters(qs, extra_params, request.user)
+
+    order_by = request.query_params.get("order_by", "").strip()
+    if order_by and order_by not in ("newest", "title", "popular", "downloads"):
+        return Response({"detail": "order_by must be one of: newest, title, popular, downloads."}, status=400)
+
+    qs = qs.distinct()
+    return Response(DatasetSerializer(
+        apply_ordering(qs, order_by) if order_by else qs.order_by("-created_at"),
+        many=True
+    ).data)
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def dataset_detail(request, dataset_id):
-    dataset = get_object_or_404(
-        Dataset.objects.prefetch_related("files", "contributors"),
-        id=dataset_id, is_active=True
-    )
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
+    dataset.refresh_from_db(fields=["view_count"])
+
+    if request.user.is_authenticated:
+        ActivityLog.objects.create(
+            user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
+            ip_address=request.META.get("REMOTE_ADDR", "unknown"),
+        )
     return Response(DatasetSerializer(dataset).data)
 
 @api_view(["GET"])
@@ -178,38 +504,81 @@ def dataset_versions(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     versions = dataset.versions.select_related("changed_by", "changed_by__profile")
     return Response(DatasetVersionSerializer(versions, many=True).data)
+
 def _download_to_tmp(file_key):
     local_path = f"/tmp/{uuid_lib.uuid4().hex}"
-    minio_client.fget_object(settings.MINIO_BUCKET, file_key, local_path)
+    download_to_file(file_key, local_path)
     return local_path
 
 
 def _build_proposed_metadata(dataset, request_data):
     if not hasattr(dataset, "metadata"):
         return {}
+
     changed = {}
     current = dataset.metadata
-    for field in ("description", "category_id", "subject_id", "sponsor_or_grant"):
+
+    for field in ("description", "category_id", "sponsor_or_grant"):
         new_value = request_data.get(field)
         old_value = getattr(current, field, None)
+
         if new_value is not None and str(new_value) != str(old_value):
-            changed[field] = {"old": old_value, "new": new_value}
+            changed[field] = {
+                "old": old_value,
+                "new": new_value,
+            }
+
     return changed
+
+
+OWNER_EDITABLE_FIELDS = ("title", "visibility")
+SHARED_EDITABLE_METADATA_FIELDS = ("description", "category_id", "sponsor_or_grant")
 
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated, IsDatasetOwnerOrContributor])
 def update_dataset(request, dataset_id):
-    """Owner or a linked contributor edits the dataset directly. Minor changes apply
-    immediately. Changes at/above VERSION_BUMP_THRESHOLD_PCT are held for independent
-    reviewer clearance — this is what stops an owner (alone, or colluding with a
-    contributor or revision submitter) from pushing unreviewed content live."""
+    """Owner can change anything, including title/visibility. A linked
+    researcher-contributor can only change descriptive metadata — not
+    title/visibility, which are ownership-level decisions."""
     dataset = get_object_or_404(Dataset, id=dataset_id)
+    is_owner = dataset.owner_id == request.user.id
 
-    for field in ("title", "visibility"):
-        if field in request.data:
-            setattr(dataset, field, request.data[field])
+    changed_fields = []
+    if is_owner:
+        for field in OWNER_EDITABLE_FIELDS:
+            if field in request.data:
+                setattr(dataset, field, request.data[field])
+                changed_fields.append(field)
     dataset.save()
+
+    if hasattr(dataset, "metadata"):
+        metadata_changed = []
+        metadata = dataset.metadata
+        for field in SHARED_EDITABLE_METADATA_FIELDS:
+            if field in request.data:
+                setattr(metadata, field, request.data[field])
+                metadata_changed.append(field)
+        if metadata_changed:
+            metadata.save(update_fields=metadata_changed)
+            changed_fields.extend(metadata_changed)
+
+    if "language_ids" in request.data:
+        from apps.metadata.models import Language
+        dataset.languages.set(Language.objects.filter(id__in=request.data["language_ids"]))
+        changed_fields.append("languages")
+
+    if "characteristic_ids" in request.data:
+        from apps.metadata.models import DatasetCharacteristic
+        dataset.characteristics.set(DatasetCharacteristic.objects.filter(id__in=request.data["characteristic_ids"]))
+        changed_fields.append("characteristics")
+
+    if changed_fields:
+        log_activity(
+            user=request.user, action="dataset_metadata_updated",
+            target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request),
+            extra={"fields_changed": changed_fields},
+        )
 
     if "upload_session_id" in request.data:
         current_file = dataset.files.latest("uploaded_at")
@@ -239,23 +608,46 @@ def update_dataset(request, dataset_id):
             new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
             proposed_metadata=_build_proposed_metadata(dataset, request.data),
         )
-        new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
+        new_dataset_file.delete()
         return Response(result, status=202 if result["status"] == "pending_review" else 200)
 
-    return Response({"status": "updated"}, status=200)
+    return Response({"status": "updated", "fields_changed": changed_fields}, status=200)
+
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsResearcherOnly])
+@permission_classes([IsAuthenticated])
+def request_revision_permission(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if dataset.is_owned_by(request.user) or Contributor.objects.filter(dataset=dataset, user=request.user).exists():
+        return Response({"detail": "You already have edit access to this dataset."}, status=400)
+    reason = (request.data.get("reason") or "").strip()
+    if not reason:
+        return Response({"detail": "Please describe why you want to propose a change."}, status=400)
+    from .services.revisions import request_revision_permission as create_request
+    req = create_request(dataset, request.user, reason)
+    return Response({"status": "pending", "request_id": req.id}, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([CanUploadDatasets])
 def propose_revision(request, dataset_id):
-    """A researcher proposes a revision to a dataset they don't own. Requires prior
-    upload of the new file via the normal chunked-upload endpoints, plus a non-empty
-    submitter_message."""
+    """Phase 2: actually submitting the change, only allowed once Phase 1
+    (RevisionRequest) has been approved for this user+dataset, and the
+    submitter's profile is complete."""
+    from .services.revisions import has_revision_permission, consume_revision_permission
+
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+
+    if not request.user.profile.is_profile_complete():
+        return Response({"detail": "Please complete your profile before proposing a change."}, status=403)
+
+    if not has_revision_permission(dataset, request.user):
+        return Response({"detail": "You need reviewer-committee approval before proposing a change to this dataset."}, status=403)
+
     submitter_message = (request.data.get("submitter_message") or "").strip()
     if not submitter_message:
         return Response({"detail": "Please describe what you changed and why."}, status=400)
 
-    dataset = get_object_or_404(Dataset, id=dataset_id)
     current_file = dataset.files.latest("uploaded_at")
-
     try:
         new_dataset_file = finalize_upload(
             dataset_id=dataset_id, upload_session_id=request.data["upload_session_id"],
@@ -273,38 +665,49 @@ def propose_revision(request, dataset_id):
         if os.path.exists(p):
             os.remove(p)
 
-    revision = DatasetRevision.objects.create(
-        dataset=dataset, submitted_by=request.user,
-        previous_file_key=current_file.file_key, new_file_key=new_file_key,
-        diff_percentage=diff_pct, change_summary=summary, submitter_message=submitter_message,
+    result = route_change(
+        dataset=dataset, source=PendingContentUpdate.Source.REVISION, submitted_by=request.user,
+        new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
         proposed_metadata=_build_proposed_metadata(dataset, request.data),
-        status=DatasetRevision.Status.PENDING,
     )
-    new_dataset_file.delete()  # bytes live in MinIO under new_file_key; row only needed once/if applied
-    notify(
-        user=dataset.owner, notification_type=Notification.NotificationType.REVISION_PROPOSED,
-        message=f'{request.user.profile.full_name} proposed a revision to "{dataset.title}".', dataset=dataset,
-        link_path=f"/datasets/{dataset.id}/revisions/{revision.id}",
-    )
-    return Response(DatasetRevisionSerializer(revision).data, status=201)
+    new_dataset_file.delete()
+    consume_revision_permission(dataset, request.user)
+    return Response(result, status=202 if result["status"] == "pending_review" else 200)
 
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_watch(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    watcher, created = DatasetWatcher.objects.get_or_create(dataset=dataset, user=request.user)
+    if not created:
+        watcher.delete()
+        return Response({"watching": False})
+    return Response({"watching": True}, status=201)
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated, IsDatasetOwner])
-def revision_comparison(request, revision_id):
-    revision = get_object_or_404(DatasetRevision.objects.select_related("dataset", "submitted_by"), id=revision_id)
+@permission_classes([IsAuthenticated])
+def content_update_comparison(request, update_id):
+    update = get_object_or_404(PendingContentUpdate.objects.select_related("dataset", "submitted_by"), id=update_id)
+    profile = getattr(request.user, "profile", None)
+    is_reviewer = bool(profile and profile.has_role("reviewer", "admin"))
+    if not (update.dataset.is_owned_by(request.user) or is_reviewer):
+        return Response({"detail": "You don't have permission to view this."}, status=403)
+
+    current_file = update.dataset.files.latest("uploaded_at")
     return Response({
-        "dataset_title": revision.dataset.title,
-        "submitted_by": revision.submitted_by.profile.full_name,
-        "submitted_at": revision.created_at,
-        "submitter_message": revision.submitter_message,
-        "ai_change_summary": revision.change_summary,
-        "diff_percentage": revision.diff_percentage,
-        "will_trigger_content_review": revision.diff_percentage >= settings.VERSION_BUMP_THRESHOLD_PCT,
-        "previous_download_url": presigned_download_url(revision.previous_file_key),
-        "new_download_url": presigned_download_url(revision.new_file_key),
-        "metadata_diff": revision.proposed_metadata,
-        "status": revision.status,
+        "dataset_title": update.dataset.title,
+        "submitted_by": update.submitted_by.profile.full_name if update.submitted_by else None,
+        "submitted_at": update.created_at,
+        "source": update.source,
+        "ai_change_summary": update.change_summary,
+        "diff_percentage": update.diff_percentage,
+        "previous_download_url": presigned_download_url(current_file.file_key),
+        "new_download_url": presigned_download_url(update.new_file_key),
+        "metadata_diff": update.proposed_metadata,
+        "status": update.status,
+        "approve_votes": update.votes.filter(vote="approve").count(),
+        "reject_votes": update.votes.filter(vote="reject").count(),
     })
 
 

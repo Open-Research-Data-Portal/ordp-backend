@@ -2,28 +2,40 @@ from django.db.models.aggregates import Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from datetime import timedelta
-from apps.accounts.models import ActivityLog
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
-from apps.accounts.permissions import IsCheckerOrAdmin
+from apps.accounts.views import get_client_ip
 from apps.datasets.models import Dataset, PendingContentUpdate
 from apps.sharing.models import DatasetAccessRequest, AccessRequestVote
 from .models import ModerationDecision, DatasetDeletionRequest, DeletionRequestVote
-from apps.accounts.permissions import IsAdminOnly
 from apps.datasets.models import DatasetFile
 import csv
 from io import BytesIO
 from django.db.models import Q
 from django.core.mail import send_mail
 from django.conf import settings
-from apps.accounts.models import UserProfile
+from apps.accounts.models import (
+    UserProfile,
+    College,
+    CenterOfExcellence,
+    Department,
+    PasswordResetToken,
+    ActivityLog,
+    UserRole
+)
 from django.http import HttpResponse
 from reportlab.lib import colors # type: ignore
 from reportlab.lib.pagesizes import landscape, letter # type: ignore
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle # type: ignore
 from django.shortcuts import get_object_or_404
-from apps.accounts.permissions import IsAdminOnly
+from apps.accounts.permissions import IsAdminOnly, IsReviewerOrAdmin
+from django.utils.http import urlsafe_base64_encode
+from django.utils.encoding import force_bytes
+from apps.metadata.models import Category
+from apps.accounts.views import get_client_ip
+from apps.accounts.utils import generate_username
 User = get_user_model()
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 
@@ -42,7 +54,7 @@ def admin_cards(request):
     })
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def reviewer_overview(request):
     """Everything currently waiting on this reviewer, in one place. Admins see the
     same shape but scoped to what THEY personally haven't acted on yet — not the
@@ -74,7 +86,7 @@ def reviewer_overview(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def reviewer_metrics(request):
     """This reviewer's own track record — how much they've reviewed, and how
     fast, so they (and an admin looking at the team) can see participation."""
@@ -91,7 +103,7 @@ def reviewer_metrics(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def reviewer_guidelines(request):
     """Static reference info reviewers need while making a decision — the actual
     thresholds the system uses, so 'why did this need committee review' has an
@@ -102,7 +114,6 @@ def reviewer_guidelines(request):
 
     return Response({
         "moderation_guidelines": [
-            "Check that the dataset's declared category and subject genuinely match its content.",
             "Confirm the file(s) uploaded match the declared file type — the system already "
             "blocks an obvious mismatch (e.g. an image declared as CSV), but review for subtler cases.",
             "A rejection requires a clear, specific reason — the requester needs to know what to fix.",
@@ -119,31 +130,220 @@ def reviewer_guidelines(request):
 def admin_create_user(request):
     email = request.data.get("email", "").strip().lower()
     full_name = request.data.get("full_name", "").strip()
-    role = request.data.get("role", UserProfile.Role.PUBLIC)
+    role = request.data.get("role", UserRole.RoleChoice.PUBLIC)
 
     if not email or not full_name:
-        return Response({"detail": "email and full_name are required."}, status=400)
-    if User.objects.filter(email=email).exists():
-        return Response({"detail": "A user with this email already exists."}, status=400)
+        return Response(
+            {"detail": "email and full_name are required."},
+            status=400,
+        )
 
-    user = User.objects.create(username=email, email=email, is_active=True)
+    if User.objects.filter(email=email).exists():
+        return Response(
+            {"detail": "A user with this email already exists."},
+            status=400,
+        )
+
+    if role not in UserRole.RoleChoice.values:
+        return Response(
+            {"detail": "Invalid role."},
+            status=400,
+        )
+
+    username = generate_username(full_name)
+
+    user = User.objects.create(
+        username=username,
+        email=email,
+        is_active=True,
+    )
+
     user.set_unusable_password()
     user.save()
-    UserProfile.objects.create(user=user, full_name=full_name, role=role)  # signal grants matching UserRole
 
-    from apps.accounts.views import password_reset_token
-    from django.utils.http import urlsafe_base64_encode
-    from django.utils.encoding import force_bytes
+    profile = user.profile
+    profile.full_name = full_name
+    profile.save(update_fields=["full_name"])
+
+    UserRole.objects.get_or_create(
+        profile=profile,
+        role=role,
+    )
 
     uid = urlsafe_base64_encode(force_bytes(user.pk))
-    token = password_reset_token.make_token(user)
-    set_password_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+
+    reset_token = PasswordResetToken.objects.create(
+        user=user,
+        expires_at=timezone.now() + timedelta(hours=24),
+    )
+
+    reset_link = (
+        f"{settings.FRONTEND_URL}/reset-password"
+        f"?token={reset_token.token}"
+    )
     send_mail(
-        subject="Your ORDP account has been created",
-        message=f"An admin created an account for you on ORDP. Set your password here: {set_password_link}",
+        message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
         from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
     )
     return Response({"status": "created", "user_id": user.id}, status=201)
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_colleges(request):
+    if request.method == "GET":
+        colleges = College.objects.all().order_by("name")
+
+        return Response([
+            {
+                "id": college.id,
+                "name": college.name,
+            }
+            for college in colleges
+        ])
+
+    name = request.data.get("name", "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "College name is required."},
+            status=400,
+        )
+
+    if College.objects.filter(name__iexact=name).exists():
+        return Response(
+            {"detail": "A college with this name already exists."},
+            status=400,
+        )
+
+    college = College.objects.create(name=name)
+
+    return Response(
+        {
+            "id": college.id,
+            "name": college.name,
+        },
+        status=201,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_centers_of_excellence(request):
+    if request.method == "GET":
+        centers = CenterOfExcellence.objects.all().order_by("name")
+
+        return Response([
+            {
+                "id": center.id,
+                "name": center.name,
+            }
+            for center in centers
+        ])
+
+    name = request.data.get("name", "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "Center of Excellence name is required."},
+            status=400,
+        )
+
+    if CenterOfExcellence.objects.filter(name__iexact=name).exists():
+        return Response(
+            {"detail": "A Center of Excellence with this name already exists."},
+            status=400,
+        )
+
+    center = CenterOfExcellence.objects.create(name=name)
+
+    return Response(
+        {
+            "id": center.id,
+            "name": center.name,
+        },
+        status=201,
+    )
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_departments(request):
+    if request.method == "GET":
+        departments = Department.objects.select_related(
+            "college",
+            "center_of_excellence",
+        ).order_by("name")
+
+        return Response([
+            {
+                "id": department.id,
+                "name": department.name,
+                "college": (
+                    {
+                        "id": department.college.id,
+                        "name": department.college.name,
+                    }
+                    if department.college
+                    else None
+                ),
+                "center_of_excellence": (
+                    {
+                        "id": department.center_of_excellence.id,
+                        "name": department.center_of_excellence.name,
+                    }
+                    if department.center_of_excellence
+                    else None
+                ),
+            }
+            for department in departments
+        ])
+
+    name = request.data.get("name", "").strip()
+    college_id = request.data.get("college_id")
+    center_id = request.data.get("center_of_excellence_id")
+
+    if not name:
+        return Response(
+            {"detail": "Department name is required."},
+            status=400,
+        )
+
+    # Exactly one parent must be provided.
+    if bool(college_id) == bool(center_id):
+        return Response(
+            {
+                "detail": (
+                    "A department must belong to exactly one parent: "
+                    "either a college or a Center of Excellence."
+                )
+            },
+            status=400,
+        )
+
+    college = None
+    center = None
+
+    if college_id:
+        college = get_object_or_404(College, id=college_id)
+
+    if center_id:
+        center = get_object_or_404(
+            CenterOfExcellence,
+            id=center_id,
+        )
+
+    department = Department.objects.create(
+        name=name,
+        college=college,
+        center_of_excellence=center,
+    )
+
+    return Response(
+        {
+            "id": department.id,
+            "name": department.name,
+            "college_id": department.college_id,
+            "center_of_excellence_id": department.center_of_excellence_id,
+        },
+        status=201,
+    )
 
 def _daily_counts(queryset, date_field, days=30):
     cutoff = (timezone.now() - timedelta(days=days)).date()
@@ -168,11 +368,25 @@ def _daily_counts(queryset, date_field, days=30):
 def admin_grant_role(request, user_id):
     target_user = get_object_or_404(User, id=user_id)
     role = request.data.get("role")
-    if role not in UserProfile.Role.values:
+
+    if role not in UserRole.RoleChoice.values:
         return Response({"detail": "Invalid role."}, status=400)
-    from apps.accounts.models import UserRole
-    UserRole.objects.get_or_create(profile=target_user.profile, role=role)
-    return Response({"status": "granted", "roles": list(target_user.profile.roles.values_list("role", flat=True))})
+
+    UserRole.objects.get_or_create(
+        profile=target_user.profile,
+        role=role,
+    )
+
+    if role == UserRole.RoleChoice.REVIEWER:
+        from apps.datasets.services.retry_assignment import retry_pending_assignments
+        retry_pending_assignments()
+
+    return Response({
+        "status": "granted",
+        "roles": list(
+            target_user.profile.roles.values_list("role", flat=True)
+        ),
+    })
 
 
 @api_view(["POST"])
@@ -203,6 +417,20 @@ def admin_reactivate_user(request, user_id):
     target_user.is_active = True
     target_user.save(update_fields=["is_active"])
     return Response({"status": "reactivated"})
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_broadcast_notification(request):
+    from apps.notifications.services import broadcast_system_notification
+    message = request.data.get("message")
+    link_path = request.data.get("link_path")
+    
+    if not message:
+        return Response({"detail": "Message is required."}, status=400)
+    
+    broadcast_system_notification(message, link_path)
+    return Response({"status": "broadcasted"})
 
 @api_view(["GET"])
 @permission_classes([IsAdminOnly])
@@ -342,6 +570,51 @@ def pending_categories(request):
         "suggested_by": c.suggested_by.profile.full_name if c.suggested_by else None,
     } for c in qs])
 
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_create_category(request):
+    name = (request.data.get("name") or "").strip()
+    description = (request.data.get("description") or "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "name is required."},
+            status=400,
+        )
+
+    if Category.objects.filter(name__iexact=name).exists():
+        return Response(
+            {"detail": "A category with this name already exists."},
+            status=400,
+        )
+
+    category = Category.objects.create(
+        name=name,
+        description=description,
+        status=Category.Status.APPROVED,
+        suggested_by=None,
+    )
+
+    ActivityLog.log(
+        user=request.user,
+        action="category_created",
+        target_object=str(category.id),
+        ip_address=get_client_ip(request),
+        extra={
+            "category_name": category.name,
+            "source": "admin",
+        },
+    )
+
+    return Response(
+        {
+            "id": category.id,
+            "name": category.name,
+            "description": category.description,
+            "status": category.status,
+        },
+        status=201,
+    )
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
@@ -397,3 +670,86 @@ def decide_pending_language(request, language_id):
         return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
     language.save(update_fields=["status"])
     return Response({"status": language.status})
+
+
+
+
+
+@api_view(["GET"])
+@permission_classes([IsReviewerOrAdmin])
+def revision_request_queue(request):
+    from apps.datasets.models import RevisionRequest
+    qs = RevisionRequest.objects.filter(status="pending").select_related("dataset", "requester__profile")
+    return Response([{
+        "id": r.id, "dataset_id": r.dataset_id, "dataset_title": r.dataset.title,
+        "requester": r.requester.profile.full_name, "reason": r.reason, "created_at": r.created_at,
+    } for r in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsReviewerOrAdmin])
+def vote_on_revision_request(request, request_id):
+    from apps.datasets.models import RevisionRequest, RevisionRequestVote
+    from apps.datasets.services.revisions import resolve_revision_request_votes
+    revision_request = get_object_or_404(RevisionRequest, id=request_id)
+    if revision_request.status != RevisionRequest.Status.PENDING:
+        return Response({"detail": "This request has already been resolved."}, status=400)
+    vote_value = request.data.get("vote")
+    if vote_value not in ("approve", "reject"):
+        return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)
+    RevisionRequestVote.objects.update_or_create(
+        revision_request=revision_request, reviewer=request.user, defaults={"vote": vote_value}
+    )
+    return Response(resolve_revision_request_votes(revision_request))
+
+
+@api_view(["POST"])
+@permission_classes([IsReviewerOrAdmin])
+def vote_on_content_update(request, update_id):
+    from apps.datasets.models import PendingContentUpdate, PendingContentUpdateVote
+    from apps.datasets.services.revisions import resolve_content_update_votes
+    update = get_object_or_404(PendingContentUpdate, id=update_id)
+    if update.status != PendingContentUpdate.Status.PENDING:
+        return Response({"detail": "This update has already been resolved."}, status=400)
+    vote_value = request.data.get("vote")
+    if vote_value not in ("approve", "reject"):
+        return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)
+    PendingContentUpdateVote.objects.update_or_create(
+        update=update, reviewer=request.user, defaults={"vote": vote_value}
+    )
+    return Response(resolve_content_update_votes(update))
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_create_language(request):
+    from apps.metadata.models import Language
+
+    name = request.data.get("name", "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "Language name is required."},
+            status=400
+        )
+
+    if Language.objects.filter(name__iexact=name).exists():
+        return Response(
+            {"detail": "A language with this name already exists."},
+            status=400
+        )
+
+    language = Language.objects.create(
+        name=name,
+        status=Language.Status.APPROVED,
+    )
+
+    return Response(
+        {
+            "id": language.id,
+            "name": language.name,
+            "status": language.status,
+        },
+        status=201,
+    )

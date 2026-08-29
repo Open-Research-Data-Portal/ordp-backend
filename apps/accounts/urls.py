@@ -17,5 +17,24 @@ urlpatterns = [
     path("password-reset/", PasswordResetRequestView.as_view(), name="password_reset_request"),
     path("password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
     path("profile/interests/other/", views.add_other_interest, name="add-other-interest"),
-    path("search-users/", views.search_users, name="search-users")
+    path("search-users/", views.search_users, name="search-users"),
+    path("colleges/", views.list_colleges, name="list-colleges"),
+    path("centers-of-excellence/",views.list_centers_of_excellence,name="list-centers-of-excellence"),
+    path("departments/", views.list_departments, name="list-departments"),
+    path(
+    "users/<int:user_id>/profile/",
+    views.UserPublicProfileView.as_view(),
+    name="user-public-profile",
+),
+
+    path(
+        "profile/options/",
+        views.ProfileOptionsView.as_view(),
+        name="profile-options",
+    ),
+    path(
+    "users/<int:user_id>/upload-permission/",
+    views.UpdateDatasetUploadPermissionView.as_view(),
+    name="update-dataset-upload-permission",
+),
 ]

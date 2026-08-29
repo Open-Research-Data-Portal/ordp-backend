@@ -2,25 +2,26 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
-from apps.accounts.permissions import IsCheckerOrAdmin
-from apps.datasets.models import Dataset
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from django.db.models import Count, F
+from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly
+from apps.datasets.models import Dataset, PendingContentUpdate
+from apps.datasets.serializers import PendingContentUpdateSerializer
 from apps.metadata.models import FallbackThumbnail
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
-from .models import ModerationDecision, ThumbnailSuggestion
+from django.contrib.auth import get_user_model
+
+from .models import (
+    ModerationDecision,
+    DatasetReviewerAssignment,
+    ThumbnailSuggestion,
+    DatasetDeletionRequest,
+    DeletionRequestVote,
+)
 from .serializers import ModerationQueueItemSerializer
-
-from apps.datasets.models import PendingContentUpdate
-from apps.datasets.serializers import PendingContentUpdateSerializer
-from apps.datasets.services.revisions import decide_pending_content_update
-from apps.accounts.services import decide_researcher_request as decide_researcher_request_service
-from django.utils import timezone
-from apps.accounts.permissions import IsAdminOnly
-from apps.accounts.models import ResearcherRequest, UserProfile, UserRole
-from django.contrib.auth import get_user_model 
-
-from apps.accounts.permissions import IsAdminOnly 
-from .models import DatasetDeletionRequest, DeletionRequestVote
 from .services import resolve_deletion_request_votes, execute_hard_delete
 
 def _resolve_thumbnail_suggestions(dataset):
@@ -35,65 +36,243 @@ def _resolve_thumbnail_suggestions(dataset):
             thumbnail_key=winner.image_key, thumbnail_source=Dataset.ThumbnailSource.FALLBACK_REVIEWER_SELECTED
         )
         FallbackThumbnail.objects.filter(id=winner.id).update(usage_count=F("usage_count") + 1)
-from apps.accounts.models import ResearcherRequest, UserProfile
-from apps.accounts.views import get_client_ip, log_activity
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def moderation_queue(request):
-    qs = Dataset.objects.filter(status=Dataset.Status.PENDING, is_active=True)
-    if not request.user.profile.has_role("admin"):
-        qs = qs.filter(assigned_reviewer=request.user)
-    qs = qs.order_by("created_at")
-    return Response(ModerationQueueItemSerializer(qs, many=True).data)
+    profile = getattr(request.user, "profile", None)
 
+    if profile and profile.has_role("admin"):
+        # Admins can see all active datasets regardless of status.
+        qs = Dataset.objects.filter(
+            is_active=True,
+        ).distinct()
+    else:
+        # Reviewers only see pending datasets assigned to them.
+        qs = Dataset.objects.filter(
+            status=Dataset.Status.PENDING,
+            is_active=True,
+            reviewer_assignments__reviewer=request.user,
+        ).distinct()
+
+    return Response(
+        ModerationQueueItemSerializer(
+            qs.order_by("created_at"),
+            many=True,
+        ).data
+    )
+@api_view(["GET"])
+@permission_classes([IsReviewerOrAdmin])
+def my_reviews(request):
+    decisions = (
+        ModerationDecision.objects
+        .filter(reviewer=request.user)
+        .select_related("dataset")
+        .order_by("-decided_at")
+    )
+
+    data = [
+        {
+            "dataset_id": str(decision.dataset.id),
+            "dataset_title": decision.dataset.title,
+            "decision": decision.decision,
+            "reason": decision.reason,
+            "dataset_status": decision.dataset.status,
+            "decided_at": decision.decided_at,
+        }
+        for decision in decisions
+    ]
+
+    return Response(data)
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def moderate_dataset(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id)
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        status=Dataset.Status.PENDING,
+    )
+
     decision = request.data.get("decision")
     reason = (request.data.get("reason") or "").strip()
 
     if decision not in ModerationDecision.Decision.values:
-        return Response({"detail": "decision must be 'approved', 'changes_requested', or 'rejected'."}, status=400)
-    if decision in (ModerationDecision.Decision.REJECTED, ModerationDecision.Decision.CHANGES_REQUESTED) and not reason:
-        return Response({"detail": "A reason is required to reject or request changes on a dataset."}, status=400)
+        return Response(
+            {
+                "detail": (
+                    "decision must be 'approved', "
+                    "'changes_requested', or 'rejected'."
+                )
+            },
+            status=400,
+        )
 
-    ModerationDecision.objects.create(dataset=dataset, reviewer=request.user, decision=decision, reason=reason or None)
+    if (
+        decision in (
+            ModerationDecision.Decision.REJECTED,
+            ModerationDecision.Decision.CHANGES_REQUESTED,
+        )
+        and not reason
+    ):
+        return Response(
+            {
+                "detail": (
+                    "A reason is required to reject or "
+                    "request changes on a dataset."
+                )
+            },
+            status=400,
+        )
 
-    if decision == ModerationDecision.Decision.APPROVED:
+    assigned = DatasetReviewerAssignment.objects.filter(
+        dataset=dataset,
+        reviewer=request.user,
+    ).exists()
+
+    if not assigned:
+        return Response(
+            {"detail": "You are not assigned to review this dataset."},
+            status=403,
+        )
+
+    if ModerationDecision.objects.filter(
+        dataset=dataset,
+        reviewer=request.user,
+    ).exists():
+        return Response(
+            {"detail": "You have already submitted a decision for this dataset."},
+            status=400,
+        )
+
+    ModerationDecision.objects.create(
+        dataset=dataset,
+        reviewer=request.user,
+        decision=decision,
+        reason=reason or None,
+    )
+
+    approve_votes = ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.APPROVED,
+    ).count()
+
+    reject_votes = ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.REJECTED,
+    ).count()
+
+    votes_cast = ModerationDecision.objects.filter(
+        dataset=dataset,
+    ).count()
+
+    assigned_count = DatasetReviewerAssignment.objects.filter(
+        dataset=dataset,
+    ).count()
+
+    if assigned_count < 3:
+        return Response(
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
+
+    if approve_votes >= 2:
         dataset.status = Dataset.Status.PUBLISHED
         dataset.save(update_fields=["status"])
+
         _resolve_thumbnail_suggestions(dataset)
+
         notify(
-            user=dataset.owner, notification_type=Notification.NotificationType.DATASET_APPROVED,
-            message=f'Your dataset "{dataset.title}" has been published.', dataset=dataset,
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.DATASET_APPROVED,
+            message=f'Your dataset "{dataset.title}" has been published.',
+            dataset=dataset,
             link_path=f"/datasets/{dataset.id}",
         )
-    elif decision == ModerationDecision.Decision.CHANGES_REQUESTED:
+
+        return Response(
+            {
+                "status": "approved",
+                "approve_votes": approve_votes,
+                "reject_votes": reject_votes,
+                "votes_cast": votes_cast,
+            },
+            status=200,
+        )
+
+    if ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.CHANGES_REQUESTED,
+    ).count() >= 2:
         dataset.status = Dataset.Status.CHANGES_REQUESTED
         dataset.save(update_fields=["status"])
+
         notify(
-            user=dataset.owner, notification_type=Notification.NotificationType.CHANGES_REQUESTED,
-            message=f'Changes were requested on "{dataset.title}": {reason}', dataset=dataset, reason=reason,
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.CHANGES_REQUESTED,
+            message=f'Changes were requested on "{dataset.title}".',
+            dataset=dataset,
+            reason=reason,
             link_path=f"/datasets/{dataset.id}",
         )
-    else:
+
+        return Response(
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
+
+    if ModerationDecision.objects.filter(
+        dataset=dataset,
+        decision=ModerationDecision.Decision.CHANGES_REQUESTED,
+    ).count() >= 2:
+        dataset.status = Dataset.Status.CHANGES_REQUESTED
+        dataset.save(update_fields=["status"])
+
+        notify(
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.CHANGES_REQUESTED,
+            message=f'Changes were requested on "{dataset.title}".',
+            dataset=dataset,
+            reason=reason,
+            link_path=f"/datasets/{dataset.id}",
+        )
+
+        return Response(
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
+
+    if reject_votes >= 2:
         dataset.status = Dataset.Status.REJECTED
         dataset.save(update_fields=["status"])
+
         notify(
-            user=dataset.owner, notification_type=Notification.NotificationType.DATASET_REJECTED,
-            message=f'Your dataset "{dataset.title}" was rejected: {reason}', dataset=dataset, reason=reason,
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.DATASET_REJECTED,
+            message=f'Your dataset "{dataset.title}" was rejected: {reason}',
+            dataset=dataset,
+            reason=reason,
             link_path=f"/datasets/{dataset.id}",
         )
 
-    return Response({"status": decision}, status=200)
+        return Response(
+            {
+                "status": "rejected",
+                "approve_votes": approve_votes,
+                "reject_votes": reject_votes,
+                "votes_cast": votes_cast,
+            },
+            status=200,
+        )
 
+    return Response(
+    {"detail": "Your review decision has been submitted successfully."},
+    status=200,
+)
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def suggest_thumbnail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, status=Dataset.Status.PENDING)
     fallback_id = request.data.get("fallback_thumbnail_id")
@@ -105,57 +284,15 @@ def suggest_thumbnail(request, dataset_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def content_update_queue(request):
     qs = PendingContentUpdate.objects.filter(status="pending").select_related("dataset", "submitted_by")
     return Response(PendingContentUpdateSerializer(qs, many=True).data)
 
 
-@api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
-def decide_content_update(request, update_id):
-    update = get_object_or_404(PendingContentUpdate, id=update_id)
-    decision = request.data.get("decision")
-    reason = (request.data.get("reason") or "").strip()
-    if decision == "reject" and not reason:
-        return Response({"detail": "A reason is required to reject a content update."}, status=400)
-    decide_pending_content_update(update, decision, request.user, reason)
-    return Response({"status": update.status})
-
-
-@api_view(["GET"])
-@permission_classes([IsAdminOnly])
-def researcher_request_queue(request):
-    qs = ResearcherRequest.objects.filter(
-        status=ResearcherRequest.Status.PENDING
-    ).select_related("user", "user__profile")
-    return Response([{
-        "id": r.id,
-        "email": r.user.email,
-        "full_name": r.user.profile.full_name,
-        "academia": r.user.profile.academia,
-        "department": str(r.user.profile.department) if r.user.profile.department else None,
-        "submitted_at": r.submitted_at,
-    } for r in qs])
-
 
 @api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def decide_researcher_request(request, request_id):
-    req = get_object_or_404(ResearcherRequest, id=request_id)
-    decision = request.data.get("decision")
-    reason = (request.data.get("reason") or "").strip()
-
-    if decision == "reject" and not reason:
-        return Response({"detail": "A reason is required to reject a researcher request."}, status=400)
-
-    decide_researcher_request_service(req, decision, request.user, reason)
-    return Response({"status": req.status})
-
-
-
-@api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def request_dataset_deletion(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     reason = (request.data.get("reason") or "").strip()
@@ -165,7 +302,7 @@ def request_dataset_deletion(request, dataset_id):
     deletion_request = DatasetDeletionRequest.objects.create(
         dataset=dataset, dataset_title=dataset.title, requested_by=request.user, reason=reason,
     )
-    for reviewer in get_user_model().objects.filter(profile__roles__role__in=["checker", "admin"]).distinct():
+    for reviewer in get_user_model().objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
         if reviewer != request.user:
             notify(
                 user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
@@ -176,7 +313,7 @@ def request_dataset_deletion(request, dataset_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsCheckerOrAdmin])
+@permission_classes([IsReviewerOrAdmin])
 def vote_on_deletion_request(request, request_id):
     deletion_request = get_object_or_404(DatasetDeletionRequest, id=request_id)
     if deletion_request.status != DatasetDeletionRequest.Status.PENDING:

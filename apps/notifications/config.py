@@ -2,6 +2,8 @@ from .models import Notification
 
 NT = Notification.NotificationType
 DASHBOARD_VISIBLE = {NT.NEW_VERSION_AVAILABLE: True}
+DASHBOARD_VISIBLE[Notification.NotificationType.SYSTEM_ANNOUNCEMENT] = True
+
 
 EMAIL_SUBJECTS = {
     NT.UPLOAD_SUCCESS: "Your dataset upload succeeded",
@@ -16,6 +18,8 @@ EMAIL_SUBJECTS = {
     NT.CONTRIBUTOR_INVITATION: "You've been added as a contributor",
     NT.ACCESS_REQUEST: "New access request for your restricted dataset",
     NT.RESEARCHER_APPROVED: "Your researcher access request was approved",
+    NT.SYSTEM_ANNOUNCEMENT: "ORDP System Announcement",
+
     NT.RESEARCHER_REJECTED: "Your researcher access request was declined",
 }
 

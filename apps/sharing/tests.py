@@ -1,20 +1,29 @@
 from rest_framework.test import APITestCase
 from rest_framework import status
 
-from apps.datasets.factories import make_user
-from apps.datasets.models import Dataset, Contributor, PendingContentUpdate
-from apps.datasets.services.revisions import route_change, decide_pending_content_update
+from apps.accounts.models import UserProfile
+from apps.datasets.factories import make_user, make_college_and_department
+from apps.datasets.models import Dataset, Contributor, PendingContentUpdate, PendingContentUpdateVote
+from apps.datasets.services.revisions import resolve_content_update_votes, route_change
 from apps.notifications.models import Notification
 from .models import SharePermission, DatasetAccessRequest
 
 
 def make_dataset_with_version(owner, title="Test DS", visibility="restricted"):
     dataset = Dataset.objects.create(title=title, owner=owner, visibility=visibility, status=Dataset.Status.APPROVED)
-    checker = make_user(f"{title.replace(' ', '')}setupchecker", f"{title.replace(' ', '')}setupchecker@aastu.edu.et", role="checker")
     route_change(dataset=dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=owner,
                  new_file_key="f.csv", diff_percentage=100.0, change_summary={}, proposed_metadata={})
     update = PendingContentUpdate.objects.get(dataset=dataset)
-    decide_pending_content_update(update, "approve", checker)
+
+    for i in range(3):  # MIN_REVIEWER_QUORUM
+        checker = make_user(
+            f"{title.replace(' ', '')}setupchecker{i}",
+            f"{title.replace(' ', '')}setupchecker{i}@aastu.edu.et",
+            role="reviewer",
+        )
+        PendingContentUpdateVote.objects.create(update=update, reviewer=checker, vote="approve")
+    resolve_content_update_votes(update)
+
     dataset.refresh_from_db()
     return dataset
 
@@ -29,14 +38,49 @@ class FreeDownloadTests(APITestCase):
         resp = self.client.get(f"/api/sharing/{dataset.id}/download/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
-    def test_researcher_contributor_downloads_own_restricted_dataset_freely(self):
-        owner = make_user("fdowner2", "fdowner2@aastu.edu.et")
-        contributor = make_user("fdcontrib", "fdcontrib@aastu.edu.et")
+    def test_contributor_downloads_own_restricted_dataset_freely(self):
+        owner = make_user(
+            "fdowner2",
+            "fdowner2@aastu.edu.et",
+        )
+
+        contributor = make_user(
+            "contributor",
+            "contributor@aastu.edu.et",
+            role="public",
+        )
+
+        # Contributor must have a completed profile and upload permission.
+        college, department = make_college_and_department(
+            "Contributor College",
+            "Contributor Department",
+        )
+
+        profile = contributor.profile
+        profile.full_name = "Contributor"
+        profile.affiliation = "AASTU"
+        profile.academia = UserProfile.Academia.RESEARCHER
+        profile.department = department
+        profile.profile_visibility = "public"
+        profile.terms_accepted = True
+        profile.can_upload_datasets = True
+        profile.save()
+
         dataset = make_dataset_with_version(owner)
-        Contributor.objects.create(dataset=dataset, user=contributor, name="C", contributor_type="contributor")
+
+        Contributor.objects.create(
+            dataset=dataset,
+            user=contributor,
+            name="Contributor",
+            contributor_type="contributor",
+        )
 
         self.client.force_authenticate(contributor)
-        resp = self.client.get(f"/api/sharing/{dataset.id}/download/")
+
+        resp = self.client.get(
+            f"/api/sharing/{dataset.id}/download/"
+        )
+
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_public_role_contributor_cannot_download_freely(self):
@@ -74,8 +118,8 @@ class ViewCounterTests(APITestCase):
         owner = make_user("vcowner", "vcowner@aastu.edu.et")
         dataset = make_dataset_with_version(owner)
         self.client.force_authenticate(owner)
-        self.client.get(f"/api/sharing/{dataset.id}/view/")
-        self.client.get(f"/api/sharing/{dataset.id}/view/")
+        self.client.get(f"/api/datasets/{dataset.id}/")
+        self.client.get(f"/api/datasets/{dataset.id}/")
         self.client.get(f"/api/sharing/{dataset.id}/download/")
         dataset.refresh_from_db()
         self.assertEqual(dataset.view_count, 2)
@@ -101,7 +145,7 @@ class RestrictedShareVotingTests(APITestCase):
         self.requester = make_user("rsvreq", "rsvreq@aastu.edu.et")
         self.dataset = make_dataset_with_version(self.owner, "Restricted DS")
         self.reviewers = [
-            make_user(f"rsvreviewer{i}", f"rsvreviewer{i}@aastu.edu.et", role="checker") for i in range(3)
+            make_user(f"rsvreviewer{i}", f"rsvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)
         ]
 
     def _submit_request(self, purpose_type="read"):
@@ -189,7 +233,7 @@ class RestrictedShareVotingTests(APITestCase):
         self.client.force_authenticate(self.owner)
         self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
 
-        late_reviewer = make_user("rsvlatereviewer", "rsvlatereviewer@aastu.edu.et", role="checker")
+        late_reviewer = make_user("rsvlatereviewer", "rsvlatereviewer@aastu.edu.et", role="reviewer")
         self.client.force_authenticate(late_reviewer)
         resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)

@@ -1,13 +1,8 @@
 from django.contrib import admin
-from .models import Category, Language, Subject, Keyword, Metadata, FallbackThumbnail
+from .models import Category, Language, Keyword, Metadata, FallbackThumbnail
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ["name"]
-
-
-@admin.register(Subject)
-class SubjectAdmin(admin.ModelAdmin):
     list_display = ["name"]
 
 

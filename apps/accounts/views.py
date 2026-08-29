@@ -1,13 +1,10 @@
 from datetime import timedelta
-
+from .serializers import ExtendedProfileSerializer, PublicProfileSerializer
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.utils.encoding import force_bytes, force_str
-from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from .serializers import ExtendedProfileSerializer  
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -23,17 +20,47 @@ from rest_framework.decorators import api_view, permission_classes
 from apps.datasets.models import Contributor
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
-
-from .models import LoginSecurity, UserProfile, ActivityLog
-from .serializers import (
-    LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,
-    PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+from django.utils import timezone
+from django.shortcuts import get_object_or_404
+from .models import (
+    LoginSecurity,
+    UserProfile,
+    ActivityLog,
+    EmailVerificationToken,
+    PasswordResetToken,
+    College,
+    CenterOfExcellence,
+    Department,
 )
-from .tokens import email_verification_token
+from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
+from apps.accounts.permissions import IsAdminOnly
 
 User = get_user_model()
-password_reset_token = PasswordResetTokenGenerator()
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def add_other_interest(request):
+    from apps.metadata.services import get_or_create_pending_category
 
+    name = (request.data.get("name") or "").strip()
+
+    if not name:
+        return Response(
+            {"detail": "name is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    category = get_or_create_pending_category(name, request.user)
+
+    request.user.profile.interests.add(category)
+
+    return Response(
+        {
+            "status": "added",
+            "category_id": category.id,
+            "pending_review": category.status == category.Status.PENDING,
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
 def log_activity(user, action, target_object, ip_address, extra=None):
@@ -173,27 +200,67 @@ class CompleteProfileView(APIView):
 
     def get(self, request):
         data = ExtendedProfileSerializer(request.user.profile).data
-        data["role"] = request.user.profile.role
-        data["roles"] = list(request.user.profile.roles.values_list("role", flat=True))
+        roles = list(
+    request.user.profile.roles.values_list("role", flat=True)
+)
+
+        data["roles"] = roles
+        data["role"] = roles[0] if roles else None
         return Response(data)
 
     def patch(self, request):
-        old_full_name = request.user.profile.full_name
-        serializer = ExtendedProfileSerializer(request.user.profile, data=request.data, partial=True)
+        profile = request.user.profile
+
+        old_full_name = profile.full_name
+        profile_was_complete = profile.is_profile_complete()
+
+        serializer = ExtendedProfileSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        new_full_name = request.user.profile.full_name
+
+        profile.refresh_from_db()
+
+        profile_is_complete = profile.is_profile_complete()
+        new_full_name = profile.full_name
+
+        # Automatically grant upload permission only when the profile
+        # becomes complete, unless an admin has explicitly revoked it.
+        if (
+            not profile_was_complete
+            and profile_is_complete
+            and not profile.upload_permission_revoked
+        ):
+            profile.can_upload_datasets = True
+            profile.save(update_fields=["can_upload_datasets"])
+
         if new_full_name != old_full_name:
             log_activity(
-            user=request.user, action="full_name_changed",
-            target_object=str(request.user.id), ip_address=get_client_ip(request),
-            extra={"old": old_full_name, "new": new_full_name},
+                user=request.user,
+                action="full_name_changed",
+                target_object=str(request.user.id),
+                ip_address=get_client_ip(request),
+                extra={
+                    "old": old_full_name,
+                    "new": new_full_name,
+                },
+            )
+
+        if not profile_was_complete and profile_is_complete:
+            log_activity(
+                user=request.user,
+                action="profile_completed",
+                target_object=str(request.user.id),
+                ip_address=get_client_ip(request),
+            )
+
+        return Response(
+            ExtendedProfileSerializer(profile).data,
+            status=status.HTTP_200_OK,
         )
-        log_activity(
-            user=request.user, action="profile_completed",
-            target_object=str(request.user.id), ip_address=get_client_ip(request),
-        )
-        return Response(serializer.data)
 
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
@@ -204,7 +271,7 @@ class CustomTokenRefreshView(TokenRefreshView):
                 token = RefreshTokenObj(refresh_str)
                 user_id = token.get("user_id")
             except TokenError:
-                pass  # invalid token — let the real view below handle the actual error response
+                pass 
 
         response = super().post(request, *args, **kwargs)
 
@@ -243,12 +310,15 @@ class RegisterView(APIView):
                 password=data["password"],
                 is_active=False,
             )
-            UserProfile.objects.create(user=user, full_name=data["full_name"])
+            user.profile.full_name = data["full_name"]
+            user.profile.save(update_fields=["full_name"])
 
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = email_verification_token.make_token(user)
-        verify_link = f"{settings.FRONTEND_URL}/verify-email?uid={uid}&token={token}"
-
+        
+        verification = EmailVerificationToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        verify_link = f"{settings.FRONTEND_URL}/verify-email?token={verification.token}"
         try:
             html_content = render_to_string("accounts/emails/verify_email.html", {
                 "full_name": data["full_name"],
@@ -280,32 +350,62 @@ class VerifyEmailView(APIView):
     permission_classes = []
 
     def post(self, request):
-        uid = request.data.get("uid")
-        token = request.data.get("token")
+        token_str = request.data.get("token")
         ip = get_client_ip(request)
 
+        if not token_str:
+            return Response(
+                {"error": {"code": "INVALID_LINK", "message": "This verification link is invalid.", "field": None}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
-            user_id = force_str(urlsafe_base64_decode(uid))
-            user = User.objects.get(pk=user_id)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            log_activity(user=None, action="email_verification_failure", target_object=uid or "unknown", ip_address=ip, extra={"reason": "invalid_link"})
+            verification = EmailVerificationToken.objects.select_related("user").get(token=token_str)
+        except (EmailVerificationToken.DoesNotExist, ValueError):
+            log_activity(user=None, action="email_verification_failure", target_object=str(token_str), ip_address=ip, extra={"reason": "invalid_link"})
             return Response(
                 {"error": {"code": "INVALID_LINK","message": "This verification link is invalid.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not email_verification_token.check_token(user, token):
-            log_activity(user=user, action="email_verification_failure", target_object=str(user.id), ip_address=ip, extra={"reason": "expired_or_invalid_token"})
+
+        if not verification.is_valid():
+            log_activity(user=verification.user, action="email_verification_failure", target_object=str(verification.user.id), ip_address=ip, extra={"reason": "expired_or_used"})
             return Response(
                 {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This verification link is invalid or has expired.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user.is_active = True
-        user.save()
-        log_activity(user=user, action="email_verified", target_object=str(user.id), ip_address=ip)
+        verification.is_used = True
+        verification.save(update_fields=["is_used"])
 
-        return Response({"detail": "Email verified. You can now log in."}, status=status.HTTP_200_OK)
+        user = verification.user
+        user.is_active = True
+        user.save(update_fields=["is_active"])
+
+        log_activity(
+            user=user,
+            action="email_verified",
+            target_object=str(user.id),
+            ip_address=ip,
+        )
+
+        # Automatically log the user in after successful email verification
+        refresh = RefreshToken.for_user(user)
+
+        return Response(
+            {
+                "detail": "Email verified successfully.",
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                },
+                "stay_logged_in": False,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class PasswordResetRequestView(APIView):
@@ -325,9 +425,15 @@ class PasswordResetRequestView(APIView):
                 {"detail": "If an account exists with that email, a reset link has been sent."},
                 status=status.HTTP_200_OK,
             )
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = password_reset_token.make_token(user)
-        reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+
+
+                # Invalidate any previous unused reset tokens for this user
+        PasswordResetToken.objects.filter(user=user, is_used=False).update(is_used=True)
+        reset_token = PasswordResetToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token.token}"
 
         html_content = render_to_string("accounts/emails/password_reset_email.html", {
             "reset_link": reset_link,
@@ -360,25 +466,38 @@ class PasswordResetConfirmView(APIView):
         data = serializer.validated_data
         ip = get_client_ip(request)
 
+        token_str = data.get("token")
+        if not token_str:
+            return Response(
+                {"error": {"code": "INVALID_LINK", "message": "This reset link is invalid.", "field": None}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
-            user_id = force_str(urlsafe_base64_decode(data["uid"]))
-            user = User.objects.get(pk=user_id)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            log_activity(user=None, action="password_reset_confirm_failure", target_object=data.get("uid") or "unknown", ip_address=ip, extra={"reason": "invalid_link"})
+
+            reset_token = PasswordResetToken.objects.select_related("user").get(token=token_str)
+        except (PasswordResetToken.DoesNotExist, ValueError):
+            log_activity(user=None, action="password_reset_confirm_failure", target_object=str(token_str), ip_address=ip, extra={"reason": "invalid_link"})
+
             return Response(
                 {"error": {"code": "INVALID_LINK","message": "This reset link is invalid.", "field":None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not password_reset_token.check_token(user, data["token"]):
-            log_activity(user=user, action="password_reset_confirm_failure", target_object=str(user.id), ip_address=ip, extra={"reason": "expired_or_invalid_token"})
+
+        if not reset_token.is_valid():
+            log_activity(user=reset_token.user, action="password_reset_confirm_failure", target_object=str(reset_token.user.id), ip_address=ip, extra={"reason": "expired_or_used"})
             return Response(
                 {"error": {"code": "EXPIRED_OR_INVALID_TOKEN", "message": "This reset link is invalidor has expired.", "field": None}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        user = reset_token.user
         user.set_password(data["new_password"])
         user.save()
+
+        reset_token.is_used = True
+        reset_token.save(update_fields=["is_used"])
 
         for token_obj in OutstandingToken.objects.filter(user=user):
             BlacklistedToken.objects.get_or_create(token=token_obj)
@@ -386,22 +505,6 @@ class PasswordResetConfirmView(APIView):
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def add_other_interest(request):
-    from apps.metadata.services import get_or_create_pending_category
-    name = (request.data.get("name") or "").strip()
-    if not name:
-        return Response({"detail": "name is required."}, status=400)
-    category = get_or_create_pending_category(name, request.user)
-    request.user.profile.expertise.add(category)
-    return Response({
-        "status": "added", "category_id": category.id,
-        "pending_review": category.status == category.Status.PENDING,
-    }, status=201)
-
 
 
 @api_view(["GET"])
@@ -417,3 +520,198 @@ def search_users(request):
         {"id": u.id, "full_name": u.profile.full_name, "email": u.email}
         for u in qs if hasattr(u, "profile")
     ])
+
+
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_colleges(request):
+    colleges = College.objects.order_by("name").values("id", "name")
+
+    return Response({
+        "results": list(colleges)
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_centers_of_excellence(request):
+    centers = CenterOfExcellence.objects.order_by("name").values("id", "name")
+
+    return Response({
+        "results": list(centers)
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_departments(request):
+    parent_type = request.query_params.get("parent_type")
+    parent_id = request.query_params.get("parent_id")
+
+    departments = Department.objects.select_related(
+        "college",
+        "center_of_excellence",
+    )
+
+    if parent_type and parent_id:
+        if parent_type == "college":
+            departments = departments.filter(college_id=parent_id)
+
+        elif parent_type == "center_of_excellence":
+            departments = departments.filter(
+                center_of_excellence_id=parent_id
+            )
+
+        else:
+            return Response(
+                {
+                    "detail": (
+                        "parent_type must be either 'college' "
+                        "or 'center_of_excellence'."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    departments = departments.order_by("name")
+
+    return Response({
+        "results": [
+            {
+                "id": department.id,
+                "name": department.name,
+                "college_id": department.college_id,
+                "center_of_excellence_id": department.center_of_excellence_id,
+            }
+            for department in departments
+        ]
+    })
+
+
+
+class UserPublicProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        user = get_object_or_404(
+            User.objects.select_related("profile"),
+            id=user_id,
+        )
+
+        profile = user.profile
+
+        # Owner and admin can always view the profile
+        if (
+            user.id == request.user.id
+            or request.user.profile.has_role("admin")
+        ):
+            serializer = ExtendedProfileSerializer(profile)
+            return Response(serializer.data)
+
+        # Other users can only view public profiles
+        if profile.profile_visibility != "public":
+            return Response(
+                {
+                    "detail": "This profile is private."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PublicProfileSerializer(profile)
+        return Response(serializer.data)
+
+
+
+class ProfileOptionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "academia": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.Academia.choices
+            ],
+            "academic_title": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.AcademicTitle.choices
+            ],
+            "academic_rank": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.AcademicRank.choices
+            ],
+            "highest_degree": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.HighestDegree.choices
+            ],
+            "profile_visibility": [
+                {"value": value, "label": label}
+                for value, label in UserProfile.VISIBILITY_CHOICES
+            ],
+        })
+
+
+
+class UpdateDatasetUploadPermissionView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOnly]
+
+    def patch(self, request, user_id):
+        user = get_object_or_404(
+            User.objects.select_related("profile"),
+            id=user_id,
+        )
+
+        can_upload = request.data.get("can_upload_datasets")
+
+        if not isinstance(can_upload, bool):
+            return Response(
+                {
+                    "detail": "can_upload_datasets must be true or false."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile = user.profile
+
+        profile.can_upload_datasets = can_upload
+
+        # If admin revokes permission, prevent automatic restoration.
+        if not can_upload:
+            profile.upload_permission_revoked = True
+
+        # If admin grants permission again, allow automatic permission
+        # logic to work again in the future.
+        else:
+            profile.upload_permission_revoked = False
+
+        profile.save(
+            update_fields=[
+                "can_upload_datasets",
+                "upload_permission_revoked",
+            ]
+        )
+
+        log_activity(
+            user=request.user,
+            action=(
+                "dataset_upload_permission_granted"
+                if can_upload
+                else "dataset_upload_permission_revoked"
+            ),
+            target_object=str(user.id),
+            ip_address=get_client_ip(request),
+            extra={
+                "target_user_id": str(user.id),
+                "can_upload_datasets": can_upload,
+            },
+        )
+
+        return Response(
+            {
+                "user_id": str(user.id),
+                "can_upload_datasets": profile.can_upload_datasets,
+                "upload_permission_revoked": profile.upload_permission_revoked,
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -72,13 +72,12 @@ class SubmitRequiresLanguageTests(APITestCase):
     def test_submit_blocked_without_language(self):
         """accept_terms_and_submit should reject if no language has been set,
         even if metadata is otherwise complete."""
-        from apps.metadata.models import Category, Subject, Metadata
+        from apps.metadata.models import Category, Metadata
 
         researcher = make_user("slresearcher", "slresearcher@aastu.edu.et", role="researcher")
         dataset = Dataset.objects.create(title="Submit Lang DS", owner=researcher)
         category = Category.objects.create(name="Submit Test Cat", status=Category.Status.APPROVED)
-        subject = Subject.objects.create(name="Submit Test Subj")
-        Metadata.objects.create(dataset=dataset, description="test", category=category, subject=subject)
+        Metadata.objects.create(dataset=dataset, description="test", category=category)
 
         self.client.force_authenticate(researcher)
         resp = self.client.post(f"/api/datasets/{dataset.id}/submit/", {"terms_accepted": True})

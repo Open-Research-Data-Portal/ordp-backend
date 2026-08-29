@@ -21,7 +21,7 @@ class AuditLogListTests(APITestCase):
         self.assertEqual(resp.data[0]["ip_address"], "1.2.3.4")
 
     def test_checker_cannot_see_audit_log(self):
-        checker = make_user("alistchecker", "alistchecker@aastu.edu.et", role="checker")
+        checker = make_user("alistchecker", "alistchecker@aastu.edu.et", role="reviewer")
         self.client.force_authenticate(checker)
         resp = self.client.get("/api/admin-panel/dashboard/admin/audit-log/")
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)

@@ -14,7 +14,7 @@ def resolve_deletion_request_votes(deletion_request: DatasetDeletionRequest):
     """Same majority + quorum pattern as sharing's access-request votes. Approval
     here only flips status to APPROVED — it does NOT delete anything. An admin
     still has to call execute_hard_delete separately."""
-    total_reviewers = User.objects.filter(profile__roles__role__in=["checker", "admin"]).distinct().count()
+    total_reviewers = User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct().count()
     quorum = min(MIN_REVIEWER_QUORUM, total_reviewers) or 1
 
     approve_votes = deletion_request.votes.filter(vote="approve").count()

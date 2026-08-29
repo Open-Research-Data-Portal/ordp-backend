@@ -1,4 +1,3 @@
-# docker-compose.yml
 services:
   db:
     image: postgres:18
@@ -9,19 +8,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
     ports:
-      - "5432:5432"
-
-  minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9002:9000"   # API
-      - "9001:9001"   # Web console
+      - "5433:5432"
 
   django:
     build:
@@ -35,8 +22,6 @@ services:
       - "8000:8000"
     depends_on:
       - db
-      - minio
 
 volumes:
   postgres_data:
-  minio_data:
