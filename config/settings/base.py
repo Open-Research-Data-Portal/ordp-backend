@@ -167,13 +167,16 @@ DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@ordp.aastu.ed
 
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:5173")
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
+    "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
-    ],
+    ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_THROTTLE_RATES": {
+        "verification_email": "1/minute",
+        "verification_email_ip": "5/hour",
+    },
 }
 
 SIMPLE_JWT = {
@@ -184,6 +187,7 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
 }
+
 PASSWORD_RESET_TIMEOUT = 86400  # 24 hours in seconds
 
 
