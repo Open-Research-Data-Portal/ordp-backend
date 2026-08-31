@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from apps.datasets.serializers import DatasetSerializer
-from .services import build_dataset_search_queryset, build_discovery_feed, FILE_SIZE_MAP
+from .services import build_dataset_search_queryset, build_discovery_feed, FILE_SIZE_MAP, InvalidFilterError
 
 VALID_ORDER_BY = ("newest", "title", "popular", "downloads")
 VALID_VISIBILITIES = ("public", "institutional", "restricted")
@@ -55,16 +55,22 @@ def list_datasets(request):
         "has_multiple_versions": request.query_params.get("has_multiple_versions", "").strip(),
         "download_min":          request.query_params.get("download_min", "").strip(),
         "download_max":          request.query_params.get("download_max", "").strip(),
+        "college":               request.query_params.get("college", "").strip(),
+        "department":            request.query_params.get("department", "").strip(),
+        "center_of_excellence":  request.query_params.get("center_of_excellence", "").strip(),
     }
 
 
-    qs = build_dataset_search_queryset(
-        query=query,
-        user=request.user if request.user.is_authenticated else None,
-        category_id=category_id,
-        order_by=order_by or None,
-        extra_params=extra_params,
-    )
+    try:
+        qs = build_dataset_search_queryset(
+            query=query,
+            user=request.user if request.user.is_authenticated else None,
+            category_id=category_id,
+            order_by=order_by or None,
+            extra_params=extra_params,
+        )
+    except InvalidFilterError as exc:
+        return Response({"detail": str(exc)}, status=400)
 
 
 
