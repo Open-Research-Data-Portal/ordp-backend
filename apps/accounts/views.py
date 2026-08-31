@@ -34,6 +34,10 @@ from .models import (
 )
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from apps.accounts.permissions import IsAdminOnly
+# from .throttles import (
+#     VerificationEmailRateThrottle,
+#     VerificationEmailIPRateThrottle,
+# )
 
 User = get_user_model()
 @api_view(["POST"])
@@ -344,6 +348,142 @@ class RegisterView(APIView):
             {"detail": "Registration successful. Check your university email to verify your account."},
             status=status.HTTP_201_CREATED,
         )
+class ResendVerificationEmailView(APIView):
+    permission_classes = []
+    def post(self, request):
+        email_addr = request.data.get("email", "").strip().lower()
+        ip = get_client_ip(request)
+
+        if not email_addr:
+            return Response(
+                {
+                    "error": {
+                        "code": "INVALID_EMAIL",
+                        "message": "Email is required.",
+                        "field": "email",
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.select_related("profile").get(
+                email__iexact=email_addr
+            )
+        except User.DoesNotExist:
+            log_activity(
+                user=None,
+                action="verification_resend_requested_unknown_email",
+                target_object=email_addr,
+                ip_address=ip,
+            )
+
+            return Response(
+                {
+                    "detail": (
+                        "If an unverified account exists with that email, "
+                        "a new verification link has been sent."
+                    )
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if user.is_active:
+            log_activity(
+                user=user,
+                action="verification_resend_requested_verified",
+                target_object=str(user.id),
+                ip_address=ip,
+            )
+
+            return Response(
+                {
+                    "detail": "This account has already been verified."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        EmailVerificationToken.objects.filter(
+            user=user,
+            is_used=False,
+        ).update(is_used=True)
+
+        verification = EmailVerificationToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+
+        verify_link = (
+            f"{settings.FRONTEND_URL}"
+            f"/verify-email?token={verification.token}"
+        )
+
+        try:
+            full_name = (
+                user.profile.full_name
+                if hasattr(user, "profile")
+                else user.username
+            )
+
+            html_content = render_to_string(
+                "accounts/emails/verify_email.html",
+                {
+                    "full_name": full_name,
+                    "verify_link": verify_link,
+                },
+            )
+
+            text_content = (
+                f"Verify your ORDP account by visiting: {verify_link}"
+            )
+
+            email = EmailMultiAlternatives(
+                subject="Verify your ORDP account",
+                body=text_content,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[user.email],
+            )
+
+            email.attach_alternative(html_content, "text/html")
+            email.send()
+
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Failed to resend verification email to %s",
+                user.email,
+            )
+
+            return Response(
+                {
+                    "error": {
+                        "code": "EMAIL_SEND_FAILED",
+                        "message": "Unable to send the verification email. Please try again later.",
+                        "field": None,
+                    }
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        log_activity(
+            user=user,
+            action="verification_email_resent",
+            target_object=str(user.id),
+            ip_address=ip,
+        )
+
+        return Response(
+            {
+                "detail": (
+                    "A new verification link has been sent to your "
+                    "university email."
+                )
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 
 
 class VerifyEmailView(APIView):
