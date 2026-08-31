@@ -37,6 +37,7 @@ from .models import DatasetRevision, PendingContentUpdate
 
 from .models import Dataset, DatasetVersion
 from .permissions import IsDatasetOwner
+
 from .serializers import (
     DatasetSerializer,
     InitUploadSerializer,
@@ -52,7 +53,7 @@ from .services.assembly import (
     UploadTooLargeError,
     MissingChunksError,
 )
-
+from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering, InvalidFilterError
 
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
@@ -688,8 +689,14 @@ def my_datasets(request):
     )
 
     # Status filter — owners can see all their own statuses
+       
     status = request.query_params.get("status", "").strip()
-    if status and status in Dataset.Status.values:
+    if status and status not in Dataset.Status.values:
+        return Response(
+            {"detail": f"status must be one of: {', '.join(Dataset.Status.values)}."},
+            status=400,
+        )
+    if status:
         qs = qs.filter(status=status)
 
     # Visibility filter
@@ -714,8 +721,10 @@ def my_datasets(request):
         "download_max":          request.query_params.get("download_max", "").strip(),
     }
 
-    qs = apply_common_filters(qs, extra_params, request.user)
-
+    try:
+        qs = apply_common_filters(qs, extra_params, request.user)
+    except InvalidFilterError as exc:
+        return Response({"detail": str(exc)}, status=400)
     order_by = request.query_params.get("order_by", "").strip()
     if order_by and order_by not in ("newest", "title", "popular", "downloads"):
         return Response({"detail": "order_by must be one of: newest, title, popular, downloads."}, status=400)
