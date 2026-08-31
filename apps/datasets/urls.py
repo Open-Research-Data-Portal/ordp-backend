@@ -36,6 +36,11 @@ urlpatterns = [
     views.prepare_upload,
     name="upload-prepare",
 ),
+    path(
+    "dashboard/my-contributor-datasets/",
+    dashboard_views.my_contributor_datasets,
+    name="my-contributor-datasets",
+),
    
 ]
     

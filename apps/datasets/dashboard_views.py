@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from apps.accounts.models import ActivityLog
 from .models import Dataset, Contributor, DatasetRevision
 from .serializers import DatasetSerializer
+from rest_framework.permissions import IsAuthenticated
 from apps.accounts.permissions import CanUploadDatasets
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 
@@ -98,4 +99,22 @@ def my_contributions(request):
         .distinct()
     )
     qs = Dataset.objects.filter(id__in=dataset_ids, is_active=True)
+    return Response(DatasetSerializer(qs, many=True).data)
+
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_contributor_datasets(request):
+    dataset_ids = Contributor.objects.filter(
+        user=request.user,
+        contributor_type=Contributor.ContributorType.CONTRIBUTOR,
+        dataset__is_active=True,
+    ).values_list("dataset_id", flat=True).distinct()
+
+    qs = Dataset.objects.filter(
+        id__in=dataset_ids,
+        is_active=True,
+    ).order_by("-created_at")
+
     return Response(DatasetSerializer(qs, many=True).data)

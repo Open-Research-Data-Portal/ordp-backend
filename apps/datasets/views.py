@@ -629,7 +629,7 @@ def accept_terms_and_submit(request, dataset_id):
         return Response({"detail": f"Cannot submit a dataset with status '{dataset.status}'."}, status=400)
     if not hasattr(dataset, "metadata"):
         return Response({"detail": "Attach metadata before submitting."}, status=400)
-    if not dataset.languages.exists():
+    if not dataset.metadata.languages.exists():
         return Response({"detail": "At least one language is required before submitting."}, status=400)
     if not dataset.visibility:
         return Response(
@@ -883,13 +883,29 @@ def update_dataset(request, dataset_id):
 
     if "language_ids" in request.data:
         from apps.metadata.models import Language
-        dataset.languages.set(Language.objects.filter(id__in=request.data["language_ids"]))
-        changed_fields.append("languages")
+
+        if hasattr(dataset, "metadata"):
+            dataset.metadata.languages.set(
+                Language.objects.filter(
+                    id__in=request.data["language_ids"],
+                    status=Language.Status.APPROVED,
+                )
+            )
+            changed_fields.append("languages")
+
 
     if "characteristic_ids" in request.data:
         from apps.metadata.models import DatasetCharacteristic
-        dataset.characteristics.set(DatasetCharacteristic.objects.filter(id__in=request.data["characteristic_ids"]))
-        changed_fields.append("characteristics")
+
+        if hasattr(dataset, "metadata"):
+            dataset.metadata.characteristics.set(
+                DatasetCharacteristic.objects.filter(
+                    id__in=request.data["characteristic_ids"],
+                    status=DatasetCharacteristic.Status.APPROVED,
+                )
+            )
+            changed_fields.append("characteristics")
+            changed_fields.append("characteristics")
 
     if changed_fields:
         log_activity(

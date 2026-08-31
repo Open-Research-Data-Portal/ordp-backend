@@ -30,8 +30,19 @@ class DatasetSerializer(serializers.ModelSerializer):
     contributors = ContributorSerializer(many=True, read_only=True)
     category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
     description = serializers.CharField(source="metadata.description", read_only=True, default=None)
-    languages = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
-    characteristics = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
+    languages = serializers.SlugRelatedField(
+    source="metadata.languages",
+    slug_field="name",
+    many=True,
+    read_only=True,
+)
+
+    characteristics = serializers.SlugRelatedField(
+    source="metadata.characteristics",
+    slug_field="name",
+    many=True,
+    read_only=True,
+)
     owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
     metadata = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
