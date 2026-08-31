@@ -73,7 +73,7 @@ class Dataset(models.Model):
     view_count = models.PositiveIntegerField(default=0)
     download_count = models.PositiveIntegerField(default=0)
     edit_in_progress_notice = models.BooleanField(default=False)
-    languages = models.ManyToManyField("metadata.Language", related_name="datasets")
+    
 
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)

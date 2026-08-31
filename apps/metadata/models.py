@@ -33,6 +33,17 @@ class Metadata(models.Model):
     description = models.TextField()
     category = models.ForeignKey(Category, on_delete=models.PROTECT)
     keywords = models.ManyToManyField(Keyword, blank=True, related_name="metadata_set")
+    languages = models.ManyToManyField(
+    "metadata.Language",
+    blank=True,
+    related_name="metadata"
+)
+
+    characteristics = models.ManyToManyField(
+        "metadata.DatasetCharacteristic",
+        blank=True,
+        related_name="metadata"
+    )
     sponsor_or_grant = models.CharField(max_length=255, blank=True)
     doi_citation = models.CharField(max_length=255, blank=True)
     collaborators_text = models.TextField(blank=True)
