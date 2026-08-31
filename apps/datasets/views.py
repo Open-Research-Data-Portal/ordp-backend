@@ -1,6 +1,9 @@
 import os
 import uuid
+import math
+import hashlib
 
+from django.utils import timezone
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
 from .models import Bookmark, Contributor, DatasetWatcher, UploadSession
@@ -9,8 +12,7 @@ from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .services.diffing import compute_diff
-from .serializers import DatasetRevisionSerializer
-from rest_framework.permissions import AllowAny
+from .serializers import DatasetRevisionSerializer, PrepareUploadSerializer
 from django.db import models as django_models
 from django.conf import settings
 from django.utils import timezone
@@ -35,8 +37,22 @@ from .models import DatasetRevision, PendingContentUpdate
 
 from .models import Dataset, DatasetVersion
 from .permissions import IsDatasetOwner
-from .serializers import DatasetSerializer, InitUploadSerializer, TermsAcceptanceSerializer, DatasetVersionSerializer
-from .services.assembly import finalize_upload, session_dir, running_total, UploadTooLargeError
+
+from .serializers import (
+    DatasetSerializer,
+    InitUploadSerializer,
+    TermsAcceptanceSerializer,
+    DatasetVersionSerializer,
+)
+
+from apps.metadata.serializers import MetadataSerializer
+from .services.assembly import (
+    finalize_upload,
+    session_dir,
+    running_total,
+    UploadTooLargeError,
+    MissingChunksError,
+)
 from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering, InvalidFilterError
 
 @api_view(["POST"])
@@ -54,10 +70,11 @@ def init_upload(request):
     serializer.is_valid(raise_exception=True)
 
     dataset = Dataset.objects.create(
-        title=serializer.validated_data["title"],
-        owner=request.user,
-        visibility=serializer.validated_data.get("visibility"),
-    )
+    title=serializer.validated_data["title"],
+    owner=request.user,
+    visibility=serializer.validated_data.get("visibility"),
+    embargo_end_date=serializer.validated_data.get("embargo_end_date"),
+)
 
     upload_session_id = uuid.uuid4().hex
 
@@ -172,25 +189,19 @@ def init_existing_draft_upload(request, dataset_id):
         status=status_code,
     )
 
+
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
-@parser_classes([MultiPartParser])
-def upload_chunk(request, upload_session_id):
+def prepare_upload(request, upload_session_id):
     """
-    Step 2:
-    Upload one chunk.
+    Prepare a file upload after the user has selected a file.
 
-    The upload session must belong to the authenticated user.
+    The dataset remains a draft. This endpoint only determines
+    the chunk size and total number of chunks.
     """
 
-    chunk_index = request.data.get("chunk_index")
-    chunk_file = request.FILES.get("chunk")
-
-    if chunk_file is None or chunk_index is None:
-        return Response(
-            {"detail": "chunk and chunk_index are required."},
-            status=400,
-        )
+    serializer = PrepareUploadSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
 
     try:
         session = UploadSession.objects.select_related(
@@ -212,17 +223,70 @@ def upload_chunk(request, upload_session_id):
             status=400,
         )
 
-    d = session_dir(upload_session_id)
+    filename = serializer.validated_data["filename"]
+    file_size = serializer.validated_data["file_size"]
+    file_checksum = serializer.validated_data["file_checksum"]
 
-    os.makedirs(d, exist_ok=True)
-
-    if (
-        running_total(upload_session_id) + chunk_file.size
-        > settings.MAX_DATASET_UPLOAD_SIZE
-    ):
+    if file_size > settings.MAX_DATASET_UPLOAD_SIZE:
         return Response(
-            {"detail": "Upload exceeds maximum allowed size."},
+            {"detail": "File exceeds maximum allowed size."},
             status=413,
+        )
+
+    chunk_size = calculate_chunk_size(file_size)
+    total_chunks = math.ceil(file_size / chunk_size)
+
+    session.original_filename = filename
+    session.total_chunks = total_chunks
+    session.file_checksum = file_checksum
+
+    session.save(
+        update_fields=[
+            "original_filename",
+            "total_chunks",
+            "file_checksum",
+            "updated_at",
+        ]
+    )
+
+    return Response(
+        {
+            "upload_session_id": session.id,
+            "chunk_size": chunk_size,
+            "total_chunks": total_chunks,
+        },
+        status=200,
+    )
+
+@api_view(["POST"])
+@permission_classes([CanUploadDatasets])
+@parser_classes([MultiPartParser])
+def upload_chunk(request, upload_session_id):
+    """
+    Step 2:
+    Upload one chunk with checksum verification.
+
+    Behavior:
+    - Validates chunk_index.
+    - Rejects indexes outside the expected range.
+    - Verifies the received chunk checksum.
+    - Detects identical duplicate chunks.
+    - Rejects a duplicate index containing different data.
+    """
+
+    chunk_index = request.data.get("chunk_index")
+    chunk_checksum = request.data.get("chunk_checksum")
+    chunk_file = request.FILES.get("chunk")
+
+    if chunk_file is None or chunk_index is None or not chunk_checksum:
+        return Response(
+            {
+                "detail": (
+                    "chunk, chunk_index, and chunk_checksum "
+                    "are required."
+                )
+            },
+            status=400,
         )
 
     try:
@@ -233,23 +297,159 @@ def upload_chunk(request, upload_session_id):
             status=400,
         )
 
-    if chunk_index < 0:
+    try:
+        session = UploadSession.objects.select_related(
+            "dataset",
+            "uploader",
+        ).get(
+            id=upload_session_id,
+            uploader=request.user,
+        )
+    except UploadSession.DoesNotExist:
         return Response(
-            {"detail": "chunk_index cannot be negative."},
+            {"detail": "Unknown upload session."},
+            status=404,
+        )
+
+    if session.completed_at is not None:
+        return Response(
+            {
+                "detail": (
+                    "This upload session has already been completed."
+                )
+            },
             status=400,
         )
+
+    # ---------------------------------------------------------
+    # 1. Validate chunk index
+    # ---------------------------------------------------------
+
+    if session.total_chunks is None:
+        return Response(
+            {
+                "detail": (
+                    "Upload must be prepared before chunks "
+                    "can be uploaded."
+                )
+            },
+            status=400,
+        )
+
+    if chunk_index < 0 or chunk_index >= session.total_chunks:
+        return Response(
+            {
+                "detail": (
+                    f"chunk_index must be between 0 and "
+                    f"{session.total_chunks - 1}."
+                )
+            },
+            status=400,
+        )
+
+    # ---------------------------------------------------------
+    # 2. Calculate checksum of received chunk
+    # ---------------------------------------------------------
+
+    sha256 = hashlib.sha256()
+
+    for part in chunk_file.chunks():
+        sha256.update(part)
+
+    received_checksum = sha256.hexdigest()
+
+    # Reset the uploaded file so it can be read again below.
+    chunk_file.seek(0)
+
+    # Normalize the supplied checksum.
+    chunk_checksum = str(chunk_checksum).strip().lower()
+
+    if received_checksum != chunk_checksum:
+        return Response(
+            {
+                "detail": "Chunk checksum mismatch.",
+                "chunk_index": chunk_index,
+            },
+            status=400,
+        )
+
+    # ---------------------------------------------------------
+    # 3. Determine chunk path
+    # ---------------------------------------------------------
+
+    d = session_dir(upload_session_id)
+    os.makedirs(d, exist_ok=True)
 
     chunk_path = os.path.join(
         d,
         f"chunk_{chunk_index:06d}",
     )
 
+    # ---------------------------------------------------------
+    # 4. Duplicate detection
+    # ---------------------------------------------------------
+
+    if os.path.exists(chunk_path):
+        existing_sha256 = hashlib.sha256()
+
+        with open(chunk_path, "rb") as existing_chunk:
+            while True:
+                data = existing_chunk.read(1024 * 1024)
+
+                if not data:
+                    break
+
+                existing_sha256.update(data)
+
+        existing_checksum = existing_sha256.hexdigest()
+
+        if existing_checksum == received_checksum:
+            return Response(
+                {
+                    "status": "duplicate",
+                    "chunk_index": chunk_index,
+                },
+                status=200,
+            )
+
+        return Response(
+            {
+                "detail": (
+                    "A different chunk already exists at "
+                    "this chunk_index."
+                ),
+                "chunk_index": chunk_index,
+            },
+            status=409,
+        )
+
+    # ---------------------------------------------------------
+    # 5. Check total upload size
+    # ---------------------------------------------------------
+
+    if (
+        running_total(upload_session_id) + chunk_file.size
+        > settings.MAX_DATASET_UPLOAD_SIZE
+    ):
+        return Response(
+            {"detail": "Upload exceeds maximum allowed size."},
+            status=413,
+        )
+
+    # ---------------------------------------------------------
+    # 6. Save chunk
+    # ---------------------------------------------------------
+
     with open(chunk_path, "wb") as f:
         for part in chunk_file.chunks():
             f.write(part)
 
     return Response(
-        {"status": "chunk received"},
+        {
+            "status": "chunk received",
+            "chunk_index": chunk_index,
+            "checksum": received_checksum,
+        },
         status=200,
     )
 
@@ -267,6 +467,19 @@ def upload_thumbnail(request, dataset_id):
     dataset.thumbnail_source = Dataset.ThumbnailSource.UPLOADED
     dataset.save(update_fields=["thumbnail_key", "thumbnail_source"])
     return Response({"status": "thumbnail uploaded"}, status=200)
+def calculate_chunk_size(file_size):
+    MB = 1024 * 1024
+
+    if file_size <= 10 * MB:
+        return file_size
+
+    if file_size <= 100 * MB:
+        return 5 * MB
+
+    if file_size <= 500 * MB:
+        return 10 * MB
+
+    return 20 * MB
 
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
@@ -339,6 +552,15 @@ def complete_upload(request, upload_session_id):
             item_count=request.data.get("item_count"),
         )
 
+    except MissingChunksError as exc:
+        return Response(
+            {
+                "detail": "Missing chunks.",
+                "missing_chunks": exc.missing_indexes,
+            },
+            status=400,
+        )
+
     except FileNotFoundError:
         return Response(
             {
@@ -408,13 +630,34 @@ def accept_terms_and_submit(request, dataset_id):
         return Response({"detail": f"Cannot submit a dataset with status '{dataset.status}'."}, status=400)
     if not hasattr(dataset, "metadata"):
         return Response({"detail": "Attach metadata before submitting."}, status=400)
-    if not dataset.languages.exists():
+    if not dataset.metadata.languages.exists():
         return Response({"detail": "At least one language is required before submitting."}, status=400)
     if not dataset.visibility:
         return Response(
             {"detail": "Select a visibility option before submitting the dataset."},
             status=400,
         )
+
+    if dataset.embargo_end_date is not None:
+        if dataset.visibility != Dataset.Visibility.PUBLIC:
+            return Response(
+                {
+                    "detail": (
+                        "An embargo can only be set for public datasets."
+                    )
+                },
+                status=400,
+            )
+
+        if dataset.embargo_end_date <= timezone.now():
+            return Response(
+                {
+                    "detail": (
+                        "The embargo end date must be in the future."
+                    )
+                },
+                status=400,
+            )
 
     serializer = TermsAcceptanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -526,7 +769,7 @@ def _build_proposed_metadata(dataset, request_data):
     changed = {}
     current = dataset.metadata
 
-    for field in ("description", "category_id", "sponsor_or_grant"):
+    for field in SHARED_EDITABLE_METADATA_FIELDS:
         new_value = request_data.get(field)
         old_value = getattr(current, field, None)
 
@@ -539,8 +782,27 @@ def _build_proposed_metadata(dataset, request_data):
     return changed
 
 
-OWNER_EDITABLE_FIELDS = ("title", "visibility")
-SHARED_EDITABLE_METADATA_FIELDS = ("description", "category_id", "sponsor_or_grant")
+OWNER_EDITABLE_FIELDS = (
+    "title",
+    "visibility",
+    "embargo_end_date",
+)
+SHARED_EDITABLE_METADATA_FIELDS = (
+    "description",
+    "category_id",
+    "sponsor_or_grant",
+    "related_resources",
+    "geographic_coverage",
+    "temporal_coverage",
+    "has_header",
+    "has_missing_values",
+    "instances_represent",
+    "collection_method",
+    "recommended_data_splits",
+    "sensitive_data_disclosure",
+    "data_preprocessing",
+    "citation_notes",
+)
 
 
 @api_view(["PATCH"])
@@ -553,33 +815,106 @@ def update_dataset(request, dataset_id):
     is_owner = dataset.owner_id == request.user.id
 
     changed_fields = []
+
     if is_owner:
+        new_visibility = request.data.get("visibility", dataset.visibility)
+        new_embargo_end_date = request.data.get(
+            "embargo_end_date",
+            dataset.embargo_end_date,
+        )
+
+        if new_embargo_end_date is not None:
+            embargo_serializer = InitUploadSerializer(
+                data={
+                    "title": dataset.title,
+                    "visibility": new_visibility,
+                    "embargo_end_date": new_embargo_end_date,
+                }
+            )
+            embargo_serializer.is_valid(raise_exception=True)
+
+            if new_visibility != Dataset.Visibility.PUBLIC:
+                return Response(
+                    {
+                        "detail": "An embargo can only be set for public datasets."
+                    },
+                    status=400,
+                )
+
+            new_embargo_end_date = embargo_serializer.validated_data[
+                "embargo_end_date"
+            ]
+
         for field in OWNER_EDITABLE_FIELDS:
             if field in request.data:
                 setattr(dataset, field, request.data[field])
                 changed_fields.append(field)
-    dataset.save()
+
+        if new_visibility != Dataset.Visibility.PUBLIC:
+            dataset.embargo_end_date = None
+            if "embargo_end_date" not in changed_fields:
+                changed_fields.append("embargo_end_date")
+
+        dataset.save()
 
     if hasattr(dataset, "metadata"):
-        metadata_changed = []
         metadata = dataset.metadata
-        for field in SHARED_EDITABLE_METADATA_FIELDS:
-            if field in request.data:
-                setattr(metadata, field, request.data[field])
-                metadata_changed.append(field)
-        if metadata_changed:
-            metadata.save(update_fields=metadata_changed)
-            changed_fields.extend(metadata_changed)
+
+        metadata_data = {
+            field: request.data[field]
+            for field in SHARED_EDITABLE_METADATA_FIELDS
+            if field in request.data
+        }
+
+        if "category_id" in request.data:
+            from apps.metadata.models import Category
+
+            category_id = request.data["category_id"]
+
+            category = get_object_or_404(
+                Category,
+                id=category_id,
+                status=Category.Status.APPROVED,
+            )
+
+            metadata_data["category"] = category
+
+    if metadata_data:
+        metadata_serializer = MetadataSerializer(
+            metadata,
+            data=metadata_data,
+            partial=True,
+        )
+        metadata_serializer.is_valid(raise_exception=True)
+        metadata_serializer.save()
+
+        changed_fields.extend(metadata_data.keys())
 
     if "language_ids" in request.data:
         from apps.metadata.models import Language
-        dataset.languages.set(Language.objects.filter(id__in=request.data["language_ids"]))
-        changed_fields.append("languages")
+
+        if hasattr(dataset, "metadata"):
+            dataset.metadata.languages.set(
+                Language.objects.filter(
+                    id__in=request.data["language_ids"],
+                    status=Language.Status.APPROVED,
+                )
+            )
+            changed_fields.append("languages")
+
 
     if "characteristic_ids" in request.data:
         from apps.metadata.models import DatasetCharacteristic
-        dataset.characteristics.set(DatasetCharacteristic.objects.filter(id__in=request.data["characteristic_ids"]))
-        changed_fields.append("characteristics")
+
+        if hasattr(dataset, "metadata"):
+            dataset.metadata.characteristics.set(
+                DatasetCharacteristic.objects.filter(
+                    id__in=request.data["characteristic_ids"],
+                    status=DatasetCharacteristic.Status.APPROVED,
+                )
+            )
+            changed_fields.append("characteristics")
+            changed_fields.append("characteristics")
 
     if changed_fields:
         log_activity(
@@ -804,3 +1139,4 @@ def remove_contributor(request, dataset_id, contributor_id):
     contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
     contributor.delete()
     return Response(status=204)
+

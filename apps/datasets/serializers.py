@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import serializers
 from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate, DatasetVersion
 
@@ -29,8 +30,19 @@ class DatasetSerializer(serializers.ModelSerializer):
     contributors = ContributorSerializer(many=True, read_only=True)
     category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
     description = serializers.CharField(source="metadata.description", read_only=True, default=None)
-    languages = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
-    characteristics = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
+    languages = serializers.SlugRelatedField(
+    source="metadata.languages",
+    slug_field="name",
+    many=True,
+    read_only=True,
+)
+
+    characteristics = serializers.SlugRelatedField(
+    source="metadata.characteristics",
+    slug_field="name",
+    many=True,
+    read_only=True,
+)
     owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
     metadata = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
@@ -56,7 +68,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "thumbnail_key",
             "view_count",
             "download_count",
-
+            "embargo_end_date",
             # Dataset metadata
             "category",
             "description",
@@ -136,6 +148,28 @@ class InitUploadSerializer(serializers.Serializer):
         default=Dataset.Visibility.RESTRICTED,
     )
 
+    embargo_end_date = serializers.DateTimeField(
+    required=False,
+    allow_null=True,
+)
+
+    def validate_embargo_end_date(self, value):
+        if value is not None and value <= timezone.now():
+            raise serializers.ValidationError(
+                "Embargo date must be in the future."
+            )
+        return value
+class PrepareUploadSerializer(serializers.Serializer):
+    filename = serializers.CharField(max_length=255)
+
+    file_size = serializers.IntegerField(
+        min_value=1,
+    )
+
+    file_checksum = serializers.CharField(
+        min_length=64,
+        max_length=64,
+    )
 
 class TermsAcceptanceSerializer(serializers.Serializer):
     terms_accepted = serializers.BooleanField()

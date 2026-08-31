@@ -41,7 +41,6 @@ def list_datasets(request):
         "keyword":               request.query_params.get("keyword", "").strip(),
         "language":              request.query_params.get("language", "").strip(),
         "sponsor":               request.query_params.get("sponsor", "").strip(),
-        "coverage":              request.query_params.get("coverage", "").strip(),
         "doi":                   request.query_params.get("doi", "").strip(),
         "owner":                 request.query_params.get("owner", "").strip(),
         "min_file_count":        request.query_params.get("min_file_count", "").strip(),
