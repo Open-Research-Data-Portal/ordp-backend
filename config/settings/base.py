@@ -95,6 +95,9 @@ DATABASES = {
         "PASSWORD": config("POSTGRES_PASSWORD", default="ordpaastu"),
         "HOST": config("POSTGRES_HOST", default="db"),
         "PORT": config("POSTGRES_PORT", default="5432"),
+        "OPTIONS": {
+    "sslmode": config("POSTGRES_SSLMODE", default="prefer"),
+},
     }
 }
 
@@ -136,7 +139,12 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",  # Vite's default dev port
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173"
+    ).split(",")
+    if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 EMAIL_HOST = config("EMAIL_HOST", default="")
@@ -159,13 +167,16 @@ DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@ordp.aastu.ed
 
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:5173")
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
+    "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
-    ],
+    ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_THROTTLE_RATES": {
+        "verification_email": "1/minute",
+        "verification_email_ip": "5/hour",
+    },
 }
 
 SIMPLE_JWT = {
@@ -176,6 +187,7 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
 }
+
 PASSWORD_RESET_TIMEOUT = 86400  # 24 hours in seconds
 
 

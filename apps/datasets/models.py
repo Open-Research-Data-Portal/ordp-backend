@@ -63,13 +63,17 @@ class Dataset(models.Model):
     blank=True,
     default=Visibility.RESTRICTED,
 )
+    embargo_end_date = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
     status = models.CharField(max_length=18, choices=Status.choices, default=Status.DRAFT)
     is_active = models.BooleanField(default=True)
     version = models.IntegerField(default=1)
     view_count = models.PositiveIntegerField(default=0)
     download_count = models.PositiveIntegerField(default=0)
     edit_in_progress_notice = models.BooleanField(default=False)
-    languages = models.ManyToManyField("metadata.Language", related_name="datasets")
+    
 
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
@@ -312,6 +316,16 @@ class UploadSession(models.Model):
 
     original_filename = models.CharField(
         max_length=255,
+        blank=True,
+    )
+
+    total_chunks = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+    )
+
+    file_checksum = models.CharField(
+        max_length=64,
         blank=True,
     )
 

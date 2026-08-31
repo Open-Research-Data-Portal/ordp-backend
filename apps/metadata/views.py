@@ -78,7 +78,8 @@ def set_dataset_languages(request, dataset_id):
     if not languages:
         return Response({"detail": "At least one language is required."}, status=400)
 
-    dataset.languages.set(languages)
+    metadata, _ = Metadata.objects.get_or_create(dataset=dataset)
+    metadata.languages.set(languages)
     return Response({"status": "languages set", "count": len(languages)})
 
 
@@ -92,15 +93,65 @@ def list_characteristics(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def set_dataset_characteristics(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
-    characteristic_ids = request.data.getlist("characteristic_ids") if hasattr(request.data, "getlist") else request.data.get("characteristic_ids", [])
-    other_characteristics = request.data.getlist("other_characteristics") if hasattr(request.data, "getlist") else request.data.get("other_characteristics", [])
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        owner=request.user,
+    )
 
-    characteristics = list(DatasetCharacteristic.objects.filter(id__in=characteristic_ids))
+    metadata = get_object_or_404(
+        Metadata,
+        dataset=dataset,
+    )
+
+    characteristic_ids = (
+        request.data.get("characteristic_ids", [])
+    )
+
+    other_characteristics = (
+        request.data.get("other_characteristics", [])
+    )
+
+    # Make sure JSON containing a single value doesn't break
+    if not isinstance(characteristic_ids, list):
+        characteristic_ids = [characteristic_ids]
+
+    if not isinstance(other_characteristics, list):
+        other_characteristics = [other_characteristics]
+
+    characteristics = list(
+        DatasetCharacteristic.objects.filter(
+            id__in=characteristic_ids,
+            status=DatasetCharacteristic.Status.APPROVED,
+        )
+    )
+
     for name in other_characteristics:
         name = (name or "").strip()
-        if name:
-            characteristics.append(get_or_create_pending(DatasetCharacteristic, name, request.user))
 
-    dataset.characteristics.set(characteristics)
-    return Response({"status": "characteristics set", "count": len(characteristics)})
+        if name:
+            characteristics.append(
+                get_or_create_pending(
+                    DatasetCharacteristic,
+                    name,
+                    request.user,
+                )
+            )
+
+    if not characteristics:
+        return Response(
+            {
+                "detail": "At least one characteristic is required."
+            },
+            status=400,
+        )
+
+    metadata.characteristics.set(characteristics)
+
+    return Response(
+        {
+            "status": "characteristics set",
+            "count": len(characteristics),
+        },
+        status=200,
+    )

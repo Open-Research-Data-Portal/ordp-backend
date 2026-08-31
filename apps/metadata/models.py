@@ -33,12 +33,35 @@ class Metadata(models.Model):
     description = models.TextField()
     category = models.ForeignKey(Category, on_delete=models.PROTECT)
     keywords = models.ManyToManyField(Keyword, blank=True, related_name="metadata_set")
+    languages = models.ManyToManyField(
+    "metadata.Language",
+    blank=True,
+    related_name="metadata"
+)
+
+    characteristics = models.ManyToManyField(
+        "metadata.DatasetCharacteristic",
+        blank=True,
+        related_name="metadata"
+    )
     sponsor_or_grant = models.CharField(max_length=255, blank=True)
-    coverage = models.TextField(blank=True)
     doi_citation = models.CharField(max_length=255, blank=True)
     collaborators_text = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    related_resources = models.TextField(blank=True)
+    geographic_coverage = models.CharField(max_length=255, blank=True)
+    temporal_coverage = models.CharField(max_length=255, blank=True)
+
+    has_header = models.BooleanField(null=True, blank=True)
+    has_missing_values = models.BooleanField(null=True, blank=True)
+
+    instances_represent = models.TextField(blank=True)
+    collection_method = models.TextField(blank=True)
+    recommended_data_splits = models.TextField(blank=True)
+    sensitive_data_disclosure = models.TextField(blank=True)
+    data_preprocessing = models.TextField(blank=True)
+    citation_notes = models.TextField(blank=True)
 
 
 class FallbackThumbnail(models.Model):

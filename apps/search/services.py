@@ -72,10 +72,6 @@ def apply_common_filters(qs, params, user):
     if sponsor:
         qs = qs.filter(metadata__sponsor_or_grant__icontains=sponsor)
 
-    coverage = params.get("coverage", "").strip()
-    if coverage:
-        qs = qs.filter(metadata__coverage__icontains=coverage)
-
     doi = params.get("doi", "").strip()
     if doi:
         qs = qs.filter(metadata__doi_citation__icontains=doi)
