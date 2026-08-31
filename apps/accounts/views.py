@@ -230,9 +230,9 @@ class CompleteProfileView(APIView):
         # Automatically grant upload permission only when the profile
         # becomes complete, unless an admin has explicitly revoked it.
         if (
-            not profile_was_complete
-            and profile_is_complete
+            profile_is_complete
             and not profile.upload_permission_revoked
+            and not profile.can_upload_datasets
         ):
             profile.can_upload_datasets = True
             profile.save(update_fields=["can_upload_datasets"])
@@ -407,6 +407,64 @@ class VerifyEmailView(APIView):
             status=status.HTTP_200_OK,
         )
 
+class ResendVerificationEmailView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        email_addr = (request.data.get("email") or "").strip().lower()
+        ip = get_client_ip(request)
+
+        # Generic response — never reveal whether email exists
+        generic_response = Response(
+            {"detail": "If an account exists with that email and is not yet verified, a new verification link has been sent."},
+            status=status.HTTP_200_OK,
+        )
+
+        try:
+            user = User.objects.get(email__iexact=email_addr)
+        except User.DoesNotExist:
+            return generic_response
+
+        # Already verified — no need to resend
+        if user.is_active:
+            return generic_response
+
+        # Invalidate all previous unused tokens
+        EmailVerificationToken.objects.filter(user=user, is_used=False).update(is_used=True)
+
+        # Create a fresh token
+        verification = EmailVerificationToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        verify_link = f"{settings.FRONTEND_URL}/verify-email?token={verification.token}"
+
+        try:
+            html_content = render_to_string("accounts/emails/verify_email.html", {
+                "full_name": user.profile.full_name if hasattr(user, "profile") else email_addr,
+                "verify_link": verify_link,
+            })
+            text_content = f"Welcome to ORDP. Verify your email by visiting: {verify_link}"
+            email = EmailMultiAlternatives(
+                subject="Verify your ORDP account",
+                body=text_content,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[user.email],
+            )
+            email.attach_alternative(html_content, "text/html")
+            email.send()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Failed to resend verification email to %s", user.email)
+
+        log_activity(
+            user=user,
+            action="verification_email_resent",
+            target_object=str(user.id),
+            ip_address=ip,
+        )
+
+        return generic_response
 
 class PasswordResetRequestView(APIView):
     permission_classes = []
