@@ -34,11 +34,10 @@ from .models import (
 )
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from apps.accounts.permissions import IsAdminOnly
-# from .throttles import (
-#     VerificationEmailRateThrottle,
-#     VerificationEmailIPRateThrottle,
-# )
-
+from .throttles import (
+    VerificationEmailRateThrottle,
+    VerificationEmailIPRateThrottle,
+)
 User = get_user_model()
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -350,6 +349,10 @@ class RegisterView(APIView):
         )
 class ResendVerificationEmailView(APIView):
     permission_classes = []
+    throttle_classes = [
+        VerificationEmailRateThrottle,
+        VerificationEmailIPRateThrottle,
+    ]
     def post(self, request):
         email_addr = request.data.get("email", "").strip().lower()
         ip = get_client_ip(request)
@@ -371,6 +374,7 @@ class ResendVerificationEmailView(APIView):
                 email__iexact=email_addr
             )
         except User.DoesNotExist:
+            # Do not reveal whether the email exists.
             log_activity(
                 user=None,
                 action="verification_resend_requested_unknown_email",
@@ -388,6 +392,7 @@ class ResendVerificationEmailView(APIView):
                 status=status.HTTP_200_OK,
             )
 
+        # Already verified/active
         if user.is_active:
             log_activity(
                 user=user,
@@ -403,11 +408,13 @@ class ResendVerificationEmailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Invalidate all previous unused verification tokens.
         EmailVerificationToken.objects.filter(
             user=user,
             is_used=False,
         ).update(is_used=True)
 
+        # Create a fresh 24-hour verification token.
         verification = EmailVerificationToken.objects.create(
             user=user,
             expires_at=timezone.now() + timedelta(hours=24),
@@ -482,9 +489,6 @@ class ResendVerificationEmailView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
-
-
 
 class VerifyEmailView(APIView):
     permission_classes = []
