@@ -3,7 +3,8 @@ from django.urls import path
 from .views import CompleteProfileView 
 from .views import (
     LoginView, LogoutView, ProfileView, CustomTokenRefreshView,
-    RegisterView, VerifyEmailView, PasswordResetRequestView, PasswordResetConfirmView,
+    RegisterView, VerifyEmailView, PasswordResetRequestView, PasswordResetConfirmView, ResendVerificationEmailView,
+
 )
 
 urlpatterns = [
@@ -37,4 +38,5 @@ urlpatterns = [
     views.UpdateDatasetUploadPermissionView.as_view(),
     name="update-dataset-upload-permission",
 ),
+path("resend-verification/", ResendVerificationEmailView.as_view(), name="resend-verification"),
 ]
