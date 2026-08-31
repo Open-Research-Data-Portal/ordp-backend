@@ -1,4 +1,5 @@
-
+import uuid
+from datetime import datetime
 from django.db.models import Q, F, Exists, OuterRef, Count, Sum
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from apps.datasets.models import Dataset, Bookmark, Contributor, DatasetFile
@@ -16,6 +17,27 @@ FILE_SIZE_MAP = {
     "medium": (1 * 1024 * 1024, 50 * 1024 * 1024),
     "large":  (50 * 1024 * 1024, None),
 }
+class InvalidFilterError(Exception):
+    """Raised when a filter query param is present but badly formatted."""
+    pass
+
+
+def _parse_date(value, param_name):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise InvalidFilterError(f"{param_name} must be in YYYY-MM-DD format.")
+    
+def _parse_uuid(value, param_name):
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError, TypeError):
+        raise InvalidFilterError(f"{param_name} must be a valid UUID.")
+
+def _parse_positive_int(value, param_name):
+    if not value.lstrip("-").isdigit() or value.lstrip("-").strip() == "" or value.startswith("-"):
+        raise InvalidFilterError(f"{param_name} must be a non-negative integer.")
+    return int(value)
 
 
 def visible_datasets_queryset():
@@ -68,19 +90,18 @@ def apply_common_filters(qs, params, user):
 
     min_file_count = params.get("min_file_count", "").strip()
     max_file_count = params.get("max_file_count", "").strip()
-    if min_file_count.isdigit() or max_file_count.isdigit():
+    if min_file_count or max_file_count:
         qs = qs.annotate(search_file_count=Count("files", distinct=True))
-        if min_file_count.isdigit():
-            qs = qs.filter(search_file_count__gte=int(min_file_count))
-        if max_file_count.isdigit():
-            qs = qs.filter(search_file_count__lte=int(max_file_count))
-
+        if min_file_count:
+            qs = qs.filter(search_file_count__gte=_parse_positive_int(min_file_count, "min_file_count"))
+        if max_file_count:
+            qs = qs.filter(search_file_count__lte=_parse_positive_int(max_file_count, "max_file_count"))
     date_from = params.get("date_from", "").strip()
     date_to = params.get("date_to", "").strip()
     if date_from:
-        qs = qs.filter(created_at__date__gte=date_from)
+        qs = qs.filter(created_at__date__gte=_parse_date(date_from, "date_from"))
     if date_to:
-        qs = qs.filter(created_at__date__lte=date_to)
+        qs = qs.filter(created_at__date__lte=_parse_date(date_to, "date_to"))
 
     file_size = params.get("file_size", "").strip()
     if file_size and file_size in FILE_SIZE_MAP:
@@ -108,10 +129,27 @@ def apply_common_filters(qs, params, user):
 
     download_min = params.get("download_min", "").strip()
     download_max = params.get("download_max", "").strip()
-    if download_min.isdigit():
-        qs = qs.filter(download_count__gte=int(download_min))
-    if download_max.isdigit():
-        qs = qs.filter(download_count__lte=int(download_max))
+    if download_min:
+        qs = qs.filter(download_count__gte=_parse_positive_int(download_min, "download_min"))
+    if download_max:
+        qs = qs.filter(download_count__lte=_parse_positive_int(download_max, "download_max"))
+
+    college_id = params.get("college", "").strip()
+    department_id = params.get("department", "").strip()
+    coe_id = params.get("center_of_excellence", "").strip()
+
+    if college_id and coe_id:
+        raise InvalidFilterError(
+            "college and center_of_excellence cannot be filtered together — "
+            "a researcher belongs to one or the other, never both."
+        )
+
+    if college_id:
+        qs = qs.filter(owner__profile__department__college_id=_parse_uuid(college_id, "college"))
+    if department_id:
+        qs = qs.filter(owner__profile__department_id=_parse_uuid(department_id, "department"))
+    if coe_id:
+        qs = qs.filter(owner__profile__department__center_of_excellence_id=_parse_uuid(coe_id, "center_of_excellence"))
 
     return qs
 
@@ -122,13 +160,12 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
     extra_params = extra_params or {}
     profile = getattr(user, "profile", None)
     visibility = extra_params.get("visibility", "").strip()
-    if visibility and profile and profile.has_role("admin"):
+    if visibility:
         base_qs = base_qs.filter(visibility=visibility)
 
 
-
     if category_id:
-        base_qs = base_qs.filter(metadata__category_id=category_id)
+        base_qs = base_qs.filter(metadata__category_id=_parse_uuid(category_id, "category"))
 
     if query:
         search_query = SearchQuery(query, config="english")
