@@ -192,6 +192,7 @@ def admin_create_user(request):
         f"?token={reset_token.token}"
     )
 
+
     email_sent = True
     try:
         send_mail(
@@ -214,6 +215,7 @@ def admin_create_user(request):
         },
         status=201,
     )
+
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
