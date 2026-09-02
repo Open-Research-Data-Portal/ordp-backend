@@ -181,10 +181,16 @@ def admin_create_user(request):
         f"{settings.FRONTEND_URL}/reset-password"
         f"?token={reset_token.token}"
     )
-    send_mail(
-        message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
-        from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
-    )
+    try:
+        send_mail(
+            message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
+            from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
+        )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Failed to send account-creation email to %s", email
+        )
     return Response({"status": "created", "user_id": user.id}, status=201)
 
 @api_view(["POST"])
