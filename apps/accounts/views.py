@@ -31,6 +31,7 @@ from .models import (
     College,
     CenterOfExcellence,
     Department,
+    UserRole,
 )
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from apps.accounts.permissions import IsAdminOnly
@@ -647,6 +648,9 @@ class PasswordResetConfirmView(APIView):
             BlacklistedToken.objects.get_or_create(token=token_obj)
 
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
+        if user.profile.roles.filter(role=UserRole.RoleChoice.REVIEWER).exists():
+            from apps.datasets.services.retry_assignment import retry_pending_assignments
+            retry_pending_assignments()
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
 
