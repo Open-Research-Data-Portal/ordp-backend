@@ -33,6 +33,8 @@ def attach_metadata(request, dataset_id):
     validated = dict(serializer.validated_data)
     validated["category"] = category
     keywords = validated.pop("keywords", None)
+    languages = validated.pop("languages", None)
+    characteristics = validated.pop("characteristics", None)
 
     metadata, _ = Metadata.objects.update_or_create(dataset=dataset, defaults=validated)
     if keywords is not None:
@@ -42,6 +44,12 @@ def attach_metadata(request, dataset_id):
             if word and word.strip()
         ]
         metadata.keywords.set(keyword_objects)
+
+    if languages is not None:
+        metadata.languages.set(languages)
+
+    if characteristics is not None:
+        metadata.characteristics.set(characteristics)
 
     assign_fallback_thumbnail(dataset)
     return Response({"status": "metadata attached"}, status=200)
