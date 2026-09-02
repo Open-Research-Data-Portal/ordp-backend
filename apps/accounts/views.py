@@ -21,6 +21,7 @@ from apps.datasets.models import Contributor
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from django.utils import timezone
+from apps.datasets.services.retry_assignment import retry_pending_assignments
 from django.shortcuts import get_object_or_404
 from .models import (
     LoginSecurity,
@@ -649,7 +650,6 @@ class PasswordResetConfirmView(APIView):
 
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
         if user.profile.roles.filter(role=UserRole.RoleChoice.REVIEWER).exists():
-            from apps.datasets.services.retry_assignment import retry_pending_assignments
             retry_pending_assignments()
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
