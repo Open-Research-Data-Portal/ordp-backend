@@ -12,6 +12,7 @@ from apps.sharing.models import DatasetAccessRequest, AccessRequestVote
 from .models import ModerationDecision, DatasetDeletionRequest, DeletionRequestVote
 from apps.datasets.models import DatasetFile
 import csv
+import logging
 from io import BytesIO
 from django.db.models import Q
 from django.core.mail import send_mail
@@ -125,6 +126,7 @@ def reviewer_guidelines(request):
         "deletion_committee_quorum": DELETION_QUORUM,
     })
 
+
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
 def admin_create_user(request):
@@ -135,6 +137,14 @@ def admin_create_user(request):
     if not email or not full_name:
         return Response(
             {"detail": "email and full_name are required."},
+            status=400,
+        )
+
+
+    allowed_domains = ("@aastu.edu.et", "@aastustudent.edu.et")
+    if not email.endswith(allowed_domains):
+        return Response(
+            {"detail": "Only AASTU institutional emails are allowed."},
             status=400,
         )
 
@@ -181,17 +191,31 @@ def admin_create_user(request):
         f"{settings.FRONTEND_URL}/reset-password"
         f"?token={reset_token.token}"
     )
+
+
+    email_sent = True
     try:
         send_mail(
+            subject="Your ORDP account has been created",
             message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
-            from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
         )
     except Exception:
-        import logging
+        email_sent = False
         logging.getLogger(__name__).exception(
             "Failed to send account-creation email to %s", email
         )
-    return Response({"status": "created", "user_id": user.id}, status=201)
+
+    return Response(
+        {
+            "status": "created",
+            "user_id": user.id,
+            "email_sent": email_sent,
+        },
+        status=201,
+    )
+
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
