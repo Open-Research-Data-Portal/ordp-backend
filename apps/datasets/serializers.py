@@ -68,7 +68,6 @@ class DatasetSerializer(serializers.ModelSerializer):
             "thumbnail_key",
             "view_count",
             "download_count",
-            "embargo_end_date",
             # Dataset metadata
             "category",
             "description",
@@ -148,17 +147,7 @@ class InitUploadSerializer(serializers.Serializer):
         default=Dataset.Visibility.RESTRICTED,
     )
 
-    embargo_end_date = serializers.DateTimeField(
-    required=False,
-    allow_null=True,
-)
 
-    def validate_embargo_end_date(self, value):
-        if value is not None and value <= timezone.now():
-            raise serializers.ValidationError(
-                "Embargo date must be in the future."
-            )
-        return value
 class PrepareUploadSerializer(serializers.Serializer):
     filename = serializers.CharField(max_length=255)
 

@@ -41,10 +41,13 @@ def _parse_positive_int(value, param_name):
 
 
 def visible_datasets_queryset():
-    """Existence is discoverable regardless of visibility tier — public,
-    institutional, AND restricted datasets all show up in search/discovery.
-    Access to the actual files is gated separately, at download/share time."""
-    return Dataset.objects.filter(is_active=True, status=Dataset.Status.PUBLISHED)
+    """Existence is discoverable regardless of visibility tier for public and
+    restricted — both show up in search/discovery, access to the actual files
+    is gated separately at download/share time. Private is the one exception:
+    it's excluded here entirely, so it never surfaces in search at all."""
+    return Dataset.objects.filter(
+        is_active=True, status=Dataset.Status.PUBLISHED,
+    ).exclude(visibility=Dataset.Visibility.PRIVATE)
 
 
 def apply_ordering(qs, order_by):

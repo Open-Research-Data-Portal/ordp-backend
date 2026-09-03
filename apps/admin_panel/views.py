@@ -183,6 +183,9 @@ def moderate_dataset(request, dataset_id):
 
         _resolve_thumbnail_suggestions(dataset)
 
+        from apps.datasets.services.invitations import dispatch_pending_invitations
+        dispatch_pending_invitations(dataset)
+
         notify(
             user=dataset.owner,
             notification_type=Notification.NotificationType.DATASET_APPROVED,
