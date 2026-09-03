@@ -53,7 +53,6 @@ def list_datasets(request):
         "download_min":          request.query_params.get("download_min", "").strip(),
         "download_max":          request.query_params.get("download_max", "").strip(),
         "college":               request.query_params.get("college", "").strip(),
-        "department":            request.query_params.get("department", "").strip(),
         "center_of_excellence":  request.query_params.get("center_of_excellence", "").strip(),
     }
 

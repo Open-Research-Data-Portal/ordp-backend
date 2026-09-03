@@ -18,7 +18,6 @@ class UserProfileInline(admin.StackedInline):
     "full_name",
     "role",
     "academia",
-    "department",
     "interests",
     "terms_accepted",
 )

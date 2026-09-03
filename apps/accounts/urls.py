@@ -32,7 +32,6 @@ urlpatterns = [
     path("search-users/", views.search_users, name="search-users"),
     path("colleges/", views.list_colleges, name="list-colleges"),
     path("centers-of-excellence/",views.list_centers_of_excellence,name="list-centers-of-excellence"),
-    path("departments/", views.list_departments, name="list-departments"),
     path(
     "users/<int:user_id>/profile/",
     views.UserPublicProfileView.as_view(),

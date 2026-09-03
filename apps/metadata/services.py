@@ -19,20 +19,38 @@ def assign_fallback_thumbnail(dataset):
     FallbackThumbnail.objects.filter(id=fallback.id).update(usage_count=F("usage_count") + 1)
 
 
+def get_or_create_category(name, user, origin):
+    """No approval step: an 'other' category is usable and saved immediately.
+    Case-insensitive match so 'Agriculture' and 'agriculture' don't become two
+    separate rows, and so an interest-other entry reuses a category that already
+    exists from a dataset-other entry (or vice versa)."""
+    name = name.strip()
+    existing = Category.objects.filter(name__iexact=name).first()
+    if existing:
+        return existing
+    return Category.objects.create(name=name, origin=origin, suggested_by=user)
+
+
+def get_or_create_category_from_dataset_other(name, user):
+    """'Other' category typed while uploading a dataset. Gets added to the
+    general category list for future dataset category selection."""
+    return get_or_create_category(name, user, Category.Origin.DATASET_OTHER)
+
+
+def get_or_create_category_from_interest_other(name, user):
+    """'Other' interest typed at onboarding/profile. Saved for the user only —
+    never shown as a selectable category or interest option to anyone else."""
+    return get_or_create_category(name, user, Category.Origin.INTEREST_OTHER)
+
+
 def get_or_create_pending(model, name, user):
-    """Shared by Category, Language, and DatasetCharacteristic — same 'usable
-    immediately, invisible until approved' pattern for any admin-reviewed
-    taxonomy. Case-insensitive match avoids 'Agriculture' and 'agriculture'
-    both existing as separate pending entries from two different people."""
+    """Still used by Language and DatasetCharacteristic, which keep their
+    admin-review workflow — untouched."""
     name = name.strip()
     existing = model.objects.filter(name__iexact=name).first()
     if existing:
         return existing
     return model.objects.create(name=name, status=model.Status.PENDING, suggested_by=user)
-
-
-def get_or_create_pending_category(name, user):
-    return get_or_create_pending(Category, name, user)
 
 
 def get_or_create_pending_language(name, user):

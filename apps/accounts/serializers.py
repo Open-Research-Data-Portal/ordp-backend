@@ -54,12 +54,10 @@ class ProfileSerializer(serializers.ModelSerializer):
 class ExtendedProfileSerializer(serializers.ModelSerializer):
 
     interests = serializers.PrimaryKeyRelatedField(
-    many=True,
-    queryset=Category.objects.filter(
-        status=Category.Status.APPROVED
-    ),
-    required=False,
-)
+        many=True,
+        queryset=Category.objects.filter(origin=Category.Origin.STANDARD),
+        required=False,
+    )
 
     class Meta:
         model = UserProfile
@@ -69,7 +67,6 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
             "affiliation",
             "college",
             "center_of_excellence",
-            "department",
             "academia",
             "academia_other",
             "highest_degree_other",
@@ -127,46 +124,6 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
                 })
         else:
             attrs["highest_degree_other"] = ""
-
-        college = attrs.get(
-    "college",
-    self.instance.college if self.instance else None,
-)
-
-        center_of_excellence = attrs.get(
-            "center_of_excellence",
-            self.instance.center_of_excellence if self.instance else None,
-        )
-
-        department = attrs.get(
-            "department",
-            self.instance.department if self.instance else None,
-        )
-
-        if college and center_of_excellence:
-            raise serializers.ValidationError(
-                "Select either a College or a Center of Excellence, not both."
-            )
-
-        if department:
-            if college and department.college_id != college.id:
-                raise serializers.ValidationError({
-                    "department": (
-                        "Department does not belong to the selected College."
-                    )
-                })
-
-            if (
-                center_of_excellence
-                and department.center_of_excellence_id
-                != center_of_excellence.id
-            ):
-                raise serializers.ValidationError({
-                    "department": (
-                        "Department does not belong to the selected "
-                        "Center of Excellence."
-                    )
-                })
 
         return attrs
     def save(self, **kwargs):
@@ -232,7 +189,6 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             "affiliation",
             "college",
             "center_of_excellence",
-            "department",
             "academia",
             "academic_title",
             "academic_rank",

@@ -1,5 +1,9 @@
+from datetime import timedelta
+
 from django.utils import timezone
 from rest_framework import serializers
+
+from apps.datasets.services.storage import presigned_download_url
 from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate, DatasetVersion
 
 
@@ -28,6 +32,8 @@ class ContributorSerializer(serializers.ModelSerializer):
 class DatasetSerializer(serializers.ModelSerializer):
     files = DatasetFileSerializer(many=True, read_only=True)
     contributors = ContributorSerializer(many=True, read_only=True)
+    thumbnail_url = serializers.SerializerMethodField()
+    thumbnail_url_expires_at = serializers.SerializerMethodField()
     category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
     description = serializers.CharField(source="metadata.description", read_only=True, default=None)
     languages = serializers.SlugRelatedField(
@@ -66,6 +72,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "files",
             "contributors",
             "thumbnail_key",
+            "thumbnail_url",
             "view_count",
             "download_count",
             # Dataset metadata
@@ -97,6 +104,20 @@ class DatasetSerializer(serializers.ModelSerializer):
             from apps.metadata.serializers import MetadataSerializer
             return MetadataSerializer(obj.metadata).data
         return None
+    def get_thumbnail_url(self, obj):
+        if not obj.thumbnail_key:
+            return None
+
+        return presigned_download_url(
+            obj.thumbnail_key,
+            expires_seconds=3600,
+        )
+
+    def get_thumbnail_url_expires_at(self, obj):
+        if not obj.thumbnail_key:
+            return None
+
+        return timezone.now() + timedelta(hours=1)
 
     def get_views_delta_pct(self, obj):
         return 12

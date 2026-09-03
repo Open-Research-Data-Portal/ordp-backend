@@ -1,3 +1,4 @@
+from datetime import timedelta
 import os
 import uuid
 import math
@@ -454,18 +455,71 @@ def upload_chunk(request, upload_session_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsDatasetOwner])
-@parser_classes([MultiPartParser])
 def upload_thumbnail(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        owner=request.user,
+    )
+
     image = request.FILES.get("thumbnail")
+
     if image is None:
-        return Response({"detail": "thumbnail file is required."}, status=400)
+        return Response(
+            {"detail": "thumbnail file is required."},
+            status=400,
+        )
+
     key = f"thumbnails/{dataset.id}/{image.name}"
-    upload_fileobj(image, key, getattr(image, "content_type", None))
+
+    upload_fileobj(
+        image,
+        key,
+        getattr(image, "content_type", None),
+    )
+
     dataset.thumbnail_key = key
     dataset.thumbnail_source = Dataset.ThumbnailSource.UPLOADED
-    dataset.save(update_fields=["thumbnail_key", "thumbnail_source"])
-    return Response({"status": "thumbnail uploaded"}, status=200)
+
+    dataset.save(
+        update_fields=[
+            "thumbnail_key",
+            "thumbnail_source",
+        ]
+    )
+
+    return Response(
+        {"status": "thumbnail uploaded"},
+        status=200,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_thumbnail_url(request, dataset_id):
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        is_active=True,
+    )
+
+    if not dataset.thumbnail_key:
+        return Response({
+            "thumbnail_url": None,
+            "thumbnail_url_expires_at": None,
+        })
+
+    expires_at = timezone.now() + timedelta(hours=1)
+
+    thumbnail_url = presigned_download_url(
+        dataset.thumbnail_key,
+        expires_seconds=3600,
+    )
+
+    return Response({
+        "thumbnail_url": thumbnail_url,
+        "thumbnail_url_expires_at": expires_at,
+    })
+
 def calculate_chunk_size(file_size):
     MB = 1024 * 1024
 

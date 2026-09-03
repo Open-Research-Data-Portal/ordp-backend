@@ -134,21 +134,12 @@ def apply_common_filters(qs, params, user):
         qs = qs.filter(download_count__lte=_parse_positive_int(download_max, "download_max"))
 
     college_id = params.get("college", "").strip()
-    department_id = params.get("department", "").strip()
     coe_id = params.get("center_of_excellence", "").strip()
 
-    if college_id and coe_id:
-        raise InvalidFilterError(
-            "college and center_of_excellence cannot be filtered together — "
-            "a researcher belongs to one or the other, never both."
-        )
-
     if college_id:
-        qs = qs.filter(owner__profile__department__college_id=_parse_uuid(college_id, "college"))
-    if department_id:
-        qs = qs.filter(owner__profile__department_id=_parse_uuid(department_id, "department"))
+        qs = qs.filter(owner__profile__college_id=_parse_uuid(college_id, "college"))
     if coe_id:
-        qs = qs.filter(owner__profile__department__center_of_excellence_id=_parse_uuid(coe_id, "center_of_excellence"))
+        qs = qs.filter(owner__profile__center_of_excellence_id=_parse_uuid(coe_id, "center_of_excellence"))
 
     return qs
 

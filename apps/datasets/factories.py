@@ -1,24 +1,14 @@
 from django.contrib.auth import get_user_model
-from apps.accounts.models import UserProfile, UserRole, College, Department
+from apps.accounts.models import UserProfile, UserRole, College
 
 User = get_user_model()
 
 
-def make_college_and_department(
-    college_name="Test College",
-    dept_name="Test Department",
-):
-    college = College.objects.create(name=college_name)
-
-    department = Department.objects.create(
-        name=dept_name,
-        college=college,
-    )
-
-    return college, department
+def make_college(college_name="Test College"):
+    return College.objects.create(name=college_name)
 
 
-def make_user(username, email, role="researcher", department=None):
+def make_user(username, email, role="researcher", college=None):
     user = User.objects.create_user(
         username=username,
         email=email,
@@ -32,11 +22,8 @@ def make_user(username, email, role="researcher", department=None):
         profile.save()
         return user
 
-    if department is None:
-        _, department = make_college_and_department(
-            f"{username}-college",
-            f"{username}-dept",
-        )
+    if college is None:
+        college = make_college(f"{username}-college")
 
     if role in UserRole.RoleChoice.values:
         UserRole.objects.get_or_create(
@@ -45,7 +32,7 @@ def make_user(username, email, role="researcher", department=None):
         )
 
     profile.academia = UserProfile.Academia.RESEARCHER
-    profile.department = department
+    profile.college = college
     profile.terms_accepted = True
     profile.affiliation = "AASTU"
     profile.profile_visibility = "public"

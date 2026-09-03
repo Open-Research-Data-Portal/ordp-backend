@@ -18,7 +18,12 @@ urlpatterns = [
     path("<uuid:dataset_id>/propose-revision/", views.propose_revision, name="propose-revision"),
     path("revisions/<uuid:revision_id>/decide/", views.decide_revision, name="revision-decide"),
     path("<uuid:dataset_id>/versions/", views.dataset_versions, name="dataset-versions"),
-    path("<uuid:dataset_id>/thumbnail/", views.upload_thumbnail, name="upload-thumbnail"),
+    path("<uuid:dataset_id>/thumbnail/", views.upload_thumbnail, name="upload-thumbnail"), 
+    path( 
+    "<uuid:dataset_id>/thumbnail/url/", 
+    views.get_thumbnail_url, 
+    name="thumbnail-url", 
+),   
     path("<uuid:dataset_id>/bookmark/", views.toggle_bookmark, name="toggle-bookmark"),
     path("bookmarks/", views.my_bookmarks, name="my-bookmarks"),
     path("<uuid:dataset_id>/contributors/<uuid:contributor_id>/", views.update_contributor_type, name="update-contributor-type"),
