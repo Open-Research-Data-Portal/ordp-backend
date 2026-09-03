@@ -1,7 +1,83 @@
+import re
+import difflib
 from django.db.models import F
 
 from apps.datasets.models import Dataset
 from .models import Category, FallbackThumbnail
+
+
+# Hand-maintained: add an entry here whenever you notice an abbreviation
+# or synonym causing near-duplicate categories. Left side is lowercase
+# and is what a user might type; right side must match an existing
+# category's name exactly (case-insensitive) or the mapping is ignored.
+CATEGORY_SYNONYMS = {
+    "ai": "Artificial Intelligence",
+    "ml": "Machine Learning",
+    "cs": "Computer Science",
+    "it": "Information Technology",
+}
+
+
+def _normalize_for_matching(name):
+    """Lowercase, strip punctuation/extra whitespace, and de-pluralize simple
+    trailing forms so 'Agricultures', 'agriculture ', and 'AGRICULTURE' all
+    collapse to the same comparison key. Not a full stemmer — just enough
+    to catch the common cases people actually type."""
+    cleaned = re.sub(r"[^\w\s]", "", name).strip().lower()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+
+    if cleaned.endswith("ies") and len(cleaned) > 4:
+        cleaned = cleaned[:-3] + "y"
+    elif cleaned.endswith("es") and len(cleaned) > 3:
+        cleaned = cleaned[:-2]
+    elif cleaned.endswith("s") and not cleaned.endswith("ss") and len(cleaned) > 3:
+        cleaned = cleaned[:-1]
+
+    return cleaned
+
+
+def find_matching_category(name, threshold=0.87):
+    """Looks for an existing category that's the same thing the user typed.
+    Checks in order:
+    1. A hand-maintained synonym/abbreviation ('AI' -> 'Artificial
+       Intelligence') — always trusted, no fuzziness involved.
+    2. Normalized + fuzzy matching against real (standard) categories first,
+       then other 'other'-origin categories, so a near-duplicate always
+       prefers the admin-created category over another user's earlier typo.
+    Returns None if nothing is confident enough, so a new category gets
+    created as before."""
+    name = name.strip()
+    if not name:
+        return None
+
+    mapped_name = CATEGORY_SYNONYMS.get(name.lower())
+    if mapped_name:
+        mapped = Category.objects.filter(name__iexact=mapped_name).first()
+        if mapped:
+            return mapped
+
+    target = _normalize_for_matching(name)
+    if not target:
+        return None
+
+    for queryset in (
+        Category.objects.filter(origin=Category.Origin.STANDARD),
+        Category.objects.exclude(origin=Category.Origin.STANDARD),
+    ):
+        best_match, best_ratio = None, 0.0
+        for category in queryset.only("id", "name"):
+            candidate = _normalize_for_matching(category.name)
+            if not candidate:
+                continue
+            if candidate == target:
+                return category
+            ratio = difflib.SequenceMatcher(None, target, candidate).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_match = ratio, category
+        if best_match and best_ratio >= threshold:
+            return best_match
+
+    return None
 
 
 def assign_fallback_thumbnail(dataset):
@@ -21,11 +97,12 @@ def assign_fallback_thumbnail(dataset):
 
 def get_or_create_category(name, user, origin):
     """No approval step: an 'other' category is usable and saved immediately.
-    Case-insensitive match so 'Agriculture' and 'agriculture' don't become two
-    separate rows, and so an interest-other entry reuses a category that already
-    exists from a dataset-other entry (or vice versa)."""
+    Before creating a new row, the typed name is checked against a synonym
+    list and then normalized/fuzzy-matched against existing categories, so
+    'AI', 'Agricultures', and a small typo like 'Agriculure' all reuse the
+    same real category instead of spawning near-duplicates."""
     name = name.strip()
-    existing = Category.objects.filter(name__iexact=name).first()
+    existing = find_matching_category(name)
     if existing:
         return existing
     return Category.objects.create(name=name, origin=origin, suggested_by=user)
