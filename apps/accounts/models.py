@@ -61,6 +61,7 @@ class UserProfile(models.Model):
         GOVERNMENT_OFFICER = "government_officer", "Government Officer"
         INDUSTRY_PROFESSIONAL = "industry_professional", "Industry Professional"
         OTHER = "other", "Other"
+        
 
 
     class AcademicTitle(models.TextChoices):
@@ -182,7 +183,8 @@ class UserProfile(models.Model):
 
     upload_permission_revoked = models.BooleanField(default=False)
     
-
+    must_change_password = models.BooleanField(default=False)
+    
     is_external = models.BooleanField(
         default=False,
     )
