@@ -4,8 +4,6 @@ from django.db.models import Count, Q
 
 from apps.accounts.models import UserProfile, UserRole
 from apps.admin_panel.models import DatasetReviewerAssignment
-from apps.notifications.services import notify
-from apps.notifications.models import Notification
 
 
 MIN_REVIEWERS = 3
@@ -19,28 +17,22 @@ def assign_reviewers(dataset):
     without reviewer assignments. It can be assigned later when enough
     reviewers become available.
     """
-    from ..models import Dataset, Contributor
+    from ..models import Dataset
 
     category = getattr(getattr(dataset, "metadata", None), "category", None)
 
-    # Exclude the primary owner AND anyone who has a Contributor record on
-    # this dataset at all — owner (co-owner), co_author, or contributor.
-    # Dataset.is_owned_by() already treats co-owners as equivalent to the
-    # primary owner, and a plain contributor has editing access to the
-    # dataset too (e.g. granted edit rights after publish) — neither should
-    # be reviewing the dataset they have a stake in.
-    contributor_user_ids = Contributor.objects.filter(
-        dataset=dataset,
-        user__isnull=False,
-    ).values_list("user_id", flat=True)
+    reviewer_roles = [
+        UserRole.RoleChoice.REVIEWER,
+        
+    ]
 
     base = (
-        UserProfile.objects
-        .filter(roles__role=UserRole.RoleChoice.REVIEWER)
-        .exclude(user_id=dataset.owner_id)
-        .exclude(user_id__in=contributor_user_ids)
-        .distinct()
-    )
+    UserProfile.objects
+    .filter(roles__role=UserRole.RoleChoice.REVIEWER)
+    .exclude(user_id=dataset.owner_id)
+    .exclude(user__password__startswith="!") 
+    .distinct()
+)
 
     # Never assign the same reviewer twice.
     already_assigned = DatasetReviewerAssignment.objects.filter(
@@ -113,13 +105,6 @@ def assign_reviewers(dataset):
         )
         assignments.append(assignment)
 
-        notify(
-            user=profile.user,
-            notification_type=Notification.NotificationType.REVIEWER_ASSIGNED,
-            message=f'You have been assigned to review "{dataset.title}".',
-            dataset=dataset,
-            link_path="/admin-panel/queue",
-        )
 
     dataset.assigned_reviewer = selected[0].user
     dataset.save(update_fields=["assigned_reviewer"])

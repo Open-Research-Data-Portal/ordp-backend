@@ -21,14 +21,9 @@ class LogoutSerializer(serializers.Serializer):
 User = get_user_model()
 
 
-
 class ProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(
         source="profile.full_name",
-        read_only=True,
-    )
-    must_change_password = serializers.BooleanField(
-        source="profile.must_change_password",
         read_only=True,
     )
     roles = serializers.SerializerMethodField()
@@ -40,7 +35,6 @@ class ProfileSerializer(serializers.ModelSerializer):
             "email",
             "username",
             "full_name",
-            "must_change_password",
             "roles",
         ]
         read_only_fields = [
@@ -48,7 +42,6 @@ class ProfileSerializer(serializers.ModelSerializer):
             "email",
             "username",
             "full_name",
-            "must_change_password",
             "roles",
         ]
 

@@ -21,7 +21,6 @@ EMAIL_SUBJECTS = {
     NT.SYSTEM_ANNOUNCEMENT: "ORDP System Announcement",
 
     NT.RESEARCHER_REJECTED: "Your researcher access request was declined",
-    NT.REVIEWER_ASSIGNED: "You've been assigned to review a dataset",
 }
 
 

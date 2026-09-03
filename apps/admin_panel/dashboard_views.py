@@ -172,8 +172,7 @@ def admin_create_user(request):
 
     profile = user.profile
     profile.full_name = full_name
-    profile.must_change_password = True
-    profile.save(update_fields=["full_name", "must_change_password"])
+    profile.save(update_fields=["full_name"])
 
     UserRole.objects.get_or_create(
         profile=profile,
