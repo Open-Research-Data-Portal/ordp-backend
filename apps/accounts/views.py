@@ -144,7 +144,7 @@ class LoginView(APIView):
         if stay_logged_in:
             refresh.set_exp(lifetime=timedelta(days=30))
 
-        return Response({
+            return Response({
             "access": str(refresh.access_token),
             "refresh": str(refresh),
             "user": {
