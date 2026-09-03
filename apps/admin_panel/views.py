@@ -13,7 +13,7 @@ from apps.metadata.models import FallbackThumbnail
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from django.contrib.auth import get_user_model
-from apps.datasets.services.storage import presigned_download_url
+
 from .models import (
     ModerationDecision,
     DatasetReviewerAssignment,
@@ -352,30 +352,5 @@ def execute_deletion(request, request_id):
     deletion_request = get_object_or_404(DatasetDeletionRequest, id=request_id, status=DatasetDeletionRequest.Status.APPROVED)
     title = execute_hard_delete(deletion_request, request.user)
     return Response({"status": "executed", "deleted_dataset_title": title})
-
-
-
-@api_view(["GET"])
-@permission_classes([IsReviewerOrAdmin])
-def list_fallback_thumbnail_options(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, status=Dataset.Status.PENDING)
-
-    if not hasattr(dataset, "metadata") or not dataset.metadata.category:
-        return Response({"results": []})
-
-    fallbacks = FallbackThumbnail.objects.filter(
-        category=dataset.metadata.category
-    ).order_by("usage_count")
-
-    return Response({
-        "results": [
-            {
-                "id": fallback.id,
-                "image_url": presigned_download_url(fallback.image_key, expires_seconds=3600),
-                "usage_count": fallback.usage_count,
-            }
-            for fallback in fallbacks
-        ]
-    })
 
 
