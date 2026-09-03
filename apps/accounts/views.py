@@ -672,7 +672,6 @@ def search_users(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def list_colleges(request):
     colleges = College.objects.order_by("name").values("id", "name")
 
@@ -682,7 +681,6 @@ def list_colleges(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def list_centers_of_excellence(request):
     centers = CenterOfExcellence.objects.order_by("name").values("id", "name")
 
