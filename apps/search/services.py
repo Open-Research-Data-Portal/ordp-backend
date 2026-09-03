@@ -262,6 +262,3 @@ def build_discovery_feed(user, limit=20):
         "results": [_serialize_feed_item(d, file_stats) for d in combined],
 
     }
-
-
-

@@ -539,15 +539,15 @@ def list_users(request):
     } for u in qs])
 
 
-# @api_view(["GET"])
-# @permission_classes([IsAdminOnly])
-# def pending_categories(request):
-#     from apps.metadata.models import Category
-#     qs = Category.objects.filter(status=Category.Status.PENDING).select_related("suggested_by__profile")
-#     return Response([{
-#         "id": c.id, "name": c.name,
-#         "suggested_by": c.suggested_by.profile.full_name if c.suggested_by else None,
-#     } for c in qs])
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_categories(request):
+    from apps.metadata.models import Category
+    qs = Category.objects.filter(status=Category.Status.PENDING).select_related("suggested_by__profile")
+    return Response([{
+        "id": c.id, "name": c.name,
+        "suggested_by": c.suggested_by.profile.full_name if c.suggested_by else None,
+    } for c in qs])
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
@@ -596,20 +596,20 @@ def admin_create_category(request):
         status=201,
     )
 
-# @api_view(["POST"])
-# @permission_classes([IsAdminOnly])
-# def decide_pending_category(request, category_id):
-#     from apps.metadata.models import Category
-#     category = get_object_or_404(Category, id=category_id, status=Category.Status.PENDING)
-#     decision = request.data.get("decision")
-#     if decision == "approve":
-#         category.status = Category.Status.APPROVED
-#     elif decision == "reject":
-#         category.status = Category.Status.REJECTED
-#     else:
-#         return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
-#     category.save(update_fields=["status"])
-#     return Response({"status": category.status})
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def decide_pending_category(request, category_id):
+    from apps.metadata.models import Category
+    category = get_object_or_404(Category, id=category_id, status=Category.Status.PENDING)
+    decision = request.data.get("decision")
+    if decision == "approve":
+        category.status = Category.Status.APPROVED
+    elif decision == "reject":
+        category.status = Category.Status.REJECTED
+    else:
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+    category.save(update_fields=["status"])
+    return Response({"status": category.status})
 
 
 
@@ -625,31 +625,31 @@ def admin_revoke_share_permission(request, permission_id):
 
 
 
-# @api_view(["GET"])
-# @permission_classes([IsAdminOnly])
-# def pending_languages(request):
-#     from apps.metadata.models import Language
-#     qs = Language.objects.filter(status=Language.Status.PENDING).select_related("suggested_by__profile")
-#     return Response([{
-#         "id": l.id, "name": l.name,
-#         "suggested_by": l.suggested_by.profile.full_name if l.suggested_by else None,
-#     } for l in qs])
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_languages(request):
+    from apps.metadata.models import Language
+    qs = Language.objects.filter(status=Language.Status.PENDING).select_related("suggested_by__profile")
+    return Response([{
+        "id": l.id, "name": l.name,
+        "suggested_by": l.suggested_by.profile.full_name if l.suggested_by else None,
+    } for l in qs])
 
 
-# @api_view(["POST"])
-# @permission_classes([IsAdminOnly])
-# def decide_pending_language(request, language_id):
-#     from apps.metadata.models import Language
-#     language = get_object_or_404(Language, id=language_id, status=Language.Status.PENDING)
-#     decision = request.data.get("decision")
-#     if decision == "approve":
-#         language.status = Language.Status.APPROVED
-#     elif decision == "reject":
-#         language.status = Language.Status.REJECTED
-#     else:
-#         return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
-#     language.save(update_fields=["status"])
-#     return Response({"status": language.status})
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def decide_pending_language(request, language_id):
+    from apps.metadata.models import Language
+    language = get_object_or_404(Language, id=language_id, status=Language.Status.PENDING)
+    decision = request.data.get("decision")
+    if decision == "approve":
+        language.status = Language.Status.APPROVED
+    elif decision == "reject":
+        language.status = Language.Status.REJECTED
+    else:
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+    language.save(update_fields=["status"])
+    return Response({"status": language.status})
 
 
 
@@ -732,178 +732,4 @@ def admin_create_language(request):
             "status": language.status,
         },
         status=201,
-    )
-
-
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def admin_delete_college(request, college_id):
-    college = get_object_or_404(College, id=college_id)
-    affected_users = UserProfile.objects.filter(college=college).count()
-    name = college.name
-    college.delete()
-
-    ActivityLog.log(
-        user=request.user,
-        action="college_deleted",
-        target_object=str(college_id),
-        ip_address=get_client_ip(request),
-        extra={"college_name": name, "affected_users": affected_users},
-    )
-
-    return Response(
-        {"detail": f"College '{name}' deleted.", "affected_users": affected_users},
-        status=200,
-    )
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def admin_delete_center_of_excellence(request, center_id):
-    center = get_object_or_404(CenterOfExcellence, id=center_id)
-    affected_users = UserProfile.objects.filter(center_of_excellence=center).count()
-    name = center.name
-    center.delete()
-
-    ActivityLog.log(
-        user=request.user,
-        action="center_of_excellence_deleted",
-        target_object=str(center_id),
-        ip_address=get_client_ip(request),
-        extra={"center_name": name, "affected_users": affected_users},
-    )
-
-    return Response(
-        {"detail": f"Center of Excellence '{name}' deleted.", "affected_users": affected_users},
-        status=200,
-    )
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def admin_delete_category(request, category_id):
-    from django.db import transaction
-    from apps.metadata.models import Category
-
-    category = get_object_or_404(Category, id=category_id)
-    name = category.name
-
-    in_use_count = category.metadata_set.count()
-    reassign_to_id = request.data.get("reassign_to")
-
-    if in_use_count and not reassign_to_id:
-        return Response(
-            {
-                "detail": (
-                    f"'{name}' is still assigned to {in_use_count} dataset(s). "
-                    "Pass 'reassign_to' with a category id to move those datasets "
-                    "there before deleting, or leave them as-is and cancel."
-                ),
-                "in_use_count": in_use_count,
-            },
-            status=400,
-        )
-
-    if reassign_to_id:
-        reassign_to = get_object_or_404(Category, id=reassign_to_id)
-        if reassign_to.id == category.id:
-            return Response(
-                {"detail": "reassign_to must be a different category."},
-                status=400,
-            )
-
-        with transaction.atomic():
-            moved = category.metadata_set.update(category=reassign_to)
-            category.delete()
-
-        ActivityLog.log(
-            user=request.user,
-            action="category_deleted",
-            target_object=str(category_id),
-            ip_address=get_client_ip(request),
-            extra={
-                "category_name": name,
-                "reassigned_datasets": moved,
-                "reassigned_to": reassign_to.name,
-            },
-        )
-
-        return Response(
-            {
-                "detail": f"Category '{name}' deleted. {moved} dataset(s) reassigned to '{reassign_to.name}'.",
-            },
-            status=200,
-        )
-
-    category.delete()
-
-    ActivityLog.log(
-        user=request.user,
-        action="category_deleted",
-        target_object=str(category_id),
-        ip_address=get_client_ip(request),
-        extra={"category_name": name},
-    )
-
-    return Response({"detail": f"Category '{name}' deleted."}, status=200)
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def admin_delete_language(request, language_id):
-    from apps.metadata.models import Language
-
-    language = get_object_or_404(Language, id=language_id)
-    name = language.name
-    language.delete()
-
-    ActivityLog.log(
-        user=request.user,
-        action="language_deleted",
-        target_object=str(language_id),
-        ip_address=get_client_ip(request),
-        extra={"language_name": name},
-    )
-
-    return Response({"detail": f"Language '{name}' deleted."}, status=200)
-
-
-
-
-@api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def admin_ban_user(request, user_id):
-    from apps.accounts.models import BlockedCredential
-    from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
-
-    target_user = get_object_or_404(User, id=user_id)
-    if target_user.id == request.user.id:
-        return Response({"detail": "You can't ban your own account."}, status=400)
-
-    reason = (request.data.get("reason") or "").strip()
-
-    target_user.is_active = False
-    target_user.save(update_fields=["is_active"])
-
-    expires_at = BlockedCredential.block_user(target_user, admin=request.user, reason=reason)
-
-    for token_obj in OutstandingToken.objects.filter(user=target_user):
-        BlacklistedToken.objects.get_or_create(token=token_obj)
-
-    ActivityLog.log(
-        user=request.user,
-        action="user_banned",
-        target_object=str(target_user.id),
-        ip_address=get_client_ip(request),
-        extra={"banned_email": target_user.email, "reason": reason},
-    )
-
-    return Response(
-        {
-            "status": "banned",
-            "blocked_until": expires_at.isoformat(),
-        },
-        status=200,
     )

@@ -10,7 +10,6 @@ from .services import (
     assign_fallback_thumbnail,
     get_or_create_category_from_dataset_other,
     get_or_create_pending,
-    get_or_create_approved_term,
 )
 
 
@@ -89,7 +88,7 @@ def set_dataset_languages(request, dataset_id):
     for name in other_languages:
         name = (name or "").strip()
         if name:
-            languages.append(get_or_create_approved_term(Language, name, request.user))
+            languages.append(get_or_create_pending(Language, name, request.user))
 
     if not languages:
         return Response({"detail": "At least one language is required."}, status=400)
@@ -147,7 +146,7 @@ def set_dataset_characteristics(request, dataset_id):
 
         if name:
             characteristics.append(
-                get_or_create_approved_term(
+                get_or_create_pending(
                     DatasetCharacteristic,
                     name,
                     request.user,
