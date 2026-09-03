@@ -8,11 +8,17 @@ class CategoryAdmin(admin.ModelAdmin):
 
 admin.site.register(Keyword)
 admin.site.register(Metadata)
-@admin.register(FallbackThumbnail)
+admin.register(FallbackThumbnail)
 class FallbackThumbnailAdmin(admin.ModelAdmin):
-    list_display = ["id", "category", "image_key", "usage_count"]
-    list_filter = ["category"]
-    readonly_fields = ["usage_count"]
+    list_display = ("category", "image_key", "usage_count")
+    list_filter = ("category",)
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "category":
+            kwargs["queryset"] = Category.objects.filter(
+                origin=Category.Origin.STANDARD
+            ).order_by("name")
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
 @admin.register(Language)
