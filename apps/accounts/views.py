@@ -145,10 +145,16 @@ class LoginView(APIView):
         if stay_logged_in:
             refresh.set_exp(lifetime=timedelta(days=30))
 
-        return Response({
+            return Response({
             "access": str(refresh.access_token),
             "refresh": str(refresh),
-            "user": {"id": user.id, "email": user.email},
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "must_change_password": getattr(
+                    getattr(user, "profile", None), "must_change_password", False
+                ),
+            },
             "stay_logged_in": stay_logged_in,
         }, status=status.HTTP_200_OK)
 
@@ -641,7 +647,10 @@ class PasswordResetConfirmView(APIView):
         user = reset_token.user
         user.set_password(data["new_password"])
         user.save()
-
+        if hasattr(user, "profile") and user.profile.must_change_password:
+            user.profile.must_change_password = False
+            user.profile.save(update_fields=["must_change_password"])
+        
         reset_token.is_used = True
         reset_token.save(update_fields=["is_used"])
 

@@ -23,12 +23,14 @@ def assign_reviewers(dataset):
 
     category = getattr(getattr(dataset, "metadata", None), "category", None)
 
-    # Exclude the primary owner AND anyone who is a co-owner via
-    # Contributor(contributor_type=OWNER) — Dataset.is_owned_by() treats
-    # both as equivalent, so the reviewer pool must too.
-    coowner_user_ids = Contributor.objects.filter(
+    # Exclude the primary owner AND anyone who has a Contributor record on
+    # this dataset at all — owner (co-owner), co_author, or contributor.
+    # Dataset.is_owned_by() already treats co-owners as equivalent to the
+    # primary owner, and a plain contributor has editing access to the
+    # dataset too (e.g. granted edit rights after publish) — neither should
+    # be reviewing the dataset they have a stake in.
+    contributor_user_ids = Contributor.objects.filter(
         dataset=dataset,
-        contributor_type=Contributor.ContributorType.OWNER,
         user__isnull=False,
     ).values_list("user_id", flat=True)
 
@@ -36,7 +38,7 @@ def assign_reviewers(dataset):
         UserProfile.objects
         .filter(roles__role=UserRole.RoleChoice.REVIEWER)
         .exclude(user_id=dataset.owner_id)
-        .exclude(user_id__in=coowner_user_ids)
+        .exclude(user_id__in=contributor_user_ids)
         .distinct()
     )
 
@@ -70,6 +72,8 @@ def assign_reviewers(dataset):
 
         candidates.sort(key=lambda profile: profile.pending_count)
 
+        # Get everyone tied at the lowest workload, then randomly select
+        # from that group until we have three reviewers.
         min_load = candidates[0].pending_count
         least_loaded = [
             profile
@@ -81,12 +85,15 @@ def assign_reviewers(dataset):
 
         return least_loaded
 
+    # Prefer reviewers who are interested in the dataset category.
     if category is not None:
         preferred = get_least_loaded(base.filter(interests=category))
 
         if len(preferred) >= MIN_REVIEWERS:
             selected = preferred[:MIN_REVIEWERS]
         else:
+            # Not enough category-matched reviewers; use all eligible
+            # reviewers while still requiring three total.
             all_candidates = get_least_loaded(base)
             selected = all_candidates[:MIN_REVIEWERS]
     else:
@@ -111,7 +118,7 @@ def assign_reviewers(dataset):
             notification_type=Notification.NotificationType.REVIEWER_ASSIGNED,
             message=f'You have been assigned to review "{dataset.title}".',
             dataset=dataset,
-            link_path=f"/admin-panel/queue",
+            link_path="/admin-panel/queue",
         )
 
     dataset.assigned_reviewer = selected[0].user
