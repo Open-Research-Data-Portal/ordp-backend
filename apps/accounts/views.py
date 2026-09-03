@@ -31,7 +31,6 @@ from .models import (
     PasswordResetToken,
     College,
     CenterOfExcellence,
-    Department,
     UserRole,
 )
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
@@ -41,10 +40,11 @@ from .throttles import (
     VerificationEmailIPRateThrottle,
 )
 User = get_user_model()
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def add_other_interest(request):
-    from apps.metadata.services import get_or_create_pending_category
+    from apps.metadata.services import get_or_create_category_from_interest_other
 
     name = (request.data.get("name") or "").strip()
 
@@ -54,7 +54,7 @@ def add_other_interest(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    category = get_or_create_pending_category(name, request.user)
+    category = get_or_create_category_from_interest_other(name, request.user)
 
     request.user.profile.interests.add(category)
 
@@ -62,7 +62,6 @@ def add_other_interest(request):
         {
             "status": "added",
             "category_id": category.id,
-            "pending_review": category.status == category.Status.PENDING,
         },
         status=status.HTTP_201_CREATED,
     )
@@ -691,51 +690,6 @@ def list_centers_of_excellence(request):
         "results": list(centers)
     })
 
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def list_departments(request):
-    parent_type = request.query_params.get("parent_type")
-    parent_id = request.query_params.get("parent_id")
-
-    departments = Department.objects.select_related(
-        "college",
-        "center_of_excellence",
-    )
-
-    if parent_type and parent_id:
-        if parent_type == "college":
-            departments = departments.filter(college_id=parent_id)
-
-        elif parent_type == "center_of_excellence":
-            departments = departments.filter(
-                center_of_excellence_id=parent_id
-            )
-
-        else:
-            return Response(
-                {
-                    "detail": (
-                        "parent_type must be either 'college' "
-                        "or 'center_of_excellence'."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-    departments = departments.order_by("name")
-
-    return Response({
-        "results": [
-            {
-                "id": department.id,
-                "name": department.name,
-                "college_id": department.college_id,
-                "center_of_excellence_id": department.center_of_excellence_id,
-            }
-            for department in departments
-        ]
-    })
 
 
 

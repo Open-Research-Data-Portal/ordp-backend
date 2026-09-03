@@ -6,7 +6,11 @@ from django.shortcuts import get_object_or_404
 from apps.datasets.models import Dataset
 from .models import Keyword, Metadata, Category,Language, DatasetCharacteristic
 from .serializers import MetadataSerializer, CategorySerializer
-from .services import assign_fallback_thumbnail, get_or_create_pending_category, get_or_create_pending
+from .services import (
+    assign_fallback_thumbnail,
+    get_or_create_category_from_dataset_other,
+    get_or_create_pending,
+)
 
 
 @api_view(["POST"])
@@ -19,14 +23,10 @@ def attach_metadata(request, dataset_id):
     if not category_id and not other_category:
         return Response({"detail": "category_id or other_category is required."}, status=400)
     category = (
-    get_object_or_404(
-        Category,
-        id=category_id,
-        status=Category.Status.APPROVED,
+        get_object_or_404(Category, id=category_id)
+        if category_id
+        else get_or_create_category_from_dataset_other(other_category, request.user)
     )
-    if category_id
-    else get_or_create_pending_category(other_category, request.user)
-)
 
     serializer = MetadataSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -58,7 +58,14 @@ def attach_metadata(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_categories(request):
-    qs = Category.objects.filter(status=Category.Status.APPROVED).order_by("name")
+    qs = Category.objects.exclude(origin=Category.Origin.INTEREST_OTHER).order_by("name")
+    return Response([{"id": c.id, "name": c.name} for c in qs])
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_interest_categories(request):
+    qs = Category.objects.filter(origin=Category.Origin.STANDARD).order_by("name")
     return Response([{"id": c.id, "name": c.name} for c in qs])
 
 

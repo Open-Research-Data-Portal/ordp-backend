@@ -2,7 +2,7 @@ from django.db.models import Q, Sum, F
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from apps.accounts.models import ActivityLog
-from .models import Dataset, Contributor, DatasetRevision
+from .models import Dataset, Contributor, DatasetRevision, DatasetVersion
 from .serializers import DatasetSerializer
 from rest_framework.permissions import IsAuthenticated
 from apps.accounts.permissions import CanUploadDatasets
@@ -74,7 +74,7 @@ def feed(request):
 
     qs = Dataset.objects.filter(
         status=Dataset.Status.APPROVED, is_active=True,
-    ).exclude(id__in=my_ids)
+    ).exclude(id__in=my_ids).exclude(visibility=Dataset.Visibility.PRIVATE)
 
     if interest_category_ids:
         qs = qs.filter(metadata__category_id__in=interest_category_ids)
@@ -86,15 +86,24 @@ def feed(request):
 @api_view(["GET"])
 @permission_classes([CanUploadDatasets])
 def my_contributions(request):
-    """'Uploads' tab per your spec — datasets this researcher has MODIFIED that
-    belong to someone else. Distinct from 'mine' (owned/co-owned) and distinct
-    from 'invited as contributor' — this is specifically their edit history on
-    other people's datasets, via applied revisions."""
+    """Datasets this researcher has MODIFIED that belong to someone else —
+    i.e. they got their change approved through the outsider revision flow
+    (request-revision-permission -> propose-revision -> route_change), not
+    because they were invited as a co-author. Every approved change (owner
+    edit, co-author edit, or outsider revision) lands in DatasetVersion via
+    route_change/_apply_pending_content_update, so that's the source of
+    truth — not the legacy DatasetRevision model, which nothing writes to
+    anymore. We also exclude datasets where the user is currently an
+    invited co-author: those edits are 'their own dataset' work, not an
+    uninvited contribution."""
+    coauthor_dataset_ids = Contributor.objects.filter(
+        user=request.user, contributor_type=Contributor.ContributorType.CO_AUTHOR,
+    ).values_list("dataset_id", flat=True)
+
     dataset_ids = (
-        DatasetRevision.objects.filter(
-            submitted_by=request.user, status=DatasetRevision.Status.APPROVED,
-        )
+        DatasetVersion.objects.filter(changed_by=request.user)
         .exclude(dataset__owner=request.user)
+        .exclude(dataset_id__in=coauthor_dataset_ids)
         .values_list("dataset_id", flat=True)
         .distinct()
     )

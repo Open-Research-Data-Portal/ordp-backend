@@ -1,3 +1,4 @@
+from datetime import timedelta
 import os
 import uuid
 import math
@@ -73,7 +74,6 @@ def init_upload(request):
     title=serializer.validated_data["title"],
     owner=request.user,
     visibility=serializer.validated_data.get("visibility"),
-    embargo_end_date=serializer.validated_data.get("embargo_end_date"),
 )
 
     upload_session_id = uuid.uuid4().hex
@@ -455,18 +455,71 @@ def upload_chunk(request, upload_session_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsDatasetOwner])
-@parser_classes([MultiPartParser])
 def upload_thumbnail(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        owner=request.user,
+    )
+
     image = request.FILES.get("thumbnail")
+
     if image is None:
-        return Response({"detail": "thumbnail file is required."}, status=400)
+        return Response(
+            {"detail": "thumbnail file is required."},
+            status=400,
+        )
+
     key = f"thumbnails/{dataset.id}/{image.name}"
-    upload_fileobj(image, key, getattr(image, "content_type", None))
+
+    upload_fileobj(
+        image,
+        key,
+        getattr(image, "content_type", None),
+    )
+
     dataset.thumbnail_key = key
     dataset.thumbnail_source = Dataset.ThumbnailSource.UPLOADED
-    dataset.save(update_fields=["thumbnail_key", "thumbnail_source"])
-    return Response({"status": "thumbnail uploaded"}, status=200)
+
+    dataset.save(
+        update_fields=[
+            "thumbnail_key",
+            "thumbnail_source",
+        ]
+    )
+
+    return Response(
+        {"status": "thumbnail uploaded"},
+        status=200,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_thumbnail_url(request, dataset_id):
+    dataset = get_object_or_404(
+        Dataset,
+        id=dataset_id,
+        is_active=True,
+    )
+
+    if not dataset.thumbnail_key:
+        return Response({
+            "thumbnail_url": None,
+            "thumbnail_url_expires_at": None,
+        })
+
+    expires_at = timezone.now() + timedelta(hours=1)
+
+    thumbnail_url = presigned_download_url(
+        dataset.thumbnail_key,
+        expires_seconds=3600,
+    )
+
+    return Response({
+        "thumbnail_url": thumbnail_url,
+        "thumbnail_url_expires_at": expires_at,
+    })
+
 def calculate_chunk_size(file_size):
     MB = 1024 * 1024
 
@@ -638,26 +691,6 @@ def accept_terms_and_submit(request, dataset_id):
             status=400,
         )
 
-    if dataset.embargo_end_date is not None:
-        if dataset.visibility != Dataset.Visibility.PUBLIC:
-            return Response(
-                {
-                    "detail": (
-                        "An embargo can only be set for public datasets."
-                    )
-                },
-                status=400,
-            )
-
-        if dataset.embargo_end_date <= timezone.now():
-            return Response(
-                {
-                    "detail": (
-                        "The embargo end date must be in the future."
-                    )
-                },
-                status=400,
-            )
 
     serializer = TermsAcceptanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -739,15 +772,14 @@ def my_datasets(request):
 @permission_classes([AllowAny])
 def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
-    Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
-    dataset.refresh_from_db(fields=["view_count"])
 
-    if request.user.is_authenticated:
-        ActivityLog.objects.create(
-            user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
-            ip_address=request.META.get("REMOTE_ADDR", "unknown"),
-        )
-    return Response(DatasetSerializer(dataset).data)
+    if dataset.visibility == Dataset.Visibility.PRIVATE:
+        user = request.user if request.user.is_authenticated else None
+        is_owner = bool(user) and dataset.owner_id == user.id
+        if not is_owner:
+            return Response({"detail": "Not found."}, status=404)
+
+    Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -785,7 +817,6 @@ def _build_proposed_metadata(dataset, request_data):
 OWNER_EDITABLE_FIELDS = (
     "title",
     "visibility",
-    "embargo_end_date",
 )
 SHARED_EDITABLE_METADATA_FIELDS = (
     "description",
@@ -817,43 +848,15 @@ def update_dataset(request, dataset_id):
     changed_fields = []
 
     if is_owner:
-        new_visibility = request.data.get("visibility", dataset.visibility)
-        new_embargo_end_date = request.data.get(
-            "embargo_end_date",
-            dataset.embargo_end_date,
-        )
-
-        if new_embargo_end_date is not None:
-            embargo_serializer = InitUploadSerializer(
-                data={
-                    "title": dataset.title,
-                    "visibility": new_visibility,
-                    "embargo_end_date": new_embargo_end_date,
-                }
+        if "visibility" in request.data and request.data["visibility"] not in Dataset.Visibility.values:
+            return Response(
+                {"detail": f"visibility must be one of: {', '.join(Dataset.Visibility.values)}."}, status=400,
             )
-            embargo_serializer.is_valid(raise_exception=True)
-
-            if new_visibility != Dataset.Visibility.PUBLIC:
-                return Response(
-                    {
-                        "detail": "An embargo can only be set for public datasets."
-                    },
-                    status=400,
-                )
-
-            new_embargo_end_date = embargo_serializer.validated_data[
-                "embargo_end_date"
-            ]
 
         for field in OWNER_EDITABLE_FIELDS:
             if field in request.data:
                 setattr(dataset, field, request.data[field])
                 changed_fields.append(field)
-
-        if new_visibility != Dataset.Visibility.PUBLIC:
-            dataset.embargo_end_date = None
-            if "embargo_end_date" not in changed_fields:
-                changed_fields.append("embargo_end_date")
 
         dataset.save()
 
@@ -1120,13 +1123,35 @@ def update_contributor_type(request, dataset_id, contributor_id):
         return Response({"detail": "Only the original dataset owner can change contributor roles."}, status=403)
 
     contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
-    new_type = request.data.get("contributor_type")
-    if new_type not in Contributor.ContributorType.values:
-        return Response({"detail": "contributor_type must be 'owner', 'co_author', or 'contributor'."}, status=400)
 
-    contributor.contributor_type = new_type
-    contributor.save(update_fields=["contributor_type"])
-    return Response({"status": "updated", "contributor_type": contributor.contributor_type})
+    update_fields = []
+
+    if "contributor_type" in request.data:
+        new_type = request.data.get("contributor_type")
+        if new_type not in (Contributor.ContributorType.OWNER, Contributor.ContributorType.CO_AUTHOR):
+            return Response(
+                {"detail": "contributor_type must be 'owner' or 'co_author'."}, status=400
+            )
+        contributor.contributor_type = new_type
+        update_fields.append("contributor_type")
+
+    if "permission" in request.data:
+        from .models import PermissionLevel
+        new_permission = request.data.get("permission")
+        if new_permission not in PermissionLevel.values:
+            return Response({"detail": "permission must be 'edit' or 'view'."}, status=400)
+        contributor.permission = new_permission
+        update_fields.append("permission")
+
+    if not update_fields:
+        return Response({"detail": "Nothing to update."}, status=400)
+
+    contributor.save(update_fields=update_fields)
+    return Response({
+        "status": "updated",
+        "contributor_type": contributor.contributor_type,
+        "permission": contributor.permission,
+    })
 
 
 @api_view(["DELETE"])

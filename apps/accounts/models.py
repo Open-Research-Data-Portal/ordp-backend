@@ -49,29 +49,6 @@ class CenterOfExcellence(models.Model):
         return self.name
 
 
-class Department(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=128)
-    college = models.ForeignKey(College, null=True, blank=True, on_delete=models.CASCADE, related_name="departments")
-    center_of_excellence = models.ForeignKey(
-        CenterOfExcellence, null=True, blank=True, on_delete=models.CASCADE, related_name="departments"
-    )
-
-    class Meta:
-        constraints = [
-            models.CheckConstraint(
-                condition=(  
-                    models.Q(college__isnull=False, center_of_excellence__isnull=True)
-                    | models.Q(college__isnull=True, center_of_excellence__isnull=False)
-                ),
-                name="department_belongs_to_college_xor_coe",
-            )
-        ]
-
-    def __str__(self):
-        return self.name
-
-
 class UserProfile(models.Model):
     class Academia(models.TextChoices):
         STUDENT = "student", "Student"
@@ -158,12 +135,6 @@ class UserProfile(models.Model):
         on_delete=models.SET_NULL,
     )
 
-    department = models.ForeignKey(
-        Department,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-    )
 
     academia = models.CharField(
         max_length=30,
@@ -270,31 +241,9 @@ class UserProfile(models.Model):
     # --------------------------------------------------
 
     def clean(self):
-        if self.college_id and self.center_of_excellence_id:
-            raise ValidationError(
-                "Select either a College or a Center of Excellence, not both."
-            )
-
-        if self.department_id:
-            if (
-                self.college_id
-                and self.department.college_id != self.college_id
-            ):
-                raise ValidationError({
-                    "department":
-                    "Department does not belong to the selected College."
-                })
-
-            if (
-                self.center_of_excellence_id
-                and self.department.center_of_excellence_id
-                != self.center_of_excellence_id
-            ):
-                raise ValidationError({
-                    "department":
-                    "Department does not belong to the selected Center of Excellence."
-                })
-
+        # College and Center of Excellence are both optional now,
+        # and a user is allowed to have both at the same time.
+        pass
     # --------------------------------------------------
     # PROFILE COMPLETION
     # --------------------------------------------------
@@ -308,7 +257,6 @@ class UserProfile(models.Model):
         return (
             bool(self.full_name)
             and bool(self.affiliation)
-            and bool(self.department_id)
             and bool(self.academia)
             and bool(self.profile_visibility)
             and self.terms_accepted

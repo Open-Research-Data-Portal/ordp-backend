@@ -8,10 +8,16 @@ class Category(models.Model):
         PENDING = "pending"
         REJECTED = "rejected"
 
+    class Origin(models.TextChoices):
+        STANDARD = "standard"            # admin-created (or already in the DB) — a real category
+        DATASET_OTHER = "dataset_other"  # created via "other" during dataset upload
+        INTEREST_OTHER = "interest_other"  # created via "other" during onboarding/profile interests
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=128, unique=True)
     description = models.TextField(blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.APPROVED)
+    origin = models.CharField(max_length=20, choices=Origin.choices, default=Origin.STANDARD)
     suggested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )

@@ -21,7 +21,6 @@ from apps.accounts.models import (
     UserProfile,
     College,
     CenterOfExcellence,
-    Department,
     PasswordResetToken,
     ActivityLog,
     UserRole
@@ -292,89 +291,38 @@ def admin_centers_of_excellence(request):
         },
         status=201,
     )
-@api_view(["POST"])
+@api_view(["DELETE"])
 @permission_classes([IsAdminOnly])
-def admin_departments(request):
-    if request.method == "GET":
-        departments = Department.objects.select_related(
-            "college",
-            "center_of_excellence",
-        ).order_by("name")
-
-        return Response([
-            {
-                "id": department.id,
-                "name": department.name,
-                "college": (
-                    {
-                        "id": department.college.id,
-                        "name": department.college.name,
-                    }
-                    if department.college
-                    else None
-                ),
-                "center_of_excellence": (
-                    {
-                        "id": department.center_of_excellence.id,
-                        "name": department.center_of_excellence.name,
-                    }
-                    if department.center_of_excellence
-                    else None
-                ),
-            }
-            for department in departments
-        ])
-
-    name = request.data.get("name", "").strip()
-    college_id = request.data.get("college_id")
-    center_id = request.data.get("center_of_excellence_id")
-
-    if not name:
-        return Response(
-            {"detail": "Department name is required."},
-            status=400,
-        )
-
-    # Exactly one parent must be provided.
-    if bool(college_id) == bool(center_id):
-        return Response(
-            {
-                "detail": (
-                    "A department must belong to exactly one parent: "
-                    "either a college or a Center of Excellence."
-                )
-            },
-            status=400,
-        )
-
-    college = None
-    center = None
-
-    if college_id:
-        college = get_object_or_404(College, id=college_id)
-
-    if center_id:
-        center = get_object_or_404(
-            CenterOfExcellence,
-            id=center_id,
-        )
-
-    department = Department.objects.create(
-        name=name,
-        college=college,
-        center_of_excellence=center,
-    )
+def admin_delete_college(request, college_id):
+    college = get_object_or_404(College, id=college_id)
+    affected_users = UserProfile.objects.filter(college=college).count()
+    name = college.name
+    college.delete()
 
     return Response(
         {
-            "id": department.id,
-            "name": department.name,
-            "college_id": department.college_id,
-            "center_of_excellence_id": department.center_of_excellence_id,
+            "detail": f"College '{name}' deleted.",
+            "affected_users": affected_users,
         },
-        status=201,
+        status=200,
     )
 
+
+@api_view(["DELETE"])
+@permission_classes([IsAdminOnly])
+def admin_delete_center_of_excellence(request, center_id):
+    center = get_object_or_404(CenterOfExcellence, id=center_id)
+    affected_users = UserProfile.objects.filter(center_of_excellence=center).count()
+    name = center.name
+    center.delete()
+
+    return Response(
+        {
+            "detail": f"Center of Excellence '{name}' deleted.",
+            "affected_users": affected_users,
+        },
+        status=200,
+    )
 def _daily_counts(queryset, date_field, days=30):
     cutoff = (timezone.now() - timedelta(days=days)).date()
     grouped = (
@@ -622,6 +570,7 @@ def admin_create_category(request):
         name=name,
         description=description,
         status=Category.Status.APPROVED,
+        origin=Category.Origin.STANDARD,
         suggested_by=None,
     )
 
