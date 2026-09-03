@@ -45,7 +45,8 @@ class UsabilityFormResponse(models.Model):
     """Collected for every share request, regardless of visibility tier."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="usability_forms")
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
+    email = models.EmailField(blank=True)  
     purpose = models.TextField()
     submitted_at = models.DateTimeField(auto_now_add=True)
 
@@ -54,7 +55,8 @@ class RestrictedAccessJustification(models.Model):
     """The second, additional form — collected only for restricted-visibility requests."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE)
-    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    requester = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
+    email = models.EmailField(blank=True)
     justification = models.TextField()
     submitted_at = models.DateTimeField(auto_now_add=True)
 
@@ -78,13 +80,18 @@ class DatasetAccessRequest(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="access_requests")
-    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="access_requests")
+    requester = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE, related_name="access_requests"
+    )
+    requester_email = models.EmailField()
+    claim_token = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    claim_token_expires_at = models.DateTimeField(null=True, blank=True)
     shared_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
         help_text="Set when this request was created via share_with_user rather than the requester acting for themselves.",
     )
     usability_form = models.ForeignKey(UsabilityFormResponse, on_delete=models.CASCADE)
-    restricted_justification = models.ForeignKey(RestrictedAccessJustification, on_delete=models.CASCADE)
+    restricted_justification = models.ForeignKey(RestrictedAccessJustification, null=True, blank=True, on_delete=models.CASCADE)
     purpose_type = models.CharField(max_length=16, choices=PurposeType.choices, default=PurposeType.READ)
     requested_duration_days = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)

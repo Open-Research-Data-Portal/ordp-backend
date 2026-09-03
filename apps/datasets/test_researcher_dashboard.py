@@ -3,7 +3,8 @@ from rest_framework import status
 
 from apps.datasets.factories import make_user
 from apps.metadata.models import Category,Metadata
-from .models import Dataset, Contributor, DatasetRevision
+from .models import Dataset, Contributor, DatasetVersion
+
 
 
 def make_dataset(owner, title="Test DS", visibility=Dataset.Visibility.PUBLIC, status=Dataset.Status.APPROVED):
@@ -120,10 +121,10 @@ class MyContributionsTests(APITestCase):
         owner = make_user("mcowner", "mcowner@aastu.edu.et", role="researcher")
         contributor_user = make_user("mccontrib", "mccontrib@aastu.edu.et", role="researcher")
         dataset = make_dataset(owner, "MC DS")
-        DatasetRevision.objects.create(
-            dataset=dataset, submitted_by=contributor_user, previous_file_key="a", new_file_key="b",
-            diff_percentage=5.0, change_summary={}, submitter_message="fix typo",
-            status=DatasetRevision.Status.APPROVED,
+        DatasetVersion.objects.create(
+            dataset=dataset, version_number=2, file_key="b",
+            source=DatasetVersion.Source.REVISION, changed_by=contributor_user,
+            diff_percentage=5.0, change_summary={},
         )
 
         self.client.force_authenticate(contributor_user)
@@ -131,29 +132,35 @@ class MyContributionsTests(APITestCase):
         titles = {d["title"] for d in resp.data}
         self.assertIn("MC DS", titles)
 
-    def test_pending_revision_not_yet_counted(self):
-        owner = make_user("mcowner2", "mcowner2@aastu.edu.et", role="researcher")
-        contributor_user = make_user("mccontrib2", "mccontrib2@aastu.edu.et", role="researcher")
-        dataset = make_dataset(owner, "MC DS Pending")
-        DatasetRevision.objects.create(
-            dataset=dataset, submitted_by=contributor_user, previous_file_key="a", new_file_key="b",
-            diff_percentage=5.0, change_summary={}, submitter_message="pending change",
-            status=DatasetRevision.Status.PENDING,
-        )
-
-        self.client.force_authenticate(contributor_user)
-        resp = self.client.get("/api/datasets/dashboard/my-contributions/")
-        self.assertEqual(len(resp.data), 0)
-
     def test_own_dataset_not_counted_as_contribution(self):
         owner = make_user("mcowner3", "mcowner3@aastu.edu.et", role="researcher")
         dataset = make_dataset(owner, "MC Own DS")
-        DatasetRevision.objects.create(
-            dataset=dataset, submitted_by=owner, previous_file_key="a", new_file_key="b",
-            diff_percentage=5.0, change_summary={}, submitter_message="self edit",
-            status=DatasetRevision.Status.APPROVED,
+        DatasetVersion.objects.create(
+            dataset=dataset, version_number=2, file_key="b",
+            source=DatasetVersion.Source.OWNER_EDIT, changed_by=owner,
+            diff_percentage=5.0, change_summary={},
         )
 
         self.client.force_authenticate(owner)
+        resp = self.client.get("/api/datasets/dashboard/my-contributions/")
+        self.assertEqual(len(resp.data), 0)
+
+    def test_invited_coauthors_edit_not_counted_as_contribution(self):
+        """A co-author editing their own linked dataset isn't an 'uninvited
+        contribution' — it's their normal editing work on a dataset they belong to."""
+        owner = make_user("mcowner4", "mcowner4@aastu.edu.et", role="researcher")
+        coauthor = make_user("mccoauthor", "mccoauthor@aastu.edu.et", role="researcher")
+        dataset = make_dataset(owner, "MC Coauthor DS")
+        Contributor.objects.create(
+            dataset=dataset, user=coauthor, name="Co", contributor_type=Contributor.ContributorType.CO_AUTHOR,
+            permission="edit",
+        )
+        DatasetVersion.objects.create(
+            dataset=dataset, version_number=2, file_key="b",
+            source=DatasetVersion.Source.CONTRIBUTOR_EDIT, changed_by=coauthor,
+            diff_percentage=5.0, change_summary={},
+        )
+
+        self.client.force_authenticate(coauthor)
         resp = self.client.get("/api/datasets/dashboard/my-contributions/")
         self.assertEqual(len(resp.data), 0)

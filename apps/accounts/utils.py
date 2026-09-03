@@ -6,8 +6,13 @@ from django.core.mail import send_mail
 
 from django.contrib.auth import get_user_model
 User = get_user_model()
-INSTITUTIONAL_DOMAIN = "aastu.edu.et"
 
+INSTITUTIONAL_DOMAIN = ("aastu.edu.et", "aastustudent.edu.et")
+
+
+def is_institutional_email(email: str) -> bool:
+    domain = email.strip().lower().split("@")[-1]
+    return domain in INSTITUTIONAL_DOMAIN
 
 def detect_tier(email: str) -> str:
     domain = email.split("@")[-1].lower()

@@ -257,28 +257,32 @@ class RestrictedShareVotingTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
 
-class ContributorInvitationTests(APITestCase):
+class CoauthorInvitationTests(APITestCase):
     def test_invited_existing_user_must_accept_before_getting_access(self):
         owner = make_user("casowner", "casowner@aastu.edu.et")
         invitee = make_user("casinvitee", "casinvitee@aastu.edu.et")
         dataset = make_dataset_with_version(owner, "CAS DS")
 
         self.client.force_authenticate(owner)
-        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-contributor/", {"email": "casinvitee@aastu.edu.et"})
+        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-coauthor/", {"email": "casinvitee@aastu.edu.et", "permission": "view"})
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 
-        # Not granted yet — invitation is pending, not accepted
         self.assertFalse(SharePermission.objects.filter(dataset=dataset, shared_with_user=invitee).exists())
 
         from apps.datasets.models import DatasetInvitation
         invitation = DatasetInvitation.objects.get(dataset=dataset, invited_email="casinvitee@aastu.edu.et")
+        self.assertEqual(invitation.permission, "view")
 
         self.client.force_authenticate(invitee)
         accept_resp = self.client.post(f"/api/sharing/invitations/{invitation.token}/")
         self.assertEqual(accept_resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(accept_resp.data["contributor_type"], "contributor")
+        self.assertEqual(accept_resp.data["contributor_type"], "co_author")
 
         self.assertTrue(SharePermission.objects.filter(dataset=dataset, shared_with_user=invitee).exists())
+
+        from apps.datasets.models import Contributor
+        contributor = Contributor.objects.get(dataset=dataset, user=invitee)
+        self.assertEqual(contributor.permission, "view")
 
     def test_wrong_email_cannot_accept_someone_elses_invitation(self):
         owner = make_user("wecowner", "wecowner@aastu.edu.et")
@@ -286,7 +290,7 @@ class ContributorInvitationTests(APITestCase):
         dataset = make_dataset_with_version(owner, "WEC DS")
 
         self.client.force_authenticate(owner)
-        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-contributor/", {"email": "someoneelse@aastu.edu.et"})
+        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-coauthor/", {"email": "someoneelse@aastu.edu.et"})
         from apps.datasets.models import DatasetInvitation
         invitation = DatasetInvitation.objects.get(id=resp.data["invitation_id"])
 
@@ -303,7 +307,7 @@ class ContributorInvitationTests(APITestCase):
         invitee = make_user("expinvitee", "expinvitee@aastu.edu.et")
         dataset = make_dataset_with_version(owner, "EXP DS")
         invitation = DatasetInvitation.objects.create(
-            dataset=dataset, invited_email="expinvitee@aastu.edu.et", role="contributor",
+            dataset=dataset, invited_email="expinvitee@aastu.edu.et", role="co_author",
             invited_by=owner, expires_at=timezone.now() - timedelta(days=1),
         )
 
@@ -317,7 +321,7 @@ class ContributorInvitationTests(APITestCase):
         dataset = make_dataset_with_version(owner, "REV DS")
 
         self.client.force_authenticate(owner)
-        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-contributor/", {"email": "revinvitee@aastu.edu.et"})
+        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-coauthor/", {"email": "revinvitee@aastu.edu.et"})
         invitation_id = resp.data["invitation_id"]
 
         revoke_resp = self.client.post(f"/api/sharing/{dataset.id}/invitations/{invitation_id}/revoke/")
@@ -342,3 +346,34 @@ class ContributorInvitationTests(APITestCase):
         self.client.force_authenticate(invitee)
         accept_resp = self.client.post(f"/api/sharing/invitations/{invitation.token}/")
         self.assertEqual(accept_resp.data["contributor_type"], "co_author")
+
+    def test_invitation_not_delivered_until_dataset_published(self):
+        from django.core import mail
+        from apps.datasets.models import Dataset, DatasetInvitation
+        owner = make_user("pendowner", "pendowner@aastu.edu.et")
+        invitee = make_user("pendinvitee", "pendinvitee@aastu.edu.et")
+        dataset = Dataset.objects.create(title="Pending DS", owner=owner, status=Dataset.Status.PENDING)
+
+        self.client.force_authenticate(owner)
+        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-coauthor/", {"email": "pendinvitee@aastu.edu.et"})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+        invitation = DatasetInvitation.objects.get(id=resp.data["invitation_id"])
+        self.assertIsNone(invitation.notified_at)
+        self.assertEqual(len(mail.outbox), 0)
+
+        self.client.force_authenticate(invitee)
+        accept_resp = self.client.post(f"/api/sharing/invitations/{invitation.token}/")
+        self.assertEqual(accept_resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+        from apps.datasets.services.invitations import dispatch_pending_invitations
+        dataset.status = Dataset.Status.PUBLISHED
+        dataset.save(update_fields=["status"])
+        dispatch_pending_invitations(dataset)
+
+        invitation.refresh_from_db()
+        self.assertIsNotNone(invitation.notified_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+        accept_resp = self.client.post(f"/api/sharing/invitations/{invitation.token}/")
+        self.assertEqual(accept_resp.status_code, status.HTTP_200_OK)

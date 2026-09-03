@@ -9,7 +9,7 @@ from django.utils import timezone
 class Dataset(models.Model):
     class Visibility(models.TextChoices):
         PUBLIC = "public"
-        INSTITUTIONAL = "institutional"
+        PRIVATE = "private"
         RESTRICTED = "restricted"
 
     class Status(models.TextChoices):
@@ -63,10 +63,6 @@ class Dataset(models.Model):
     blank=True,
     default=Visibility.RESTRICTED,
 )
-    embargo_end_date = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
     status = models.CharField(max_length=18, choices=Status.choices, default=Status.DRAFT)
     is_active = models.BooleanField(default=True)
     version = models.IntegerField(default=1)
@@ -108,6 +104,11 @@ class DatasetFile(models.Model):
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
 
+class PermissionLevel(models.TextChoices):
+    EDIT = "edit", "Can edit"
+    VIEW = "view", "View only"
+
+
 class Contributor(models.Model):
     class ContributorType(models.TextChoices):
         OWNER = "owner"
@@ -118,9 +119,17 @@ class Contributor(models.Model):
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="contributors")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     name = models.CharField(max_length=255, blank=True)
-    invited_email = models.EmailField(blank=True) 
+    invited_email = models.EmailField(blank=True)
     contributor_type = models.CharField(max_length=16, choices=ContributorType.choices)
+    permission = models.CharField(max_length=10, choices=PermissionLevel.choices, default=PermissionLevel.VIEW)
     order = models.IntegerField(default=1)
+
+    def can_edit(self):
+        return (
+            self.contributor_type == Contributor.ContributorType.OWNER
+            or (self.contributor_type == Contributor.ContributorType.CO_AUTHOR and self.permission == PermissionLevel.EDIT)
+        )
+
 
 def generate_invitation_token():
     return secrets.token_urlsafe(48)
@@ -140,13 +149,15 @@ class DatasetInvitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="invitations")
     invited_email = models.EmailField()
-    role = models.CharField(max_length=16, choices=Role.choices)
+    role = models.CharField(max_length=16, choices=Role.choices, default=Role.CO_AUTHOR)
+    permission = models.CharField(max_length=10, choices=PermissionLevel.choices, default=PermissionLevel.VIEW)
     token = models.CharField(max_length=64, unique=True, default=generate_invitation_token)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     accepted_at = models.DateTimeField(null=True, blank=True)
+    notified_at = models.DateTimeField(null=True, blank=True)
 
     def is_valid(self):
         return self.status == self.Status.PENDING and self.expires_at > timezone.now()

@@ -30,6 +30,7 @@ def assign_reviewers(dataset):
     UserProfile.objects
     .filter(roles__role=UserRole.RoleChoice.REVIEWER)
     .exclude(user_id=dataset.owner_id)
+    .exclude(user__password__startswith="!") 
     .distinct()
 )
 
