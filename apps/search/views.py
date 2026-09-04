@@ -3,11 +3,12 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from apps.datasets.serializers import DatasetSerializer
 from .services import build_dataset_search_queryset, build_discovery_feed, FILE_SIZE_MAP, InvalidFilterError
-
+from rest_framework.pagination import PageNumberPagination
 
 VALID_ORDER_BY = ("newest", "title", "popular", "downloads")
 VALID_FILE_SIZES = ("small", "medium", "large")
 VALID_VISIBILITIES = ("public", "restricted")
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
