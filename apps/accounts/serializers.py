@@ -9,6 +9,7 @@ from apps.notifications.models import Notification
 from django.utils import timezone
 from apps.metadata.models import Category
 
+
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     password = serializers.CharField(write_only=True)

@@ -48,6 +48,7 @@ def list_datasets(request):
         "date_to":               request.query_params.get("date_to", "").strip(),
         "file_size":             file_size,
         "visibility":            visibility,
+        "only_new": request.query_params.get("only_new", "").strip(),
         "has_contributors":      request.query_params.get("has_contributors", "").strip(),
         "bookmarked":            request.query_params.get("bookmarked", "").strip(),
         "has_multiple_versions": request.query_params.get("has_multiple_versions", "").strip(),
