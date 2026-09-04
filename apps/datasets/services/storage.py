@@ -5,8 +5,10 @@ import boto3
 from botocore.client import Config
 from django.conf import settings
 
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
 def storage_client():
-    """S3-compatible storage client. Works with Backblaze B2 and MinIO."""
     return boto3.client(
         "s3",
         endpoint_url=settings.OBJECT_STORAGE_ENDPOINT_URL or None,

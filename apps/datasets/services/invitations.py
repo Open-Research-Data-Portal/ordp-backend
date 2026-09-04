@@ -5,16 +5,17 @@ from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from ..models import Contributor, DatasetInvitation
+from ..models import Contributor, DatasetInvitation, PermissionLevel
 from apps.sharing.models import SharePermission
 
 User = get_user_model()
 INVITATION_EXPIRY_DAYS = 14
 
 
-def create_invitation(dataset, invited_by, email, role):
+def create_invitation(dataset, invited_by, email, role, permission=PermissionLevel.VIEW):
     invitation = DatasetInvitation.objects.create(
         dataset=dataset, invited_email=email.lower().strip(), role=role,
+        permission=permission,
         invited_by=invited_by, expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
     )
     _send_invitation_email(invitation)
