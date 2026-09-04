@@ -73,6 +73,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "contributors",
             "thumbnail_key",
             "thumbnail_url",
+            "thumbnail_url_expires_at",
             "view_count",
             "download_count",
             # Dataset metadata

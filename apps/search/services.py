@@ -69,7 +69,7 @@ def apply_common_filters(qs, params, user):
 
     language = params.get("language", "").strip()
     if language:
-        qs = qs.filter(languages__name__icontains=language)
+        qs = qs.filter(metadata__languages__name__icontains=language)
 
     sponsor = params.get("sponsor", "").strip()
     if sponsor:
