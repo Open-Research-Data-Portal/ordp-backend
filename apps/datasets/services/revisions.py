@@ -78,7 +78,7 @@ def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage
             proposed_metadata=proposed_metadata, diff_percentage=diff_percentage,
             change_summary=change_summary,
         )
-        for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
+        for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).exclude(id=submitted_by.id).distinct():
             notify(
                 user=reviewer, notification_type=Notification.NotificationType.CONTENT_UPDATE_PENDING,
                 message=f'A significant content change to "{dataset.title}" awaits review.', dataset=dataset,
@@ -115,7 +115,7 @@ def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage
 
 def request_revision_permission(dataset, requester, reason):
     request = RevisionRequest.objects.create(dataset=dataset, requester=requester, reason=reason)
-    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
+    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).exclude(id=requester.id).distinct():
         notify(
             user=reviewer, notification_type=Notification.NotificationType.CONTENT_UPDATE_PENDING,
             message=f'{requester.profile.full_name} is requesting permission to propose changes to "{dataset.title}".',
