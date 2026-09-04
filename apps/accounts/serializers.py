@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from .models import UserProfile
 import re
-from .models import UserRole
+from .models import UserProfile, BlockedCredential
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from django.utils import timezone
@@ -146,6 +146,11 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError("Only AASTU institutional emails are allowed.")
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("An account with this email already exists.")
+        if BlockedCredential.is_email_blocked(value):
+            raise serializers.ValidationError(
+                "This email can't be used to create an account right now. "
+                "Contact support if you believe this is a mistake."
+            )
         return value
 
     def validate_username(self, value):
@@ -157,6 +162,10 @@ class RegisterSerializer(serializers.Serializer):
 
     def validate_password(self, value):
         validate_password(value)
+        if BlockedCredential.is_password_blocked(value):
+            raise serializers.ValidationError(
+                "This password can't be used right now. Please choose a different one."
+            )
         return value
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -171,6 +180,10 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         if data["new_password"] != data["confirm_password"]:
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
         validate_password(data["new_password"])
+        if BlockedCredential.is_password_blocked(data["new_password"]):
+            raise serializers.ValidationError({
+                "new_password": "This password can't be used right now. Please choose a different one."
+            })
         return data
 
 

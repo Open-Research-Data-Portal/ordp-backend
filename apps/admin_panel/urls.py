@@ -27,11 +27,11 @@ urlpatterns = [
     path("categories/create/", dashboard_views.admin_create_category, name="admin-create-category"),  
     path("users/<int:user_id>/reactivate/", dashboard_views.admin_reactivate_user, name="admin-reactivate-user"),
     path("share-permissions/<uuid:permission_id>/revoke/", dashboard_views.admin_revoke_share_permission, name="admin-revoke-share-permission"),
-    path("languages/pending/", dashboard_views.pending_languages, name="pending-languages"),
+    # path("languages/pending/", dashboard_views.pending_languages, name="pending-languages"),
     path("revision-requests/queue/", dashboard_views.revision_request_queue, name="revision-request-queue"),
     path("revision-requests/<uuid:request_id>/vote/", dashboard_views.vote_on_revision_request, name="revision-request-vote"),
     path("content-updates/<uuid:update_id>/vote/", dashboard_views.vote_on_content_update, name="content-update-vote"),
-    path("languages/<uuid:language_id>/decide/", dashboard_views.decide_pending_language, name="decide-pending-language"),
+    # path("languages/<uuid:language_id>/decide/", dashboard_views.decide_pending_language, name="decide-pending-language"),
     path("notifications/broadcast/", dashboard_views.admin_broadcast_notification, name="admin-broadcast-notification"),
     path("colleges/", dashboard_views.admin_colleges, name="admin-colleges"),
     path("centers-of-excellence/",dashboard_views.admin_centers_of_excellence,name="admin-centers-of-excellence"),
@@ -48,6 +48,20 @@ urlpatterns = [
         name="admin-grant-role",
     ),
     
-    
+    path("colleges/<uuid:college_id>/delete/", dashboard_views.admin_delete_college, name="admin-delete-college"),
+    path("centers-of-excellence/<uuid:center_id>/delete/", dashboard_views.admin_delete_center_of_excellence, name="admin-delete-center-of-excellence"),
+    path("categories/<uuid:category_id>/delete/", dashboard_views.admin_delete_category, name="admin-delete-category"),
+    path("languages/<uuid:language_id>/delete/", dashboard_views.admin_delete_language, name="admin-delete-language"),
+    path(
+        "users/<int:user_id>/revoke-role/",
+        dashboard_views.admin_revoke_role,
+        name="admin-revoke-role",
+    ),
+    path("datasets/<uuid:dataset_id>/fallback-thumbnails/", views.list_fallback_thumbnail_options, name="list-fallback-thumbnail-options"),
+        path(
+        "users/<int:user_id>/ban/",
+        dashboard_views.admin_ban_user,
+        name="admin-ban-user",
+    ),
 ]
    
