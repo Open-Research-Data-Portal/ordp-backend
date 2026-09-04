@@ -20,6 +20,7 @@ class Notification(models.Model):
         RESEARCHER_REJECTED = "researcher_rejected"
         CHANGES_REQUESTED = "changes_requested"
         SYSTEM_ANNOUNCEMENT = "system_announcement"
+        DATASET_ASSIGNED_FOR_REVIEW = "dataset_assigned_for_review"
 
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

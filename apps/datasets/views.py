@@ -950,10 +950,11 @@ def update_dataset(request, dataset_id):
             else PendingContentUpdate.Source.CONTRIBUTOR_EDIT
         )
         result = route_change(
-            dataset=dataset, source=source, submitted_by=request.user,
-            new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
-            proposed_metadata=_build_proposed_metadata(dataset, request.data),
-        )
+        dataset=dataset, source=PendingContentUpdate.Source.REVISION, submitted_by=request.user,
+        new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
+        proposed_metadata=_build_proposed_metadata(dataset, request.data),
+        ip_address=get_client_ip(request),
+    )
         new_dataset_file.delete()
         return Response(result, status=202 if result["status"] == "pending_review" else 200)
 

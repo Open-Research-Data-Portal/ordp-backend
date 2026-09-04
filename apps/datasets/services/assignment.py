@@ -1,10 +1,10 @@
 import random
-
 from django.db.models import Count, Q
 
-from apps.accounts.models import UserProfile, UserRole
+from apps.accounts.models import ActivityLog, UserProfile, UserRole
 from apps.admin_panel.models import DatasetReviewerAssignment
-
+from apps.notifications.services import notify
+from apps.notifications.models import Notification
 
 MIN_REVIEWERS = 3
 
@@ -17,22 +17,38 @@ def assign_reviewers(dataset):
     without reviewer assignments. It can be assigned later when enough
     reviewers become available.
     """
-    from ..models import Dataset
+    from ..models import Dataset, Contributor
 
     category = getattr(getattr(dataset, "metadata", None), "category", None)
 
-    reviewer_roles = [
-        UserRole.RoleChoice.REVIEWER,
-        
-    ]
+    coauthor_user_ids = (
+        Contributor.objects
+        .filter(dataset=dataset, contributor_type=Contributor.ContributorType.CO_AUTHOR)
+        .exclude(user_id=None)
+        .values_list("user_id", flat=True)
+    )
+    major_change_user_ids = (
+        dataset.versions
+        .exclude(changed_by_id=None)
+        .values_list("changed_by_id", flat=True)
+    )
+    minor_change_user_ids = (
+        ActivityLog.objects
+        .filter(action="minor_revision_applied", target_object=f"Dataset:{dataset.id}")
+        .exclude(user_id=None)
+        .values_list("user_id", flat=True)
+    )
 
     base = (
-    UserProfile.objects
-    .filter(roles__role=UserRole.RoleChoice.REVIEWER)
-    .exclude(user_id=dataset.owner_id)
-    .exclude(user__password__startswith="!") 
-    .distinct()
-)
+        UserProfile.objects
+        .filter(roles__role=UserRole.RoleChoice.REVIEWER)
+        .exclude(user_id=dataset.owner_id)
+        .exclude(user_id__in=coauthor_user_ids)
+        .exclude(user_id__in=major_change_user_ids)
+        .exclude(user_id__in=minor_change_user_ids)
+        .exclude(user__password__startswith="!")
+        .distinct()
+    )
 
     # Never assign the same reviewer twice.
     already_assigned = DatasetReviewerAssignment.objects.filter(
@@ -105,6 +121,13 @@ def assign_reviewers(dataset):
         )
         assignments.append(assignment)
 
+        notify(
+            user=profile.user,
+            notification_type=Notification.NotificationType.DATASET_ASSIGNED_FOR_REVIEW,
+            message=f'You have been assigned to review the dataset "{dataset.title}".',
+            dataset=dataset,
+            link_path=f"/datasets/{dataset.id}",
+        )
 
     dataset.assigned_reviewer = selected[0].user
     dataset.save(update_fields=["assigned_reviewer"])

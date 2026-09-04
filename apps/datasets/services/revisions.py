@@ -70,7 +70,7 @@ def bump_version_and_notify(dataset, changed_by):
 
 
 def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage,
-                  change_summary, proposed_metadata, approved_by_owner=None):
+                  change_summary, proposed_metadata, approved_by_owner=None, ip_address="0.0.0.0"):
     if diff_percentage >= settings.VERSION_BUMP_THRESHOLD_PCT:
         update = PendingContentUpdate.objects.create(
             dataset=dataset, source=source, submitted_by=submitted_by,
@@ -85,6 +85,22 @@ def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage
                 link_path=f"/admin-panel/content-updates/{update.id}",
             )
         return {"status": "pending_review", "pending_update_id": update.id}
+
+
+    DatasetFile.objects.filter(dataset=dataset).update(file_key=new_file_key)
+    _apply_metadata(dataset, proposed_metadata)
+    ActivityLog.log(
+        user=submitted_by,
+        action="minor_revision_applied",
+        target_object=f"Dataset:{dataset.id}",
+        ip_address=ip_address,
+        extra={"diff_percentage": diff_percentage, "change_summary": change_summary},
+    )
+    _notify_watchers(
+        dataset, exclude_user=submitted_by,
+        message=f'"{dataset.title}" was updated with a minor change.',
+    )
+    return {"status": "applied"}
 
 
     DatasetFile.objects.filter(dataset=dataset).update(file_key=new_file_key)
