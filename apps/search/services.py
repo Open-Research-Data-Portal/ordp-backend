@@ -3,7 +3,8 @@ from datetime import datetime
 from django.db.models import Q, F, Exists, OuterRef, Count, Sum
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from apps.datasets.models import Dataset, Bookmark, Contributor, DatasetFile
-
+from datetime import timedelta
+from django.utils import timezone
 
 ORDER_BY_MAP = {
     "newest": "-created_at",
@@ -151,6 +152,14 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
     extra_params = extra_params or {}
     profile = getattr(user, "profile", None)
     visibility = extra_params.get("visibility", "").strip()
+    only_new = params.get("only_new", "").strip()
+    if only_new:
+        try:
+            window_days = int(only_new)
+        except ValueError:
+            raise InvalidFilterError("only_new must be a number of days, e.g. 7 or 30.")
+    cutoff = timezone.now() - timedelta(days=window_days)
+    qs = qs.filter(created_at__gte=cutoff)
     if visibility:
         base_qs = base_qs.filter(visibility=visibility)
 
