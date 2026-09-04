@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
 from django.conf import settings
+from django.core.exceptions import ValidationError
 
 class Category(models.Model):
     class Status(models.TextChoices):
@@ -70,6 +71,7 @@ class Metadata(models.Model):
     citation_notes = models.TextField(blank=True)
 
 
+
 class FallbackThumbnail(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="fallback_thumbnails")
@@ -78,6 +80,12 @@ class FallbackThumbnail(models.Model):
 
     class Meta:
         ordering = ["usage_count"]
+
+    def clean(self):
+        if self.category_id and self.category.origin != Category.Origin.STANDARD:
+            raise ValidationError({
+                "category": "Fallback thumbnails can only be assigned to admin-created (standard) categories."
+            })
 
 
 class Language(models.Model):
