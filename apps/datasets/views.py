@@ -702,7 +702,17 @@ def accept_terms_and_submit(request, dataset_id):
     dataset.terms_version = settings.CURRENT_TERMS_VERSION
     dataset.status = Dataset.Status.PENDING
     dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status"])
-    assign_reviewers(dataset)
+
+    assignments = assign_reviewers(dataset)
+    for assignment in assignments:
+        notify(
+            user=assignment.reviewer,
+            notification_type=Notification.NotificationType.DATASET_ASSIGNED_FOR_REVIEW,
+            message=f'You have been assigned to review "{dataset.title}".',
+            dataset=dataset,
+            link_path=f"/admin-panel/queue/{dataset.id}",
+        )
+
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
     return Response({"status": "submitted for review"}, status=200)
@@ -780,6 +790,8 @@ def dataset_detail(request, dataset_id):
             return Response({"detail": "Not found."}, status=404)
 
     Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
+    dataset.refresh_from_db(fields=["view_count"])
+    return Response(DatasetSerializer(dataset).data)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -1165,4 +1177,3 @@ def remove_contributor(request, dataset_id, contributor_id):
     contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
     contributor.delete()
     return Response(status=204)
-
