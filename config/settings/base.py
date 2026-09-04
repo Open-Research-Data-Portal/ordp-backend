@@ -193,3 +193,4 @@ PASSWORD_RESET_TIMEOUT = 86400  # 24 hours in seconds
 
 VERSION_BUMP_THRESHOLD_PCT = float(os.environ.get("VERSION_BUMP_THRESHOLD_PCT", 15.0))
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
