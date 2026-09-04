@@ -19,6 +19,7 @@ EMAIL_SUBJECTS = {
     NT.ACCESS_REQUEST: "New access request for your restricted dataset",
     NT.RESEARCHER_APPROVED: "Your researcher access request was approved",
     NT.SYSTEM_ANNOUNCEMENT: "ORDP System Announcement",
+    NT.DATASET_ASSIGNED_FOR_REVIEW: "A dataset has been assigned to you for review",
 
     NT.RESEARCHER_REJECTED: "Your researcher access request was declined",
 }
