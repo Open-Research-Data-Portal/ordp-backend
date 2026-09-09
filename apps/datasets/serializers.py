@@ -55,7 +55,7 @@ class DatasetSerializer(serializers.ModelSerializer):
     downloads_delta_pct = serializers.SerializerMethodField()
     views_series = serializers.SerializerMethodField()
     downloads_series = serializers.SerializerMethodField()
-
+    archive_status = serializers.SerializerMethodField()
     class Meta:
         model = Dataset
         fields = [
@@ -66,6 +66,9 @@ class DatasetSerializer(serializers.ModelSerializer):
             "visibility",
             "status",
             "is_active",
+            "is_archived",
+            "archive_status",
+            "archived_at",
             "version",
             "terms_accepted",
             "terms_version",
@@ -98,6 +101,8 @@ class DatasetSerializer(serializers.ModelSerializer):
             "status",
             "version",
             "is_active",
+            "is_archived",
+            "archived_at",
         ]
 
     def get_metadata(self, obj):
@@ -157,7 +162,18 @@ class DatasetSerializer(serializers.ModelSerializer):
             { "date": "08/25", "value": 56 }, { "date": "08/26", "value": 40 },
             { "date": "08/27", "value": 33 },
         ]
+    def get_archive_status(self, obj):
+        from apps.admin_panel.models import DatasetArchiveRequest, DatasetUnarchiveRequest
 
+        if obj.is_archived:
+            if DatasetUnarchiveRequest.objects.filter(dataset=obj, status="pending").exists():
+                return "unarchive_pending"
+            return "archived"
+
+        if DatasetArchiveRequest.objects.filter(dataset=obj, status="pending").exists():
+            return "archive_pending"
+
+        return "none"
 
 class InitUploadSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
