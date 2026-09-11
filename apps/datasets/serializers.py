@@ -34,21 +34,10 @@ class DatasetSerializer(serializers.ModelSerializer):
     contributors = ContributorSerializer(many=True, read_only=True)
     thumbnail_url = serializers.SerializerMethodField()
     thumbnail_url_expires_at = serializers.SerializerMethodField()
-    category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
-    description = serializers.CharField(source="metadata.description", read_only=True, default=None)
-    languages = serializers.SlugRelatedField(
-    source="metadata.languages",
-    slug_field="name",
-    many=True,
-    read_only=True,
-)
-
-    characteristics = serializers.SlugRelatedField(
-    source="metadata.characteristics",
-    slug_field="name",
-    many=True,
-    read_only=True,
-)
+    category = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    languages = serializers.SerializerMethodField()
+    characteristics = serializers.SerializerMethodField()
     owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
     metadata = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
@@ -105,11 +94,45 @@ class DatasetSerializer(serializers.ModelSerializer):
             "archived_at",
         ]
 
+    def get_category(self, obj):
+        try:
+            metadata = obj.metadata
+        except Exception:
+            return None
+        if not metadata or not metadata.category:
+            return None
+        return metadata.category.name
+
+    def get_description(self, obj):
+        try:
+            metadata = obj.metadata
+        except Exception:
+            return None
+        return metadata.description if metadata else None
+
+    def get_languages(self, obj):
+        try:
+            metadata = obj.metadata
+        except Exception:
+            return []
+        return [language.name for language in metadata.languages.all()] if metadata else []
+
+    def get_characteristics(self, obj):
+        try:
+            metadata = obj.metadata
+        except Exception:
+            return []
+        return [characteristic.name for characteristic in metadata.characteristics.all()] if metadata else []
+
     def get_metadata(self, obj):
-        if hasattr(obj, "metadata"):
-            from apps.metadata.serializers import MetadataSerializer
-            return MetadataSerializer(obj.metadata).data
-        return None
+        try:
+            metadata = obj.metadata
+        except Exception:
+            return None
+        if not metadata:
+            return None
+        from apps.metadata.serializers import MetadataSerializer
+        return MetadataSerializer(metadata).data
     def get_thumbnail_url(self, obj):
         if not obj.thumbnail_key:
             return None
