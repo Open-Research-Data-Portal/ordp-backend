@@ -9,7 +9,7 @@ from django.contrib.auth import get_user_model
 from apps.accounts.views import get_client_ip
 from apps.datasets.models import Dataset, PendingContentUpdate
 from apps.sharing.models import DatasetAccessRequest, AccessRequestVote
-from .models import ModerationDecision, DatasetDeletionRequest, DeletionRequestVote
+from .models import ModerationDecision, DatasetDeletionRequest, DeletionRequestVote,DatasetArchiveRequest, ArchiveRequestVote, DatasetUnarchiveRequest
 from apps.datasets.models import DatasetFile
 import csv
 import logging
@@ -36,6 +36,8 @@ from django.utils.encoding import force_bytes
 from apps.metadata.models import Category
 from apps.accounts.views import get_client_ip
 from apps.accounts.utils import generate_username
+from apps.notifications.services import notify
+from apps.notifications.models import Notification
 User = get_user_model()
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 
@@ -77,11 +79,24 @@ def reviewer_overview(request):
         status=DatasetDeletionRequest.Status.PENDING
     ).exclude(id__in=voted_deletion_ids).count()
 
+    voted_archive_ids = ArchiveRequestVote.objects.filter(reviewer=user).values_list("archive_request_id", flat=True)
+    archive_requests_pending = DatasetArchiveRequest.objects.filter(
+        status=DatasetArchiveRequest.Status.PENDING
+    ).exclude(id__in=voted_archive_ids).count()
+
+
+    profile = getattr(user, "profile", None)
+    unarchive_requests_pending = (
+        DatasetUnarchiveRequest.objects.filter(status=DatasetUnarchiveRequest.Status.PENDING).count()
+        if profile and profile.has_role("admin") else 0
+    )
     return Response({
         "assigned_datasets_pending": assigned_pending,
         "content_updates_pending": content_updates_pending,
         "access_requests_awaiting_my_vote": access_requests_pending,
         "deletion_requests_awaiting_my_vote": deletion_requests_pending,
+        "archive_requests_awaiting_my_vote": archive_requests_pending,      
+        "unarchive_requests_awaiting_my_decision": unarchive_requests_pending,
     })
 
 
@@ -906,3 +921,118 @@ def admin_ban_user(request, user_id):
         },
         status=200,
     )
+
+@api_view(["GET"])
+@permission_classes([IsReviewerOrAdmin])
+def archive_request_queue(request):
+    qs = DatasetArchiveRequest.objects.filter(status="pending").select_related("dataset", "requested_by__profile")
+    return Response([{
+        "id": r.id, "dataset_id": r.dataset_id, "dataset_title": r.dataset.title,
+        "requested_by": r.requested_by.profile.full_name, "reason": r.reason, "created_at": r.created_at,
+    } for r in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsReviewerOrAdmin])
+def vote_on_archive_request(request, request_id):
+    from apps.datasets.services.archiving import resolve_archive_request_votes
+    archive_request = get_object_or_404(DatasetArchiveRequest, id=request_id)
+    if archive_request.status != DatasetArchiveRequest.Status.PENDING:
+        return Response({"detail": "This request has already been resolved."}, status=400)
+    vote_value = request.data.get("vote")
+    if vote_value not in ("approve", "reject"):
+        return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)
+    ArchiveRequestVote.objects.update_or_create(
+        archive_request=archive_request, reviewer=request.user, defaults={"vote": vote_value}
+    )
+    return Response(resolve_archive_request_votes(archive_request))
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def unarchive_request_queue(request):
+    qs = DatasetUnarchiveRequest.objects.filter(status="pending").select_related("dataset", "requested_by__profile")
+    return Response([{
+        "id": r.id, "dataset_id": r.dataset_id, "dataset_title": r.dataset.title,
+        "requested_by": r.requested_by.profile.full_name, "intended_use": r.intended_use,
+        "reason": r.reason, "created_at": r.created_at,
+    } for r in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def decide_unarchive_request(request, request_id):
+    from apps.datasets.services.archiving import decide_unarchive_request as decide
+
+    unarchive_request = get_object_or_404(DatasetUnarchiveRequest, id=request_id)
+    if unarchive_request.status != DatasetUnarchiveRequest.Status.PENDING:
+        return Response({"detail": "This request has already been resolved."}, status=400)
+
+    decision = request.data.get("decision")
+    if decision not in ("approve", "reject"):
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+
+    return Response(decide(unarchive_request, request.user, decision))
+
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_restore_dataset(request, dataset_id):
+    """Admin bypass — no committee, no reason. Logged via ActivityLog since
+    there's no request/vote row for this path."""
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_archived=True)
+    dataset.is_archived = False
+    dataset.archived_at = None
+    dataset.save(update_fields=["is_archived", "archived_at"])
+
+    ActivityLog.log(
+        user=request.user, action="dataset_admin_restored",
+        target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request),
+    )
+    notify(
+        user=dataset.owner, notification_type=Notification.NotificationType.DATASET_RESTORED,
+        message=f'"{dataset.title}" has been restored by an administrator.', dataset=dataset,
+    )
+    return Response({"status": "restored"})
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def admin_archived_datasets(request):
+    qs = Dataset.objects.filter(is_archived=True, is_active=True).select_related("owner__profile").order_by("-archived_at")
+    return Response([{
+        "id": d.id, "title": d.title, "owner": d.owner.profile.full_name, "archived_at": d.archived_at,
+    } for d in qs])
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def dataset_archive_history(request, dataset_id):
+    """Full history: voted archive/unarchive requests plus admin bypass
+    restores, merged into one timeline."""
+    dataset = get_object_or_404(Dataset, id=dataset_id)
+
+    events = []
+    for r in DatasetArchiveRequest.objects.filter(dataset=dataset):
+        events.append({
+            "type": "archive_request", "status": r.status, "reason": r.reason,
+            "requested_by": r.requested_by.profile.full_name,
+            "created_at": r.created_at, "resolved_at": r.resolved_at,
+        })
+    for r in DatasetUnarchiveRequest.objects.filter(dataset=dataset):
+        events.append({
+            "type": "unarchive_request", "status": r.status, "reason": r.reason,
+            "requested_by": r.requested_by.profile.full_name,
+            "created_at": r.created_at, "resolved_at": r.resolved_at,
+        })
+    for a in ActivityLog.objects.filter(target_object=f"Dataset:{dataset.id}", action="dataset_admin_restored"):
+        events.append({
+            "type": "admin_restore", "status": "executed", "reason": None,
+            "requested_by": a.user.profile.full_name if a.user else "Unknown admin",
+            "created_at": a.timestamp, "resolved_at": a.timestamp,
+        })
+
+    events.sort(key=lambda e: e["created_at"], reverse=True)
+    return Response(events)

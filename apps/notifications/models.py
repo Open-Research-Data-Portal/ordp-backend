@@ -21,6 +21,12 @@ class Notification(models.Model):
         CHANGES_REQUESTED = "changes_requested"
         SYSTEM_ANNOUNCEMENT = "system_announcement"
         DATASET_ASSIGNED_FOR_REVIEW = "dataset_assigned_for_review"
+        ARCHIVE_REQUESTED = "archive_requested"
+        DATASET_ARCHIVED = "dataset_archived"
+        ARCHIVE_REJECTED = "archive_rejected"
+        UNARCHIVE_REQUESTED = "unarchive_requested"
+        DATASET_RESTORED = "dataset_restored"
+        UNARCHIVE_REJECTED = "unarchive_rejected"
 
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
