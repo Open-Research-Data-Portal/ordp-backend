@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from django.db import connection
 from django.db.models import Q, F, Exists, OuterRef, Count, Sum
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from apps.datasets.models import Dataset, Bookmark, Contributor, DatasetFile
@@ -41,12 +42,32 @@ def _parse_positive_int(value, param_name):
     return int(value)
 
 
+def _dataset_supports_archive_columns():
+    """Return True only when the deployed dataset table already has the archive columns.
+
+    The archive/unarchive feature should only constrain the visible queryset when
+    the matching database schema is present. This keeps the query layer compatible
+    with older deployments that have not yet run the archive migration.
+    """
+    try:
+        cursor = connection.cursor()
+        columns = connection.introspection.get_table_description(cursor, Dataset._meta.db_table)
+        return any(column.name == "is_archived" for column in columns)
+    except Exception:
+        return False
+
+
 def visible_datasets_queryset():
+    qs = Dataset.objects.filter(
+        is_active=True,
+        status=Dataset.Status.PUBLISHED,
+    ).exclude(visibility=Dataset.Visibility.PRIVATE)
+
+    if _dataset_supports_archive_columns():
+        qs = qs.filter(is_archived=False)
+
     return (
-        Dataset.objects.filter(
-            is_active=True, status=Dataset.Status.PUBLISHED, is_archived=False,
-        )
-        .exclude(visibility=Dataset.Visibility.PRIVATE)
+        qs
         .select_related("owner__profile", "metadata", "metadata__category")
         .prefetch_related("files", "contributors", "metadata__languages", "metadata__characteristics")
     )
