@@ -22,12 +22,6 @@ EMAIL_SUBJECTS = {
     NT.DATASET_ASSIGNED_FOR_REVIEW: "A dataset has been assigned to you for review",
 
     NT.RESEARCHER_REJECTED: "Your researcher access request was declined",
-    NT.DATASET_ARCHIVED: "Your dataset has been archived",
-    NT.ARCHIVE_REJECTED: "Your archive request was declined",
-    NT.DATASET_RESTORED: "Your dataset has been restored",
-    NT.UNARCHIVE_REJECTED: "An unarchive request for a dataset you own was declined",
-    NT.ARCHIVE_REQUESTED: "A dataset archive request needs your review",
-    NT.UNARCHIVE_REQUESTED: "A dataset restoration request needs your decision",
 }
 
 

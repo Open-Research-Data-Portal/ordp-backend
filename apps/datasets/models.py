@@ -82,8 +82,6 @@ class Dataset(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="assigned_datasets",
     )
-    is_archived = models.BooleanField(default=False)
-    archived_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.title

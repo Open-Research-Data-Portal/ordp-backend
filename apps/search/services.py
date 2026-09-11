@@ -44,7 +44,7 @@ def _parse_positive_int(value, param_name):
 def visible_datasets_queryset():
     return (
         Dataset.objects.filter(
-            is_active=True, status=Dataset.Status.PUBLISHED, is_archived=False,
+            is_active=True, status=Dataset.Status.PUBLISHED,
         )
         .exclude(visibility=Dataset.Visibility.PRIVATE)
         .select_related("owner__profile", "metadata", "metadata__category")
