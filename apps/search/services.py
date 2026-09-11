@@ -152,7 +152,6 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
     extra_params = extra_params or {}
     profile = getattr(user, "profile", None)
     visibility = extra_params.get("visibility", "").strip()
-
     only_new = extra_params.get("only_new", "").strip()
     if only_new:
         try:
@@ -161,7 +160,6 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
             raise InvalidFilterError("only_new must be a number of days, e.g. 7 or 30.")
         cutoff = timezone.now() - timedelta(days=window_days)
         base_qs = base_qs.filter(created_at__gte=cutoff)
-
     if visibility:
         base_qs = base_qs.filter(visibility=visibility)
 
