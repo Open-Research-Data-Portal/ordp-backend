@@ -975,20 +975,6 @@ def decide_unarchive_request(request, request_id):
     return Response(decide(unarchive_request, request.user, decision))
 
 
-@api_view(["POST"])
-@permission_classes([IsReviewerOrAdmin])
-def vote_on_unarchive_request(request, request_id):
-    from apps.datasets.services.archiving import resolve_unarchive_request_votes
-    unarchive_request = get_object_or_404(DatasetUnarchiveRequest, id=request_id)
-    if unarchive_request.status != DatasetUnarchiveRequest.Status.PENDING:
-        return Response({"detail": "This request has already been resolved."}, status=400)
-    vote_value = request.data.get("vote")
-    if vote_value not in ("approve", "reject"):
-        return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)
-    UnarchiveRequestVote.objects.update_or_create(
-        unarchive_request=unarchive_request, reviewer=request.user, defaults={"vote": vote_value}
-    )
-    return Response(resolve_unarchive_request_votes(unarchive_request))
 
 
 @api_view(["POST"])
