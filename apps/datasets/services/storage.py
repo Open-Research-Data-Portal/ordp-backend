@@ -32,6 +32,10 @@ def upload_fileobj(fileobj, object_key, content_type=None):
 
 
 def presigned_download_url(object_key, expires_seconds=3600):
+    parsed = urlparse(object_key or "")
+    if parsed.scheme in {"http", "https"}:
+        return object_key
+
     return storage_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": settings.OBJECT_STORAGE_BUCKET, "Key": object_key},

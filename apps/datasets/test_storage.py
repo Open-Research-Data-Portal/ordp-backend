@@ -109,7 +109,7 @@ class UploadFileObjTests(SimpleTestCase):
 class PresignedDownloadUrlTests(SimpleTestCase):
 
     @patch("apps.datasets.services.storage.storage_client")
-    def test_presigned_download_url(self, mock_storage_client):
+    def test_presigned_download_url_for_object_key(self, mock_storage_client):
         mock_client = mock_storage_client.return_value
 
         mock_client.generate_presigned_url.return_value = (
@@ -134,6 +134,14 @@ class PresignedDownloadUrlTests(SimpleTestCase):
             result,
             "https://example.com/presigned-url",
         )
+
+    @patch("apps.datasets.services.storage.storage_client")
+    def test_presigned_download_url_for_remote_image_url(self, mock_storage_client):
+        remote_url = "https://picsum.photos/seed/fallback-1/600/400"
+        result = presigned_download_url(remote_url, expires_seconds=1800)
+
+        self.assertEqual(result, remote_url)
+        mock_storage_client.assert_not_called()
 
 
 class DownloadToFileTests(SimpleTestCase):
