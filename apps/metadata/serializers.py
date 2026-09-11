@@ -73,10 +73,7 @@ class MetadataSerializer(serializers.ModelSerializer):
         required=False,
     )
 
-    category_name = serializers.CharField(
-        source="category.name",
-        read_only=True,
-    )
+    category_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Metadata
@@ -105,6 +102,10 @@ class MetadataSerializer(serializers.ModelSerializer):
             "data_preprocessing",
             "citation_notes",
         ]
+
+    def get_category_name(self, obj):
+        category = getattr(obj, "category", None)
+        return getattr(category, "name", None)
 
     def _set_keywords(self, instance, keyword_words):
         keyword_objs = [

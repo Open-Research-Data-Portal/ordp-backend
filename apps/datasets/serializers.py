@@ -29,27 +29,23 @@ class ContributorSerializer(serializers.ModelSerializer):
         fields = ["id", "user", "name", "contributor_type", "order"]
 
 
+def _related_or_none(instance, attr):
+    try:
+        return getattr(instance, attr)
+    except Exception:
+        return None
+
+
 class DatasetSerializer(serializers.ModelSerializer):
     files = DatasetFileSerializer(many=True, read_only=True)
     contributors = ContributorSerializer(many=True, read_only=True)
     thumbnail_url = serializers.SerializerMethodField()
     thumbnail_url_expires_at = serializers.SerializerMethodField()
-    category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
-    description = serializers.CharField(source="metadata.description", read_only=True, default=None)
-    languages = serializers.SlugRelatedField(
-    source="metadata.languages",
-    slug_field="name",
-    many=True,
-    read_only=True,
-)
-
-    characteristics = serializers.SlugRelatedField(
-    source="metadata.characteristics",
-    slug_field="name",
-    many=True,
-    read_only=True,
-)
-    owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
+    category = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    languages = serializers.SerializerMethodField()
+    characteristics = serializers.SerializerMethodField()
+    owner_name = serializers.SerializerMethodField()
     metadata = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
     downloads_delta_pct = serializers.SerializerMethodField()
@@ -105,19 +101,48 @@ class DatasetSerializer(serializers.ModelSerializer):
             "archived_at",
         ]
 
+    def get_owner_name(self, obj):
+        profile = _related_or_none(obj.owner, "profile")
+        return getattr(profile, "full_name", None) if profile else None
+
+    def get_category(self, obj):
+        metadata = _related_or_none(obj, "metadata")
+        category = getattr(metadata, "category", None) if metadata else None
+        return getattr(category, "name", None)
+
+    def get_description(self, obj):
+        metadata = _related_or_none(obj, "metadata")
+        return getattr(metadata, "description", None) if metadata else None
+
+    def get_languages(self, obj):
+        metadata = _related_or_none(obj, "metadata")
+        if not metadata:
+            return []
+        return [language.name for language in metadata.languages.all()]
+
+    def get_characteristics(self, obj):
+        metadata = _related_or_none(obj, "metadata")
+        if not metadata:
+            return []
+        return [characteristic.name for characteristic in metadata.characteristics.all()]
+
     def get_metadata(self, obj):
-        if hasattr(obj, "metadata"):
-            from apps.metadata.serializers import MetadataSerializer
-            return MetadataSerializer(obj.metadata).data
-        return None
+        metadata = _related_or_none(obj, "metadata")
+        if not metadata:
+            return None
+        from apps.metadata.serializers import MetadataSerializer
+        return MetadataSerializer(metadata).data
+
     def get_thumbnail_url(self, obj):
         if not obj.thumbnail_key:
             return None
-
-        return presigned_download_url(
-            obj.thumbnail_key,
-            expires_seconds=3600,
-        )
+        try:
+            return presigned_download_url(
+                obj.thumbnail_key,
+                expires_seconds=3600,
+            )
+        except Exception:
+            return None
 
     def get_thumbnail_url_expires_at(self, obj):
         if not obj.thumbnail_key:
@@ -165,13 +190,16 @@ class DatasetSerializer(serializers.ModelSerializer):
     def get_archive_status(self, obj):
         from apps.admin_panel.models import DatasetArchiveRequest, DatasetUnarchiveRequest
 
-        if obj.is_archived:
-            if DatasetUnarchiveRequest.objects.filter(dataset=obj, status="pending").exists():
-                return "unarchive_pending"
-            return "archived"
+        try:
+            if obj.is_archived:
+                if DatasetUnarchiveRequest.objects.filter(dataset=obj, status="pending").exists():
+                    return "unarchive_pending"
+                return "archived"
 
-        if DatasetArchiveRequest.objects.filter(dataset=obj, status="pending").exists():
-            return "archive_pending"
+            if DatasetArchiveRequest.objects.filter(dataset=obj, status="pending").exists():
+                return "archive_pending"
+        except Exception:
+            return "archived" if getattr(obj, "is_archived", False) else "none"
 
         return "none"
 
