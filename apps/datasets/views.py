@@ -3,6 +3,7 @@ import os
 import uuid
 import math
 import hashlib
+from django.http import Http404
 
 from django.utils import timezone
 from apps.accounts.models import ActivityLog
@@ -783,14 +784,25 @@ def my_datasets(request):
 def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
 
-    if dataset.visibility == Dataset.Visibility.PRIVATE:
-        user = request.user if request.user.is_authenticated else None
-        is_owner = bool(user) and dataset.owner_id == user.id
-        if not is_owner:
-            return Response({"detail": "Not found."}, status=404)
+    user = request.user
+    is_owner = user.is_authenticated and dataset.owner_id == user.id
+    profile = getattr(user, "profile", None) if user.is_authenticated else None
+    is_reviewer_or_admin = bool(profile and profile.has_role("reviewer", "admin"))
+
+    if dataset.visibility == Dataset.Visibility.PRIVATE and not is_owner:
+        return Response({"detail": "Not found."}, status=404)
+
+    if dataset.is_archived and not (is_owner or is_reviewer_or_admin):
+        raise Http404
 
     Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
     dataset.refresh_from_db(fields=["view_count"])
+
+    if request.user.is_authenticated:
+        ActivityLog.objects.create(
+            user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
+            ip_address=request.META.get("REMOTE_ADDR", "unknown"),
+        )
     return Response(DatasetSerializer(dataset).data)
 
 @api_view(["GET"])
@@ -1177,3 +1189,71 @@ def remove_contributor(request, dataset_id, contributor_id):
     contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
     contributor.delete()
     return Response(status=204)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def request_archive_dataset(request, dataset_id):
+    from apps.admin_panel.models import DatasetArchiveRequest
+    from .services.archiving import request_archive
+
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+
+    if dataset.owner_id != request.user.id:
+        return Response({"detail": "Only the dataset owner can request archiving."}, status=403)
+
+    if dataset.status != Dataset.Status.PUBLISHED:
+        return Response({"detail": "Only published datasets can be archived."}, status=400)
+
+    if dataset.is_archived:
+        return Response({"detail": "This dataset is already archived."}, status=400)
+
+    if DatasetArchiveRequest.objects.filter(dataset=dataset, status="pending").exists():
+        return Response({"detail": "An archive request is already pending for this dataset."}, status=400)
+
+    reason_category = (request.data.get("reason_category") or "").strip()
+    if reason_category not in DatasetArchiveRequest.ReasonCategory.values:
+        return Response({"detail": f"reason_category must be one of: {', '.join(DatasetArchiveRequest.ReasonCategory.values)}."}, status=400)
+
+    reason = (request.data.get("reason") or "").strip()
+    if not reason:
+        return Response({"detail": "A reason is required to request archiving."}, status=400)
+
+    archive_request = request_archive(dataset, request.user, reason_category, reason)
+    return Response({"status": "pending", "request_id": archive_request.id}, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def request_unarchive_dataset(request, dataset_id):
+    from apps.admin_panel.models import DatasetUnarchiveRequest
+    from .services.archiving import request_unarchive
+
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True, is_archived=True)
+
+    if DatasetUnarchiveRequest.objects.filter(dataset=dataset, status="pending").exists():
+        return Response({"detail": "An unarchive request is already pending for this dataset."}, status=400)
+
+    intended_use = (request.data.get("intended_use") or "").strip()
+    if intended_use not in DatasetUnarchiveRequest.IntendedUse.values:
+        return Response({"detail": f"intended_use must be one of: {', '.join(DatasetUnarchiveRequest.IntendedUse.values)}."}, status=400)
+
+    reason = (request.data.get("reason") or "").strip()
+    if not reason:
+        return Response({"detail": "A reason is required to request restoring this dataset."}, status=400)
+
+    unarchive_request = request_unarchive(dataset, request.user, intended_use, reason)
+    return Response({"status": "pending", "request_id": unarchive_request.id}, status=201)
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def archived_datasets(request):
+    """The 'Archived' sidebar listing — any authenticated user can browse
+    archived datasets to find something worth requesting restoration for."""
+    qs = (
+        Dataset.objects
+        .filter(is_archived=True, is_active=True)
+        .prefetch_related("files", "contributors")
+        .order_by("-archived_at")
+    )
+    return Response(DatasetSerializer(qs, many=True).data)

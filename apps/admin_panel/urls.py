@@ -63,5 +63,12 @@ urlpatterns = [
         dashboard_views.admin_ban_user,
         name="admin-ban-user",
     ),
+    path("archive-requests/queue/", dashboard_views.archive_request_queue, name="archive-request-queue"),
+    path("archive-requests/<uuid:request_id>/vote/", dashboard_views.vote_on_archive_request, name="archive-request-vote"),
+    path("unarchive-requests/queue/", dashboard_views.unarchive_request_queue, name="unarchive-request-queue"),
+    path("unarchive-requests/<uuid:request_id>/decide/", dashboard_views.decide_unarchive_request, name="unarchive-request-decide"),
+    path("datasets/<uuid:dataset_id>/restore/", dashboard_views.admin_restore_dataset, name="admin-restore-dataset"),
+    path("datasets/archived/", dashboard_views.admin_archived_datasets, name="admin-archived-datasets"),
+    path("datasets/<uuid:dataset_id>/archive-history/", dashboard_views.dataset_archive_history, name="dataset-archive-history"),
 ]
    

@@ -4,6 +4,8 @@ from rest_framework import status
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset
 from .models import ModerationDecision
+from apps.datasets.factories import make_user as _mu
+from apps.admin_panel.models import DatasetArchiveRequest, ArchiveRequestVote
 
 
 def make_dataset(owner, title="Test DS", status=Dataset.Status.PENDING, assigned_reviewer=None):
@@ -54,6 +56,68 @@ class ReviewerOverviewTests(APITestCase):
         self.client.force_authenticate(checker)
         resp = self.client.get("/api/admin-panel/dashboard/reviewer/overview/")
         self.assertEqual(resp.data["access_requests_awaiting_my_vote"], 1)
+
+    def test_archive_requests_awaiting_my_vote_excludes_already_voted(self):
+        
+        owner = make_user("rowarchowner", "rowarchowner@aastu.edu.et")
+        checker = make_user("rowarchchecker", "rowarchchecker@aastu.edu.et", role="reviewer")
+        dataset = make_dataset(owner, "Archive Overview DS", status=Dataset.Status.APPROVED)
+
+        archive_request_voted = DatasetArchiveRequest.objects.create(
+            dataset=dataset, requested_by=owner, reason_category="outdated", reason="voted on this one",
+        )
+        archive_request_unvoted = DatasetArchiveRequest.objects.create(
+            dataset=dataset, requested_by=owner, reason_category="duplicate", reason="not voted yet",
+        )
+        ArchiveRequestVote.objects.create(archive_request=archive_request_voted, reviewer=checker, vote="approve")
+
+        self.client.force_authenticate(checker)
+        resp = self.client.get("/api/admin-panel/dashboard/reviewer/overview/")
+        self.assertEqual(resp.data["archive_requests_awaiting_my_vote"], 1)
+
+    def test_unarchive_requests_pending_visible_to_admin_only(self):
+        from apps.admin_panel.models import DatasetUnarchiveRequest
+
+        owner = make_user("rowuaowner", "rowuaowner@aastu.edu.et")
+        admin = make_user("rowuaadmin", "rowuaadmin@aastu.edu.et", role="admin")
+        checker = make_user("rowuachecker", "rowuachecker@aastu.edu.et", role="reviewer")
+        requester = make_user("rowuarequester", "rowuarequester@aastu.edu.et")
+        dataset = make_dataset(owner, "Unarchive Overview DS", status=Dataset.Status.APPROVED)
+        dataset.is_archived = True
+        dataset.save(update_fields=["is_archived"])
+
+        DatasetUnarchiveRequest.objects.create(
+            dataset=dataset, requested_by=requester, intended_use="research", reason="need it",
+        )
+
+        self.client.force_authenticate(admin)
+        admin_resp = self.client.get("/api/admin-panel/dashboard/reviewer/overview/")
+        self.assertEqual(admin_resp.data["unarchive_requests_awaiting_my_decision"], 1)
+
+        self.client.force_authenticate(checker)
+        checker_resp = self.client.get("/api/admin-panel/dashboard/reviewer/overview/")
+        self.assertEqual(checker_resp.data["unarchive_requests_awaiting_my_decision"], 0)
+
+    def test_resolved_archive_and_unarchive_requests_not_counted(self):
+        from apps.admin_panel.models import DatasetArchiveRequest, DatasetUnarchiveRequest
+
+        owner = make_user("rowresowner", "rowresowner@aastu.edu.et")
+        admin = make_user("rowresadmin", "rowresadmin@aastu.edu.et", role="admin")
+        dataset = make_dataset(owner, "Resolved Overview DS", status=Dataset.Status.APPROVED)
+
+        DatasetArchiveRequest.objects.create(
+            dataset=dataset, requested_by=owner, reason_category="outdated", reason="resolved already",
+            status=DatasetArchiveRequest.Status.APPROVED,
+        )
+        DatasetUnarchiveRequest.objects.create(
+            dataset=dataset, requested_by=owner, intended_use="research", reason="resolved already",
+            status=DatasetUnarchiveRequest.Status.REJECTED,
+        )
+
+        self.client.force_authenticate(admin)
+        resp = self.client.get("/api/admin-panel/dashboard/reviewer/overview/")
+        self.assertEqual(resp.data["archive_requests_awaiting_my_vote"], 0)
+        self.assertEqual(resp.data["unarchive_requests_awaiting_my_decision"], 0)
 
 
 class ReviewerMetricsTests(APITestCase):
