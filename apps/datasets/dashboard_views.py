@@ -73,7 +73,7 @@ def feed(request):
     my_ids = _my_dataset_ids(request.user)
 
     qs = Dataset.objects.filter(
-        status=Dataset.Status.APPROVED, is_active=True,
+        status=Dataset.Status.APPROVED, is_active=True, is_archived=False,
     ).exclude(id__in=my_ids).exclude(visibility=Dataset.Visibility.PRIVATE)
 
     if interest_category_ids:
