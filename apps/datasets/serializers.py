@@ -91,6 +91,7 @@ class DatasetSerializer(serializers.ModelSerializer):
 )
     owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
     metadata = serializers.SerializerMethodField()
+    data_preview = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
     downloads_delta_pct = serializers.SerializerMethodField()
     views_series = serializers.SerializerMethodField()
