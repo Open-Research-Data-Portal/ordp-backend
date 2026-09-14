@@ -49,3 +49,21 @@ def download_to_file(object_key, local_path):
     )
     return local_path
 
+
+def read_object_range(object_key, max_bytes=131072):
+    """Fetch only the first `max_bytes` of an object. Used for lightweight
+    previews (first N rows of a CSV/JSON) without downloading the whole file."""
+    parsed = urlparse(object_key or "")
+    if parsed.scheme in {"http", "https"}:
+        import urllib.request
+        req = urllib.request.Request(object_key, headers={"Range": f"bytes=0-{max_bytes - 1}"})
+        with urllib.request.urlopen(req) as resp:
+            return resp.read()
+
+    response = storage_client().get_object(
+        Bucket=settings.OBJECT_STORAGE_BUCKET,
+        Key=object_key,
+        Range=f"bytes=0-{max_bytes - 1}",
+    )
+    return response["Body"].read()
+

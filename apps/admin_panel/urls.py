@@ -70,5 +70,8 @@ urlpatterns = [
     path("datasets/<uuid:dataset_id>/restore/", dashboard_views.admin_restore_dataset, name="admin-restore-dataset"),
     path("datasets/archived/", dashboard_views.admin_archived_datasets, name="admin-archived-datasets"),
     path("datasets/<uuid:dataset_id>/archive-history/", dashboard_views.dataset_archive_history, name="dataset-archive-history"),
+    path("dashboard/admin/audit-log/peak-hours/", dashboard_views.audit_peak_hours, name="admin-audit-log-peak-hours"),
+    path("dashboard/admin/audit-log/most-accessed-datasets/", dashboard_views.audit_most_accessed_datasets, name="admin-audit-log-most-accessed-datasets"),
+    path("dashboard/admin/audit-log/flagged/", dashboard_views.audit_flagged_activity, name="admin-audit-log-flagged"),
 ]
    
