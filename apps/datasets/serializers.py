@@ -1,11 +1,56 @@
 from datetime import timedelta
-
+from django.db.models.functions import TruncDate
+from django.db.models import Count
+from apps.accounts.models import ActivityLog
 from django.utils import timezone
 from rest_framework import serializers
 
 from apps.datasets.services.storage import presigned_download_url
 from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate, DatasetVersion
+from apps.datasets.services.preview import (
+    CSV_FILE_TYPES, JSON_FILE_TYPES, IMAGE_FILE_TYPES, VIDEO_FILE_TYPES,
+    preview_tabular_file, preview_image_files, preview_video_file,
+)
 
+RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
+SERIES_WINDOW_DAYS = 30
+
+def _daily_activity_series(dataset_id, actions, days=SERIES_WINDOW_DAYS):
+    """Real daily counts for one dataset's activity, last `days` days —
+    zero-filled so the frontend chart doesn't have gaps."""
+    cutoff = (timezone.now() - timedelta(days=days)).date()
+    grouped = (
+        ActivityLog.objects.filter(
+            target_object=f"Dataset:{dataset_id}", action__in=actions, timestamp__date__gte=cutoff,
+        )
+        .annotate(day=TruncDate("timestamp"))
+        .values("day").annotate(count=Count("id")).order_by("day")
+    )
+    counts_by_day = {row["day"]: row["count"] for row in grouped}
+    today = timezone.now().date()
+    return [
+        {"date": (cutoff + timedelta(days=i)).strftime("%m/%d"), "value": counts_by_day.get(cutoff + timedelta(days=i), 0)}
+        for i in range((today - cutoff).days + 1)
+    ]
+
+
+def _delta_pct(dataset_id, actions, window_days=7):
+    """% change comparing the last `window_days` vs. the `window_days` before that."""
+    now = timezone.now()
+    current_start = now - timedelta(days=window_days)
+    previous_start = now - timedelta(days=window_days * 2)
+
+    current = ActivityLog.objects.filter(
+        target_object=f"Dataset:{dataset_id}", action__in=actions, timestamp__gte=current_start,
+    ).count()
+    previous = ActivityLog.objects.filter(
+        target_object=f"Dataset:{dataset_id}", action__in=actions,
+        timestamp__gte=previous_start, timestamp__lt=current_start,
+    ).count()
+
+    if previous == 0:
+        return 100 if current > 0 else 0
+    return round(((current - previous) / previous) * 100)
 
 class DatasetFileSerializer(serializers.ModelSerializer):
     columns = serializers.JSONField(source="feature_names", read_only=True)
@@ -16,11 +61,10 @@ class DatasetFileSerializer(serializers.ModelSerializer):
         fields = ["id", "file_type", "file_size", "checksum", "uploaded_at", "columns", "preview_rows"]
 
     def get_preview_rows(self, obj):
-        # Return mock or stored preview rows if any, or default sample rows
-        return getattr(obj, "preview_rows_data", [
-            ["T-001", "07:15:00", "08:02:00", "Bus", "12.4"],
-            ["T-002", "07:45:00", "08:30:00", "LRT", "8.1"],
-        ])
+        file_type = (obj.file_type or "").lower()
+        if file_type not in (CSV_FILE_TYPES | JSON_FILE_TYPES):
+            return None
+        return preview_tabular_file(obj)
 
 
 class ContributorSerializer(serializers.ModelSerializer):
@@ -85,6 +129,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "languages",
             "characteristics",
             "metadata",
+            "data_preview",
 
             # Analytics
             "views_delta_pct",
@@ -110,6 +155,30 @@ class DatasetSerializer(serializers.ModelSerializer):
             from apps.metadata.serializers import MetadataSerializer
             return MetadataSerializer(obj.metadata).data
         return None
+    
+    def get_data_preview(self, obj):
+        files = list(obj.files.all())
+        if not files:
+            return {"kind": "none", "available": False, "reason": "No files uploaded yet."}
+
+        file_types = {(f.file_type or "").lower() for f in files}
+
+        if file_types & IMAGE_FILE_TYPES:
+            images = preview_image_files(files)
+            return {"kind": "image", "available": bool(images), "images": images}
+
+        if file_types & VIDEO_FILE_TYPES:
+            video_preview = preview_video_file(files)
+            return {"kind": "video", "available": bool(video_preview), **(video_preview or {})}
+
+        tabular_file = next(
+            (f for f in files if (f.file_type or "").lower() in (CSV_FILE_TYPES | JSON_FILE_TYPES)),
+            None,
+        )
+        if tabular_file:
+            return {"kind": "tabular", **preview_tabular_file(tabular_file)}
+
+        return {"kind": "unsupported", "available": False, "reason": "No preview available for this file type yet."}
     def get_thumbnail_url(self, obj):
         if not obj.thumbnail_key:
             return None
@@ -125,43 +194,18 @@ class DatasetSerializer(serializers.ModelSerializer):
 
         return timezone.now() + timedelta(hours=1)
 
+    # in DatasetSerializer — replace the four mock methods
     def get_views_delta_pct(self, obj):
-        return 12
+        return _delta_pct(obj.id, ["dataset_view"])
 
     def get_downloads_delta_pct(self, obj):
-        return 8
+        return _delta_pct(obj.id, RECEIVED_DOWNLOAD_ACTIONS)
 
     def get_views_series(self, obj):
-        return [
-            { "date": "07/27", "value": 118 }, { "date": "07/29", "value": 160 },
-            { "date": "07/31", "value": 170 }, { "date": "08/02", "value": 140 },
-            { "date": "08/03", "value": 150 }, { "date": "08/05", "value": 110 },
-            { "date": "08/06", "value": 195 }, { "date": "08/08", "value": 145 },
-            { "date": "08/09", "value": 205 }, { "date": "08/10", "value": 150 },
-            { "date": "08/11", "value": 130 }, { "date": "08/12", "value": 165 },
-            { "date": "08/13", "value": 150 }, { "date": "08/14", "value": 195 },
-            { "date": "08/15", "value": 105 }, { "date": "08/17", "value": 150 },
-            { "date": "08/18", "value": 165 }, { "date": "08/19", "value": 190 },
-            { "date": "08/20", "value": 155 }, { "date": "08/21", "value": 105 },
-        ]
+        return _daily_activity_series(obj.id, ["dataset_view"])
 
     def get_downloads_series(self, obj):
-        return [
-            { "date": "07/27", "value": 35 }, { "date": "07/29", "value": 63 },
-            { "date": "07/31", "value": 48 }, { "date": "08/02", "value": 48 },
-            { "date": "08/03", "value": 44 }, { "date": "08/05", "value": 47 },
-            { "date": "08/06", "value": 37 }, { "date": "08/08", "value": 37 },
-            { "date": "08/09", "value": 58 }, { "date": "08/10", "value": 40 },
-            { "date": "08/11", "value": 38 }, { "date": "08/12", "value": 69 },
-            { "date": "08/13", "value": 58 }, { "date": "08/14", "value": 62 },
-            { "date": "08/15", "value": 39 }, { "date": "08/16", "value": 45 },
-            { "date": "08/17", "value": 53 }, { "date": "08/18", "value": 46 },
-            { "date": "08/19", "value": 78 }, { "date": "08/20", "value": 41 },
-            { "date": "08/21", "value": 39 }, { "date": "08/22", "value": 51 },
-            { "date": "08/23", "value": 55 }, { "date": "08/24", "value": 55 },
-            { "date": "08/25", "value": 56 }, { "date": "08/26", "value": 40 },
-            { "date": "08/27", "value": 33 },
-        ]
+        return _daily_activity_series(obj.id, RECEIVED_DOWNLOAD_ACTIONS)
     def get_archive_status(self, obj):
         from apps.admin_panel.models import DatasetArchiveRequest, DatasetUnarchiveRequest
 
