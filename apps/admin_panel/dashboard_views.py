@@ -1,5 +1,5 @@
 from django.db.models.aggregates import Count, Sum
-from django.db.models.functions import TruncDate, ExtractHour, TruncHour
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 from datetime import timedelta
 from rest_framework.decorators import api_view, permission_classes
@@ -25,7 +25,6 @@ from apps.accounts.models import (
     ActivityLog,
     UserRole
 )
-
 from django.http import HttpResponse
 from reportlab.lib import colors # type: ignore
 from reportlab.lib.pagesizes import landscape, letter # type: ignore
@@ -41,108 +40,6 @@ from apps.notifications.services import notify
 from apps.notifications.models import Notification
 User = get_user_model()
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
-FLAGGED_DOWNLOAD_THRESHOLD_PER_HOUR = 20
-FLAGGED_OFF_HOURS_RANGE = (0, 5)      
-FLAGGED_OFF_HOURS_MIN_COUNT = 5
-
-
-@api_view(["GET"])
-@permission_classes([IsAdminOnly])
-def audit_peak_hours(request):
-    """Activity volume bucketed by hour-of-day (0-23) over the trailing window —
-    lets the dashboard show *when* the platform is busiest without listing rows."""
-    days = int(request.query_params.get("days", 30))
-    cutoff = timezone.now() - timedelta(days=days)
-    qs = (
-        ActivityLog.objects.filter(timestamp__gte=cutoff)
-        .annotate(hour=ExtractHour("timestamp"))
-        .values("hour").annotate(count=Count("id")).order_by("hour")
-    )
-    counts_by_hour = {row["hour"]: row["count"] for row in qs}
-    return Response([{"hour": h, "count": counts_by_hour.get(h, 0)} for h in range(24)])
-
-
-@api_view(["GET"])
-@permission_classes([IsAdminOnly])
-def audit_most_accessed_datasets(request):
-    """Top datasets by combined view+download activity in the window — the
-    'what people are actually looking at' signal, without the raw log."""
-    days = int(request.query_params.get("days", 30))
-    limit = int(request.query_params.get("limit", 10))
-    cutoff = timezone.now() - timedelta(days=days)
-    relevant_actions = RECEIVED_DOWNLOAD_ACTIONS + ["dataset_view"]
-
-    qs = (
-        ActivityLog.objects.filter(
-            timestamp__gte=cutoff, action__in=relevant_actions, target_object__startswith="Dataset:",
-        )
-        .values("target_object")
-        .annotate(
-            views=Count("id", filter=Q(action="dataset_view")),
-            downloads=Count("id", filter=Q(action__in=RECEIVED_DOWNLOAD_ACTIONS)),
-            total=Count("id"),
-        )
-        .order_by("-total")[:limit]
-    )
-
-    dataset_ids = [row["target_object"].split(":", 1)[1] for row in qs]
-    datasets_by_id = {str(d.id): d for d in Dataset.objects.filter(id__in=dataset_ids)}
-
-    return Response([
-        {
-            "dataset_id": (dataset_id := row["target_object"].split(":", 1)[1]),
-            "title": datasets_by_id[dataset_id].title if dataset_id in datasets_by_id else "Deleted dataset",
-            "views": row["views"], "downloads": row["downloads"], "total_activity": row["total"],
-        }
-        for row in qs
-    ])
-
-
-@api_view(["GET"])
-@permission_classes([IsAdminOnly])
-def audit_flagged_activity(request):
-    """Lightweight heuristics for the dashboard's 'flagged / malicious activity'
-    tile: bulk-download bursts and off-hours access. This is a signal for
-    reviewers to look closer, not an automatic ban — use the audit-log CSV
-    export to investigate a flagged user's full history."""
-    days = int(request.query_params.get("days", 7))
-    cutoff = timezone.now() - timedelta(days=days)
-
-    bursts = (
-        ActivityLog.objects.filter(timestamp__gte=cutoff, action__in=RECEIVED_DOWNLOAD_ACTIONS)
-        .annotate(hour_bucket=TruncHour("timestamp"))
-        .values("user_id", "hour_bucket").annotate(count=Count("id"))
-        .filter(count__gte=FLAGGED_DOWNLOAD_THRESHOLD_PER_HOUR)
-        .order_by("-count")
-    )
-    off_hours = (
-        ActivityLog.objects.filter(
-            timestamp__gte=cutoff,
-            timestamp__hour__gte=FLAGGED_OFF_HOURS_RANGE[0],
-            timestamp__hour__lte=FLAGGED_OFF_HOURS_RANGE[1],
-        )
-        .values("user_id").annotate(count=Count("id"))
-        .filter(count__gte=FLAGGED_OFF_HOURS_MIN_COUNT)
-        .order_by("-count")
-    )
-
-    def _label(user_id):
-        if user_id is None:
-            return "Deleted user"
-        user = User.objects.filter(id=user_id).select_related("profile").first()
-        return user.profile.full_name if user and hasattr(user, "profile") else "Unknown user"
-
-    return Response({
-        "download_bursts": [
-            {"user_id": row["user_id"], "user": _label(row["user_id"]),
-             "hour": row["hour_bucket"], "download_count": row["count"]}
-            for row in bursts
-        ],
-        "off_hours_access": [
-            {"user_id": row["user_id"], "user": _label(row["user_id"]), "access_count": row["count"]}
-            for row in off_hours
-        ],
-    })
 
 
 @api_view(["GET"])
