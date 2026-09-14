@@ -8,8 +8,8 @@ from rest_framework import serializers
 from apps.datasets.services.storage import presigned_download_url
 from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate, DatasetVersion
 from apps.datasets.services.preview import (
-    CSV_FILE_TYPES, JSON_FILE_TYPES, 
-    preview_tabular_file
+    CSV_FILE_TYPES, JSON_FILE_TYPES, IMAGE_FILE_TYPES, VIDEO_FILE_TYPES,
+    preview_tabular_file, preview_image_files, preview_video_file,
 )
 
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
@@ -160,6 +160,16 @@ class DatasetSerializer(serializers.ModelSerializer):
         files = list(obj.files.all())
         if not files:
             return {"kind": "none", "available": False, "reason": "No files uploaded yet."}
+
+        file_types = {(f.file_type or "").lower() for f in files}
+
+        if file_types & IMAGE_FILE_TYPES:
+            images = preview_image_files(files)
+            return {"kind": "image", "available": bool(images), "images": images}
+
+        if file_types & VIDEO_FILE_TYPES:
+            video_preview = preview_video_file(files)
+            return {"kind": "video", "available": bool(video_preview), **(video_preview or {})}
 
         tabular_file = next(
             (f for f in files if (f.file_type or "").lower() in (CSV_FILE_TYPES | JSON_FILE_TYPES)),
