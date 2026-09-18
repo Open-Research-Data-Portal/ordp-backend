@@ -780,7 +780,7 @@ def my_datasets(request):
     ).data)
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
 
