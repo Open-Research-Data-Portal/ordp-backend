@@ -75,7 +75,7 @@ def resolve_access_request_votes(access_request: DatasetAccessRequest):
     if access_request.owner_decision != DatasetAccessRequest.OwnerDecision.APPROVED:
         return {"status": "pending", "owner_decision": access_request.owner_decision}
 
-    total_reviewers = User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct().count()
+    total_reviewers = User.objects.filter(profile__roles__role="reviewer").distinct().count()
     quorum = min(MIN_REVIEWER_QUORUM, total_reviewers) or 1
     approve_votes = access_request.votes.filter(vote="approve").count()
     reject_votes = access_request.votes.filter(vote="reject").count()
@@ -107,7 +107,7 @@ def record_owner_decision(access_request, decision):
     result = resolve_access_request_votes(access_request)
 
     if access_request.owner_decision == DatasetAccessRequest.OwnerDecision.APPROVED and result["status"] == "pending":
-        for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
+        for reviewer in User.objects.filter(profile__roles__role="reviewer").distinct():
             notify(
                 user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
                 message=(

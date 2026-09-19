@@ -116,9 +116,9 @@ class FileTypeMismatchTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 
     def test_unsupported_declared_type_is_rejected(self):
-        """pdf isn't in the supported-format list — hard reject, not silent pass-through."""
+        """docx isn't in the supported-format list — hard reject, not silent pass-through."""
         resp = upload_and_complete(self.client, self.session_id, self.dataset_id,
-                                    b"%PDF-1.4 some content", "doc.pdf", "pdf")
+                                    b"PK\x03\x04 some content", "doc.docx", "docx")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 

@@ -6,6 +6,7 @@ from .models import Dataset, Contributor, DatasetRevision, DatasetVersion
 from .serializers import DatasetSerializer
 from rest_framework.permissions import IsAuthenticated
 from apps.accounts.permissions import CanUploadDatasets
+import uuid
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 
 
@@ -82,31 +83,25 @@ def feed(request):
     qs = qs.order_by("-created_at")[:20]
     return Response(DatasetSerializer(qs, many=True).data)
 
-
 @api_view(["GET"])
 @permission_classes([CanUploadDatasets])
 def my_contributions(request):
-    """Datasets this researcher has MODIFIED that belong to someone else —
-    i.e. they got their change approved through the outsider revision flow
-    (request-revision-permission -> propose-revision -> route_change), not
-    because they were invited as a co-author. Every approved change (owner
-    edit, co-author edit, or outsider revision) lands in DatasetVersion via
-    route_change/_apply_pending_content_update, so that's the source of
-    truth — not the legacy DatasetRevision model, which nothing writes to
-    anymore. We also exclude datasets where the user is currently an
-    invited co-author: those edits are 'their own dataset' work, not an
-    uninvited contribution."""
-    coauthor_dataset_ids = Contributor.objects.filter(
-        user=request.user, contributor_type=Contributor.ContributorType.CO_AUTHOR,
-    ).values_list("dataset_id", flat=True)
+    my_ids = _my_dataset_ids(request.user)
 
-    dataset_ids = (
+    major_edit_ids = set(
         DatasetVersion.objects.filter(changed_by=request.user)
-        .exclude(dataset__owner=request.user)
-        .exclude(dataset_id__in=coauthor_dataset_ids)
         .values_list("dataset_id", flat=True)
-        .distinct()
     )
+
+    minor_edit_targets = ActivityLog.objects.filter(
+        user=request.user,
+        action="minor_revision_applied",
+        target_object__startswith="Dataset:",
+    ).values_list("target_object", flat=True)
+    minor_edit_ids = {uuid.UUID(t.split(":", 1)[1]) for t in minor_edit_targets}
+
+    dataset_ids = (major_edit_ids | minor_edit_ids) - my_ids
+
     qs = Dataset.objects.filter(id__in=dataset_ids, is_active=True)
     return Response(DatasetSerializer(qs, many=True).data)
 

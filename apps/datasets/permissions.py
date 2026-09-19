@@ -1,9 +1,10 @@
 from rest_framework.permissions import BasePermission
+from .models import Dataset, Contributor
+from .models import Dataset, PendingContentUpdate, RevisionRequest
 
 
 class IsDatasetOwner(BasePermission):
     def has_permission(self, request, view):
-        from .models import Dataset, DatasetRevision, PendingContentUpdate
         dataset_id = view.kwargs.get("dataset_id")
         if dataset_id:
             dataset = Dataset.objects.filter(id=dataset_id).first()
@@ -12,14 +13,22 @@ class IsDatasetOwner(BasePermission):
             self.message = "Only the dataset owner can do this."
             return False
 
-        revision_id = view.kwargs.get("revision_id") or view.kwargs.get("update_id")
-        if revision_id:
-            revision = (DatasetRevision.objects.filter(id=revision_id).first()
-                        or PendingContentUpdate.objects.filter(id=revision_id).first())
-            if revision and revision.dataset.is_owned_by(request.user):
+        update_id = view.kwargs.get("update_id")
+        if update_id:
+            update = PendingContentUpdate.objects.filter(id=update_id).first()
+            if update and update.dataset.is_owned_by(request.user):
                 return True
             self.message = "Only the dataset owner can do this."
             return False
+
+        request_id = view.kwargs.get("request_id")
+        if request_id:
+            revision_request = RevisionRequest.objects.filter(id=request_id).first()
+            if revision_request and revision_request.dataset.is_owned_by(request.user):
+                return True
+            self.message = "Only the dataset owner can do this."
+            return False
+
         return False
 
     def has_object_permission(self, request, view, obj):
@@ -31,23 +40,26 @@ class IsDatasetOwner(BasePermission):
 
 
 class IsDatasetOwnerOrContributor(BasePermission):
+    """Owner, or a co-author whose `permission` is EDIT. A view-only
+    co-author, or anyone with `contributor_type=CONTRIBUTOR` (earned only
+    through an approved revision, never invited with edit rights), is NOT
+    covered here — they must go through the revision flow instead."""
     def has_permission(self, request, view):
-        from .models import Dataset, Contributor
 
         dataset_id = view.kwargs.get("dataset_id")
 
         if not dataset_id:
             return False
 
-        # Dataset owner
-        if Dataset.objects.filter(
-            id=dataset_id,
-            owner=request.user
-        ).exists():
+        if Dataset.objects.filter(id=dataset_id, owner=request.user).exists():
             return True
 
-        # Contributor to this specific dataset
-        return Contributor.objects.filter(
-            dataset_id=dataset_id,
-            user=request.user
-        ).exists()
+        contributor = Contributor.objects.filter(
+            dataset_id=dataset_id, user=request.user
+        ).first()
+
+        if contributor and contributor.can_edit():
+            return True
+
+        self.message = "You don't have direct edit access to this dataset. Submit a revision request instead."
+        return False

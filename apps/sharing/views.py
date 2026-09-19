@@ -7,7 +7,7 @@ from rest_framework.response import Response
 
 
 from apps.accounts.models import ActivityLog
-from apps.accounts.permissions import IsReviewerOrAdmin
+from apps.accounts.permissions import IsReviewerOrAdmin, IsReviewerOnly
 from apps.datasets.models import Dataset, Contributor, DatasetInvitation, PermissionLevel
 from apps.datasets.permissions import IsDatasetOwner
 from apps.datasets.services.storage import presigned_download_url
@@ -190,7 +190,7 @@ def share_with_user(request, dataset_id):
     )
 
     if dataset.owner_id == request.user.id:
-        for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
+        for reviewer in User.objects.filter(profile__roles__role="reviewer").distinct():
             notify(
                 user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
                 message=f'{request.user.profile.full_name} wants to share "{dataset.title}" with {recipient_email}.',
@@ -208,7 +208,7 @@ def share_with_user(request, dataset_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def access_request_queue(request):
     qs = DatasetAccessRequest.objects.filter(
         status=DatasetAccessRequest.Status.PENDING,
@@ -218,13 +218,11 @@ def access_request_queue(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def vote_on_access_request(request, request_id):
     access_request = get_object_or_404(DatasetAccessRequest, id=request_id)
     if access_request.status != DatasetAccessRequest.Status.PENDING:
         return Response({"detail": "This request has already been resolved."}, status=400)
-    if access_request.owner_decision != DatasetAccessRequest.OwnerDecision.APPROVED:
-        return Response({"detail": "This request is still waiting on the dataset owner's decision."}, status=400)
 
     vote_value = request.data.get("vote")
     if vote_value not in ("approve", "reject"):

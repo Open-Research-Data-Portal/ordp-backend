@@ -12,7 +12,10 @@ from apps.metadata.models import Category, Metadata
 
 
 def make_published_dataset(owner, title="Editing DS"):
-    dataset = Dataset.objects.create(title=title, owner=owner, status=Dataset.Status.PUBLISHED)
+    dataset = Dataset.objects.create(
+        title=title, owner=owner, status=Dataset.Status.PUBLISHED,
+        visibility=Dataset.Visibility.PUBLIC,
+    )
     DatasetFile.objects.create(dataset=dataset, file_key="k1", file_type="csv", file_size=100, checksum="a")
     category = Category.objects.create(name=f"{title} Cat", status=Category.Status.APPROVED)
     Metadata.objects.create(dataset=dataset, description="test", category=category)
@@ -63,11 +66,20 @@ class RevisionRequestVotingTests(APITestCase):
         self.owner = make_user("rrvowner", "rrvowner@aastu.edu.et")
         self.requester = make_user("rrvrequester", "rrvrequester@aastu.edu.et", role="researcher")
         self.dataset = make_published_dataset(self.owner, "RRV DS")
+        Dataset.objects.filter(id=self.dataset.id).update(visibility=Dataset.Visibility.RESTRICTED)
+        self.dataset.refresh_from_db()
         self.reviewers = [make_user(f"rrvreviewer{i}", f"rrvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)]
 
         self.client.force_authenticate(self.requester)
-        resp = self.client.post(f"/api/datasets/{self.dataset.id}/request-revision-permission/", {"reason": "test"})
+        resp = self.client.post(
+            f"/api/datasets/{self.dataset.id}/request-revision-permission/",
+            {"reason": "test", "additional_justification": "extra detail for restricted dataset"},
+        )
         self.request_id = resp.data["request_id"]
+
+        # Restricted datasets go to committee only after the owner approves.
+        self.client.force_authenticate(self.owner)
+        self.client.post(f"/api/datasets/revision-requests/{self.request_id}/decide/", {"decision": "approve"})
 
     def test_majority_approve_grants_permission(self):
         for reviewer in self.reviewers:
@@ -116,7 +128,6 @@ class ProposeRevisionPermissionTests(APITestCase):
         owner = make_user("prpowner2", "prpowner2@aastu.edu.et")
         outsider = make_user("prpoutsider2", "prpoutsider2@aastu.edu.et", role="researcher")
         outsider.profile.academia = ""
-        outsider.profile.department = None
         outsider.profile.terms_accepted = False
         outsider.profile.save()
 
@@ -129,13 +140,9 @@ class ProposeRevisionPermissionTests(APITestCase):
         self.assertIn("profile", resp.data["detail"].lower())
 
     def test_propose_without_message_is_blocked(self):
-        from apps.accounts.models import UserProfile, College, Department
         owner = make_user("prpowner3", "prpowner3@aastu.edu.et")
         outsider = make_user("prpoutsider3", "prpoutsider3@aastu.edu.et", role="researcher")
-        college = College.objects.create(name="PRP College")
-        department = Department.objects.create(name="PRP Dept", college=college)
         outsider.profile.academia = "researcher"
-        outsider.profile.department = department
         outsider.profile.terms_accepted = True
         outsider.profile.save()
         dataset = make_published_dataset(owner)

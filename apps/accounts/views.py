@@ -5,7 +5,6 @@ from django.db.models import Q
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
-from .serializers import ExtendedProfileSerializer  
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
