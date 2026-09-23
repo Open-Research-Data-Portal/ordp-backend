@@ -263,6 +263,39 @@ class RestrictedShareVotingTests(APITestCase):
 
 
 class CoauthorInvitationTests(APITestCase):
+    def test_invitation_defaults_to_view_and_returns_existing_user_match(self):
+        owner = make_user("defowner", "defowner@aastu.edu.et")
+        invitee = make_user("definvitee", "definvitee@aastu.edu.et")
+        dataset = make_dataset_with_version(owner, "Default Permission DS")
+
+        self.client.force_authenticate(owner)
+        resp = self.client.post(f"/api/sharing/{dataset.id}/invite-coauthor/", {"email": "definvitee@aastu.edu.et"})
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["permission"], "view")
+        self.assertEqual(resp.data["invited_email"], "definvitee@aastu.edu.et")
+        self.assertEqual(resp.data["matched_user"]["id"], invitee.id)
+        self.assertEqual(resp.data["matched_user"]["email"], invitee.email)
+
+        from apps.datasets.models import DatasetInvitation
+        invitation = DatasetInvitation.objects.get(id=resp.data["invitation_id"])
+        self.assertEqual(invitation.permission, "view")
+
+    def test_manual_email_invitation_without_existing_user_is_allowed(self):
+        owner = make_user("manualowner", "manualowner@aastu.edu.et")
+        dataset = make_dataset_with_version(owner, "Manual Email DS")
+
+        self.client.force_authenticate(owner)
+        resp = self.client.post(
+            f"/api/sharing/{dataset.id}/invite-coauthor/",
+            {"email": "future.coauthor@aastu.edu.et", "permission": "edit"},
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["permission"], "edit")
+        self.assertEqual(resp.data["invited_email"], "future.coauthor@aastu.edu.et")
+        self.assertIsNone(resp.data["matched_user"])
+
     def test_invited_existing_user_must_accept_before_getting_access(self):
         owner = make_user("casowner", "casowner@aastu.edu.et")
         invitee = make_user("casinvitee", "casinvitee@aastu.edu.et")

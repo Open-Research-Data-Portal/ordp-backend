@@ -58,6 +58,46 @@ class RequestRevisionPermissionTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class CoauthorDatasetUpdatePermissionTests(APITestCase):
+    def test_view_coauthor_cannot_update_dataset_metadata(self):
+        owner = make_user("cduowner", "cduowner@aastu.edu.et")
+        coauthor = make_user("cduviewer", "cduviewer@aastu.edu.et", role="researcher")
+        dataset = make_published_dataset(owner, "CDU View DS")
+        Contributor.objects.create(
+            dataset=dataset,
+            user=coauthor,
+            name="View Coauthor",
+            contributor_type=Contributor.ContributorType.CO_AUTHOR,
+            permission="view",
+        )
+
+        self.client.force_authenticate(coauthor)
+        resp = self.client.patch(f"/api/datasets/{dataset.id}/update/", {"description": "changed"})
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        dataset.metadata.refresh_from_db()
+        self.assertEqual(dataset.metadata.description, "test")
+
+    def test_edit_coauthor_can_update_dataset_metadata(self):
+        owner = make_user("cduowner2", "cduowner2@aastu.edu.et")
+        coauthor = make_user("cdueditor", "cdueditor@aastu.edu.et", role="researcher")
+        dataset = make_published_dataset(owner, "CDU Edit DS")
+        Contributor.objects.create(
+            dataset=dataset,
+            user=coauthor,
+            name="Edit Coauthor",
+            contributor_type=Contributor.ContributorType.CO_AUTHOR,
+            permission="edit",
+        )
+
+        self.client.force_authenticate(coauthor)
+        resp = self.client.patch(f"/api/datasets/{dataset.id}/update/", {"description": "changed"})
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        dataset.metadata.refresh_from_db()
+        self.assertEqual(dataset.metadata.description, "changed")
+
+
 class RevisionRequestVotingTests(APITestCase):
     def setUp(self):
         self.owner = make_user("rrvowner", "rrvowner@aastu.edu.et")

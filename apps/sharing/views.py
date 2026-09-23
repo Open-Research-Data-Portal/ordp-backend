@@ -271,14 +271,25 @@ def invite_coauthor(request, dataset_id):
     if not email:
         return Response({"detail": "email is required."}, status=400)
 
-    permission = (request.data.get("permission") or PermissionLevel.EDIT).strip().lower()
+    permission = (request.data.get("permission") or PermissionLevel.VIEW).strip().lower()
     if permission not in PermissionLevel.values:
         return Response({"detail": "permission must be 'edit' or 'view'."}, status=400)
 
     invitation = create_invitation(
         dataset, request.user, email, DatasetInvitation.Role.CO_AUTHOR, permission,
     )
-    return Response({"status": "invited", "invitation_id": invitation.id}, status=201)
+    existing_user = User.objects.filter(email__iexact=email).select_related("profile").first()
+    return Response({
+        "status": "invited",
+        "invitation_id": invitation.id,
+        "permission": invitation.permission,
+        "invited_email": invitation.invited_email,
+        "matched_user": {
+            "id": existing_user.id,
+            "email": existing_user.email,
+            "full_name": existing_user.profile.full_name if hasattr(existing_user, "profile") else "",
+        } if existing_user else None,
+    }, status=201)
 
 
 

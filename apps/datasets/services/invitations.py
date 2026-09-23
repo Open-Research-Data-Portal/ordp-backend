@@ -86,6 +86,7 @@ def accept_invitation(token, user):
         dataset=invitation.dataset, user=user,
         defaults={
             "name": user.profile.full_name, "invited_email": "", "contributor_type": contributor_type,
+            "permission": invitation.permission,
             "order": invitation.dataset.contributors.count() + 1,
         },
     )

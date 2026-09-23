@@ -46,8 +46,8 @@ class IsDatasetOwnerOrContributor(BasePermission):
         ).exists():
             return True
 
-        # Contributor to this specific dataset
-        return Contributor.objects.filter(
+        contributor = Contributor.objects.filter(
             dataset_id=dataset_id,
             user=request.user
-        ).exists()
+        ).first()
+        return bool(contributor and contributor.can_edit())
