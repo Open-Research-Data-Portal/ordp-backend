@@ -29,6 +29,7 @@ urlpatterns = [
     path("password-reset/", PasswordResetRequestView.as_view(), name="password_reset_request"),
     path("password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
     path("profile/interests/other/", views.add_other_interest, name="add-other-interest"),
+        path("profile/picture/", views.upload_profile_picture, name="upload-profile-picture"),
     path("search-users/", views.search_users, name="search-users"),
     path("colleges/", views.list_colleges, name="list-colleges"),
     path("centers-of-excellence/",views.list_centers_of_excellence,name="list-centers-of-excellence"),

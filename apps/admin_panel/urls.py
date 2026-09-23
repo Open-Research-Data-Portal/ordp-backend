@@ -45,6 +45,17 @@ urlpatterns = [
         dashboard_views.admin_grant_role,
         name="admin-grant-role",
     ),
+
+    path(
+        "users/<int:user_id>/revoke-role/",
+        dashboard_views.admin_revoke_role,
+        name="admin-revoke-role",
+    ),
+    path(
+        "users/<int:user_id>/set-primary-role/",
+        dashboard_views.admin_set_primary_role,
+        name="admin-set-primary-role",
+    ),
     
     path("colleges/<uuid:college_id>/delete/", dashboard_views.admin_delete_college, name="admin-delete-college"),
     path("centers-of-excellence/<uuid:center_id>/delete/", dashboard_views.admin_delete_center_of_excellence, name="admin-delete-center-of-excellence"),

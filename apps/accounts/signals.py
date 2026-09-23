@@ -28,4 +28,5 @@ def create_user_profile(sender, instance, created, **kwargs):
     UserRole.objects.get_or_create(
         profile=profile,
         role=role,
+        defaults={"is_primary": True},
     )
