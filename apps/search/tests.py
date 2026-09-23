@@ -5,7 +5,6 @@ from django.test import TestCase
 
 from apps.search.services import _dataset_supports_archive_columns
 
-
 class DatasetArchiveSchemaCompatibilityTests(TestCase):
     @patch("apps.search.services.connection.introspection.get_table_description")
     def test_dataset_supports_archive_columns_detected_when_present(

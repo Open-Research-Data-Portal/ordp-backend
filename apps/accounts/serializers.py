@@ -1,11 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from .models import UserProfile
 import re
 from .models import UserProfile, BlockedCredential
-from apps.notifications.services import notify
-from apps.notifications.models import Notification
 from django.utils import timezone
 from apps.metadata.models import Category
 

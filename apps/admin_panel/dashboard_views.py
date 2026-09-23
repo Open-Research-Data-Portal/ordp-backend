@@ -4,10 +4,8 @@ from django.utils import timezone
 from datetime import timedelta
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
-from apps.accounts.views import get_client_ip
-from apps.datasets.models import Dataset, PendingContentUpdate
+from apps.datasets.models import Dataset, PendingContentUpdate, PendingContentUpdateVote
 from apps.sharing.models import DatasetAccessRequest, AccessRequestVote
 from .models import (
     ModerationDecision,
@@ -37,7 +35,7 @@ from reportlab.lib import colors # type: ignore
 from reportlab.lib.pagesizes import landscape, letter # type: ignore
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle # type: ignore
 from django.shortcuts import get_object_or_404
-from apps.accounts.permissions import IsAdminOnly, IsReviewerOrAdmin
+from apps.accounts.permissions import IsAdminOnly, IsReviewerOrAdmin, IsReviewerOnly
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from apps.metadata.models import Category
@@ -45,6 +43,7 @@ from apps.accounts.views import get_client_ip
 from apps.accounts.utils import generate_username
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
+from apps.datasets.services.revisions import resolve_content_update_votes
 User = get_user_model()
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 FLAGGED_DOWNLOAD_THRESHOLD_PER_HOUR = 20
@@ -457,38 +456,7 @@ def admin_centers_of_excellence(request):
         },
         status=201,
     )
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def admin_delete_college(request, college_id):
-    college = get_object_or_404(College, id=college_id)
-    affected_users = UserProfile.objects.filter(college=college).count()
-    name = college.name
-    college.delete()
 
-    return Response(
-        {
-            "detail": f"College '{name}' deleted.",
-            "affected_users": affected_users,
-        },
-        status=200,
-    )
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAdminOnly])
-def admin_delete_center_of_excellence(request, center_id):
-    center = get_object_or_404(CenterOfExcellence, id=center_id)
-    affected_users = UserProfile.objects.filter(center_of_excellence=center).count()
-    name = center.name
-    center.delete()
-
-    return Response(
-        {
-            "detail": f"Center of Excellence '{name}' deleted.",
-            "affected_users": affected_users,
-        },
-        status=200,
-    )
 def _daily_counts(queryset, date_field, days=30):
     cutoff = (timezone.now() - timedelta(days=days)).date()
     grouped = (
@@ -788,8 +756,6 @@ def admin_revoke_share_permission(request, permission_id):
     revoke_share_permission(permission, request.user)
     return Response({"status": "revoked"})
 
-
-
 @api_view(["GET"])
 @permission_classes([IsAdminOnly])
 def pending_languages(request):
@@ -819,26 +785,31 @@ def decide_pending_language(request, language_id):
 
 
 
-
 @api_view(["GET"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def revision_request_queue(request):
+    """Committee queue — only shows requests the owner already approved
+    (restricted datasets). Requests still waiting on the owner don't
+    belong here."""
     from apps.datasets.models import RevisionRequest
-    qs = RevisionRequest.objects.filter(status="pending").select_related("dataset", "requester__profile")
+    qs = RevisionRequest.objects.filter(
+        status=RevisionRequest.Status.AWAITING_COMMITTEE
+    ).select_related("dataset", "requester__profile")
     return Response([{
         "id": r.id, "dataset_id": r.dataset_id, "dataset_title": r.dataset.title,
-        "requester": r.requester.profile.full_name, "reason": r.reason, "created_at": r.created_at,
+        "requester": r.requester.profile.full_name, "reason": r.reason,
+        "additional_justification": r.additional_justification, "created_at": r.created_at,
     } for r in qs])
 
 
 @api_view(["POST"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def vote_on_revision_request(request, request_id):
     from apps.datasets.models import RevisionRequest, RevisionRequestVote
     from apps.datasets.services.revisions import resolve_revision_request_votes
     revision_request = get_object_or_404(RevisionRequest, id=request_id)
-    if revision_request.status != RevisionRequest.Status.PENDING:
-        return Response({"detail": "This request has already been resolved."}, status=400)
+    if revision_request.status != RevisionRequest.Status.AWAITING_COMMITTEE:
+        return Response({"detail": "This request isn't awaiting committee review."}, status=400)
     vote_value = request.data.get("vote")
     if vote_value not in ("approve", "reject"):
         return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)
@@ -848,11 +819,10 @@ def vote_on_revision_request(request, request_id):
     return Response(resolve_revision_request_votes(revision_request))
 
 
+
 @api_view(["POST"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def vote_on_content_update(request, update_id):
-    from apps.datasets.models import PendingContentUpdate, PendingContentUpdateVote
-    from apps.datasets.services.revisions import resolve_content_update_votes
     update = get_object_or_404(PendingContentUpdate, id=update_id)
     if update.status != PendingContentUpdate.Status.PENDING:
         return Response({"detail": "This update has already been resolved."}, status=400)

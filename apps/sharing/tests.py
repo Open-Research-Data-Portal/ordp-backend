@@ -2,7 +2,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 
 from apps.accounts.models import UserProfile
-from apps.datasets.factories import make_user, make_college_and_department
+from apps.datasets.factories import make_user, make_college
 from apps.datasets.models import Dataset, Contributor, PendingContentUpdate, PendingContentUpdateVote
 from apps.datasets.services.revisions import resolve_content_update_votes, route_change
 from apps.notifications.models import Notification
@@ -50,17 +50,13 @@ class FreeDownloadTests(APITestCase):
             role="public",
         )
 
-        # Contributor must have a completed profile and upload permission.
-        college, department = make_college_and_department(
-            "Contributor College",
-            "Contributor Department",
-        )
+        college = make_college("Contributor College")
 
         profile = contributor.profile
         profile.full_name = "Contributor"
         profile.affiliation = "AASTU"
         profile.academia = UserProfile.Academia.RESEARCHER
-        profile.department = department
+        profile.college = college
         profile.profile_visibility = "public"
         profile.terms_accepted = True
         profile.can_upload_datasets = True
@@ -183,8 +179,12 @@ class RestrictedShareVotingTests(APITestCase):
         resp = self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
         self.assertEqual(resp.data["status"], "approved")  #
 
-        self.assertTrue(SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists())
+        access_request = DatasetAccessRequest.objects.get(id=request_id)
         self.client.force_authenticate(self.requester)
+        claim_resp = self.client.post(f"/api/sharing/claim-access/{access_request.claim_token}/")
+        self.assertEqual(claim_resp.status_code, status.HTTP_200_OK)
+
+        self.assertTrue(SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists())
         dl_resp = self.client.get(f"/api/sharing/{self.dataset.id}/download/")
         self.assertEqual(dl_resp.status_code, status.HTTP_200_OK)
 

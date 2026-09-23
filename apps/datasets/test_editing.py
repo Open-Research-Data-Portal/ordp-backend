@@ -5,14 +5,17 @@ from rest_framework import status
 
 from apps.datasets.factories import make_user
 from apps.datasets.models import (
-    Dataset, DatasetFile, Contributor, RevisionRequest, PendingContentUpdate,
+    Dataset, DatasetFile, Contributor, RevisionRequest, PendingContentUpdate,  PermissionLevel
 )
 from apps.datasets.services.revisions import route_change, resolve_revision_request_votes, resolve_content_update_votes
 from apps.metadata.models import Category, Metadata
 
 
 def make_published_dataset(owner, title="Editing DS"):
-    dataset = Dataset.objects.create(title=title, owner=owner, status=Dataset.Status.PUBLISHED)
+    dataset = Dataset.objects.create(
+        title=title, owner=owner, status=Dataset.Status.PUBLISHED,
+        visibility=Dataset.Visibility.PUBLIC,
+    )
     DatasetFile.objects.create(dataset=dataset, file_key="k1", file_type="csv", file_size=100, checksum="a")
     category = Category.objects.create(name=f"{title} Cat", status=Category.Status.APPROVED)
     Metadata.objects.create(dataset=dataset, description="test", category=category)
@@ -103,11 +106,20 @@ class RevisionRequestVotingTests(APITestCase):
         self.owner = make_user("rrvowner", "rrvowner@aastu.edu.et")
         self.requester = make_user("rrvrequester", "rrvrequester@aastu.edu.et", role="researcher")
         self.dataset = make_published_dataset(self.owner, "RRV DS")
+        Dataset.objects.filter(id=self.dataset.id).update(visibility=Dataset.Visibility.RESTRICTED)
+        self.dataset.refresh_from_db()
         self.reviewers = [make_user(f"rrvreviewer{i}", f"rrvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)]
 
         self.client.force_authenticate(self.requester)
-        resp = self.client.post(f"/api/datasets/{self.dataset.id}/request-revision-permission/", {"reason": "test"})
+        resp = self.client.post(
+            f"/api/datasets/{self.dataset.id}/request-revision-permission/",
+            {"reason": "test", "additional_justification": "extra detail for restricted dataset"},
+        )
         self.request_id = resp.data["request_id"]
+
+        # Restricted datasets go to committee only after the owner approves.
+        self.client.force_authenticate(self.owner)
+        self.client.post(f"/api/datasets/revision-requests/{self.request_id}/decide/", {"decision": "approve"})
 
     def test_majority_approve_grants_permission(self):
         for reviewer in self.reviewers:
@@ -156,7 +168,6 @@ class ProposeRevisionPermissionTests(APITestCase):
         owner = make_user("prpowner2", "prpowner2@aastu.edu.et")
         outsider = make_user("prpoutsider2", "prpoutsider2@aastu.edu.et", role="researcher")
         outsider.profile.academia = ""
-        outsider.profile.department = None
         outsider.profile.terms_accepted = False
         outsider.profile.save()
 
@@ -169,12 +180,9 @@ class ProposeRevisionPermissionTests(APITestCase):
         self.assertIn("profile", resp.data["detail"].lower())
 
     def test_propose_without_message_is_blocked(self):
-        from apps.accounts.models import College
         owner = make_user("prpowner3", "prpowner3@aastu.edu.et")
         outsider = make_user("prpoutsider3", "prpoutsider3@aastu.edu.et", role="researcher")
-        college = College.objects.create(name="PRP College")
         outsider.profile.academia = "researcher"
-        outsider.profile.college = college
         outsider.profile.terms_accepted = True
         outsider.profile.save()
         dataset = make_published_dataset(owner)
@@ -270,6 +278,43 @@ class WatcherNotificationTests(APITestCase):
             route_change(
                 dataset=dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=owner,
                 new_file_key="minor-key", diff_percentage=5.0, change_summary={}, proposed_metadata={},
-            )
+        )
         self.assertTrue(Notification.objects.filter(user=watcher, dataset=dataset).exists())
         self.assertFalse(DatasetWatcher.objects.filter(dataset=dataset, user=watcher).exists())  # one-shot, cleared
+
+class ContributorStatusGrantTests(APITestCase):
+    """route_change -> _grant_contributor_status: existing relationships must
+    survive a later revision being applied, since get_or_create only sets
+    `defaults` on creation, never on an existing match."""
+
+    def test_existing_co_author_keeps_type_after_minor_revision(self):
+        owner = make_user("csgowner", "csgowner@aastu.edu.et")
+        co_author = make_user("csgcoauthor", "csgcoauthor@aastu.edu.et", role="researcher")
+        dataset = make_published_dataset(owner, "CSG DS")
+        Contributor.objects.create(
+            dataset=dataset, user=co_author, name="Co Author",
+            contributor_type=Contributor.ContributorType.CO_AUTHOR,
+            permission=PermissionLevel.EDIT,
+        )
+
+        with override_settings(VERSION_BUMP_THRESHOLD_PCT=50.0):
+            route_change(
+                dataset=dataset, source=PendingContentUpdate.Source.CONTRIBUTOR_EDIT, submitted_by=co_author,
+                new_file_key="new-key", diff_percentage=5.0, change_summary={}, proposed_metadata={},
+            )
+
+        contributor = Contributor.objects.get(dataset=dataset, user=co_author)
+        self.assertEqual(contributor.contributor_type, Contributor.ContributorType.CO_AUTHOR)
+        self.assertEqual(Contributor.objects.filter(dataset=dataset, user=co_author).count(), 1)
+
+    def test_owner_editing_own_dataset_creates_no_contributor_row(self):
+        owner = make_user("csgowner2", "csgowner2@aastu.edu.et")
+        dataset = make_published_dataset(owner, "CSG Owner DS")
+
+        with override_settings(VERSION_BUMP_THRESHOLD_PCT=50.0):
+            route_change(
+                dataset=dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=owner,
+                new_file_key="new-key", diff_percentage=5.0, change_summary={}, proposed_metadata={},
+            )
+
+        self.assertFalse(Contributor.objects.filter(dataset=dataset, user=owner).exists())

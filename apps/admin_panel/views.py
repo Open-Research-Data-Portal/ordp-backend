@@ -2,11 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
-from django.shortcuts import get_object_or_404
-from django.db.models import Count, F
-from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly
+from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly, IsReviewerOnly
 from apps.datasets.models import Dataset, PendingContentUpdate
 from apps.datasets.serializers import PendingContentUpdateSerializer
 from apps.metadata.models import FallbackThumbnail
@@ -268,7 +264,23 @@ def moderate_dataset(request, dataset_id):
             },
             status=200,
         )
+    if votes_cast >= assigned_count:
+        dataset.status = Dataset.Status.CHANGES_REQUESTED
+        dataset.save(update_fields=["status"])
 
+        notify(
+            user=dataset.owner,
+            notification_type=Notification.NotificationType.CHANGES_REQUESTED,
+            message=f'Reviewers were split on "{dataset.title}"; please revise and resubmit.',
+            dataset=dataset,
+            reason=reason,
+            link_path=f"/datasets/{dataset.id}",
+        )
+
+        return Response(
+            {"status": "changes_requested", "approve_votes": approve_votes, "reject_votes": reject_votes, "votes_cast": votes_cast},
+            status=200,
+        )
     return Response(
     {"detail": "Your review decision has been submitted successfully."},
     status=200,
@@ -287,7 +299,7 @@ def suggest_thumbnail(request, dataset_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def content_update_queue(request):
     qs = PendingContentUpdate.objects.filter(status="pending").select_related("dataset", "submitted_by")
     return Response(PendingContentUpdateSerializer(qs, many=True).data)

@@ -20,7 +20,7 @@ urlpatterns = [
     path("<uuid:dataset_id>/", views.dataset_detail, name="dataset-detail"),
     path("<uuid:dataset_id>/update/", views.update_dataset, name="dataset-update"),
     path("<uuid:dataset_id>/propose-revision/", views.propose_revision, name="propose-revision"),
-    path("revisions/<uuid:revision_id>/decide/", views.decide_revision, name="revision-decide"),
+    path("revision-requests/<uuid:request_id>/decide/", views.decide_revision_request, name="revision-request-decide"),
     path("<uuid:dataset_id>/versions/", views.dataset_versions, name="dataset-versions"),
     path("<uuid:dataset_id>/thumbnail/", views.upload_thumbnail, name="upload-thumbnail"), 
     path( 

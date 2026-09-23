@@ -2,7 +2,8 @@ from django.conf import settings
 from django.core.mail import send_mail
 from .models import Notification
 from .config import email_subject
-
+import logging
+logger = logging.getLogger(__name__)
 
 def notify(user, notification_type, message, dataset=None, reason=None, link_path=""):
     """Single entry point for every notification in the system."""
@@ -20,7 +21,7 @@ def notify(user, notification_type, message, dataset=None, reason=None, link_pat
         notif.email_sent = True
         notif.save(update_fields=["email_sent"])
     except Exception:
-        pass  
+        logger.exception("Failed to send notification email to %s", user.email)
     return notif
 
 def broadcast_system_notification(message, link_path=None):

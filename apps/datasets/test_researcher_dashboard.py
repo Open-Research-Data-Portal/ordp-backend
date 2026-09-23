@@ -147,9 +147,9 @@ class MyContributionsTests(APITestCase):
         resp = self.client.get("/api/datasets/dashboard/my-contributions/")
         self.assertEqual(len(resp.data), 0)
 
-    def test_invited_coauthors_edit_not_counted_as_contribution(self):
-        """A co-author editing their own linked dataset isn't an 'uninvited
-        contribution' — it's their normal editing work on a dataset they belong to."""
+    def test_invited_coauthors_edit_is_counted_as_contribution(self):
+        """A co-author is an external contributor, not a dataset holder — their
+        edit on the dataset they're linked to still counts as a contribution."""
         owner = make_user("mcowner4", "mcowner4@aastu.edu.et", role="researcher")
         coauthor = make_user("mccoauthor", "mccoauthor@aastu.edu.et", role="researcher")
         dataset = make_dataset(owner, "MC Coauthor DS")
@@ -165,4 +165,5 @@ class MyContributionsTests(APITestCase):
 
         self.client.force_authenticate(coauthor)
         resp = self.client.get("/api/datasets/dashboard/my-contributions/")
-        self.assertEqual(len(resp.data), 0)
+        titles = {d["title"] for d in resp.data}
+        self.assertIn("MC Coauthor DS", titles)

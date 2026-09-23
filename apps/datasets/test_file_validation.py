@@ -115,10 +115,11 @@ class FileTypeMismatchTests(APITestCase):
                                     PNG_HEADER, "real.png", "png")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 
-    def test_valid_pdf_declared_as_pdf_succeeds(self):
+    def test_unsupported_declared_type_is_rejected(self):
+        """docx isn't in the supported-format list — hard reject, not silent pass-through."""
         resp = upload_and_complete(self.client, self.session_id, self.dataset_id,
-                                    b"%PDF-1.4 some content", "doc.pdf", "pdf")
-        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+                                    b"PK\x03\x04 some content", "doc.docx", "docx")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class StructuredMetadataTests(APITestCase):

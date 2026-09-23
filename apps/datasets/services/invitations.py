@@ -18,6 +18,8 @@ def create_invitation(dataset, invited_by, email, role, permission=PermissionLev
         permission=permission,
         invited_by=invited_by, expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
     )
+    # Only send it right away if the dataset is already live. Otherwise it
+    # stays un-notified until dispatch_pending_invitations() fires after publish.
     if dataset.status == Dataset.Status.PUBLISHED:
         _send_invitation_email(invitation)
         invitation.notified_at = timezone.now()
@@ -65,6 +67,8 @@ def accept_invitation(token, user):
     except DatasetInvitation.DoesNotExist:
         raise ValueError("This invitation link is invalid.")
 
+    if invitation.notified_at is None:
+        raise ValueError("This invitation hasn't been activated yet.")
     if invitation.status == DatasetInvitation.Status.ACCEPTED:
         raise ValueError("This invitation has already been accepted.")
     if invitation.status == DatasetInvitation.Status.REVOKED:

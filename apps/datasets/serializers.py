@@ -5,7 +5,7 @@ from rest_framework import serializers
 from django.db.models import Count
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.storage import presigned_download_url
-from .models import Dataset, DatasetFile, Contributor, DatasetRevision, PendingContentUpdate, DatasetVersion
+from .models import Dataset, DatasetFile, Contributor, PendingContentUpdate, DatasetVersion
 
 from apps.datasets.services.preview import CSV_FILE_TYPES, JSON_FILE_TYPES, preview_tabular_file
 
@@ -230,14 +230,7 @@ class PrepareUploadSerializer(serializers.Serializer):
 class TermsAcceptanceSerializer(serializers.Serializer):
     terms_accepted = serializers.BooleanField()
 
-class DatasetRevisionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = DatasetRevision
-        fields = [
-            "id", "dataset", "submitted_by", "diff_percentage", "triggered_version_bump",
-            "submitter_message", "change_summary", "proposed_metadata", "status", "created_at",
-        ]
-        read_only_fields = ["diff_percentage", "triggered_version_bump", "change_summary", "status"]
+
 
 
 class RevisionComparisonSerializer(serializers.Serializer):

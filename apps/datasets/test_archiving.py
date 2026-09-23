@@ -395,4 +395,4 @@ class ArchivedVisibilityTests(APITestCase):
         dataset = make_archived_dataset(owner, "Anon Hidden DS")
 
         resp = self.client.get(f"/api/datasets/{dataset.id}/")
-        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)

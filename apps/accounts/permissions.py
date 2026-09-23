@@ -53,4 +53,11 @@ class IsAdminOnly(HasRole):
 class IsReviewerOrAdmin(HasRole):
     allowed_roles = ["reviewer", "admin"]
 
+class IsReviewerOnly(HasRole):
+    """The reviewer committee, specifically — excludes admin. Use this for
+    anything that's a committee vote/decision (revision requests, content
+    updates). IsReviewerOrAdmin stays as-is for admin-panel views that are
+    genuinely meant to be reviewer-or-admin (e.g. general dashboards)."""
+    allowed_roles = ["reviewer"]
+
 

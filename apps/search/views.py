@@ -24,9 +24,6 @@ def list_datasets(request):
 
     file_size = request.query_params.get("file_size", "").strip()
 
-#     if file_size and file_size not in FILE_SIZE_MAP:
-#         return Response({"detail": "file_size must be one of: small, medium, large."}, status=400)
-
     if file_size and file_size not in VALID_FILE_SIZES:
         return Response({"detail": f"file_size must be one of: {', '.join(VALID_FILE_SIZES)}."}, status=400)
 
@@ -69,19 +66,6 @@ def list_datasets(request):
         )
     except InvalidFilterError as exc:
         return Response({"detail": str(exc)}, status=400)
-
-
-
-#     qs = build_dataset_search_queryset(
-#         query=query,
-#         user=request.user,
-#         category_id=category_id,
-#         order_by=order_by or None,
-#         extra_params=extra_params,
-#     )
-
-#     qs = build_dataset_search_queryset(query=query, category_id=category_id, order_by=order_by)
-
 
     return Response(DatasetSerializer(qs, many=True).data)
 
