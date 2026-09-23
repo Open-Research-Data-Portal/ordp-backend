@@ -110,7 +110,6 @@ class UserProfile(models.Model):
         blank=True,
         null=True,
     )
-    profile_picture_key = models.CharField(max_length=512, blank=True)
 
     
 
@@ -264,16 +263,6 @@ class UserProfile(models.Model):
             and bool(self.profile_visibility)
             and self.terms_accepted
         )
-    def missing_required_fields(self):
-        required = {
-            "full_name": bool(self.full_name),
-            "affiliation": bool(self.affiliation),
-            "department": bool(self.department_id),
-            "academia": bool(self.academia),
-            "profile_visibility": bool(self.profile_visibility),
-            "terms_accepted": self.terms_accepted,
-        }
-        return [name for name, filled in required.items() if not filled]
 
 class UserRole(models.Model):
     class RoleChoice(models.TextChoices):
