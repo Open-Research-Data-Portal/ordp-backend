@@ -1,4 +1,7 @@
+from datetime import timezone as datetime_timezone
+
 from django.db.models import Q, Sum, F
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from apps.accounts.models import ActivityLog
@@ -127,3 +130,83 @@ def my_contributor_datasets(request):
     ).order_by("-created_at")
 
     return Response(DatasetSerializer(qs, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([CanUploadDatasets])
+def recent_activity(request):
+    my_ids = _my_dataset_ids(request.user)
+    dataset_map = {
+        str(dataset_id): dataset
+        for dataset_id, dataset in Dataset.objects.filter(id__in=my_ids).in_bulk().items()
+    }
+    targets = [f"Dataset:{dataset_id}" for dataset_id in my_ids]
+
+    def user_label(user):
+        if not user:
+            return "Unknown"
+        profile = getattr(user, "profile", None)
+        return getattr(profile, "full_name", None) or user.get_full_name() or user.email or user.username
+
+    def dataset_id_from_target(target_object):
+        prefix = "Dataset:"
+        target = str(target_object or "")
+        return target[len(prefix):] if target.startswith(prefix) else None
+
+    events = []
+
+    logs = (
+        ActivityLog.objects
+        .filter(target_object__in=targets)
+        .exclude(user=request.user)
+        .select_related("user", "user__profile")
+        .order_by("-timestamp")[:30]
+    )
+    for log in logs:
+        dataset_id = dataset_id_from_target(log.target_object)
+        dataset = dataset_map.get(dataset_id) if dataset_id else None
+        events.append({
+            "user": user_label(log.user),
+            "action": log.action,
+            "dataset_id": dataset_id,
+            "dataset_title": dataset.title if dataset else log.target_object,
+            "timestamp": log.timestamp,
+        })
+
+    versions = (
+        DatasetVersion.objects
+        .filter(dataset_id__in=my_ids)
+        .exclude(changed_by=request.user)
+        .select_related("dataset", "changed_by", "changed_by__profile")
+        .order_by("-created_at")[:30]
+    )
+    for version in versions:
+        events.append({
+            "user": user_label(version.changed_by),
+            "action": "modify",
+            "dataset_id": str(version.dataset_id),
+            "dataset_title": version.dataset.title,
+            "timestamp": version.created_at,
+        })
+
+    from apps.sharing.models import DatasetAccessRequest
+    access_requests = (
+        DatasetAccessRequest.objects
+        .filter(dataset_id__in=my_ids)
+        .exclude(requester=request.user)
+        .select_related("dataset", "requester", "requester__profile", "shared_by", "shared_by__profile")
+        .order_by("-created_at")[:30]
+    )
+    for access_request in access_requests:
+        actor = access_request.shared_by or access_request.requester
+        events.append({
+            "user": user_label(actor) if actor else access_request.requester_email,
+            "action": "share" if access_request.shared_by_id else "request",
+            "dataset_id": str(access_request.dataset_id),
+            "dataset_title": access_request.dataset.title,
+            "timestamp": access_request.created_at,
+        })
+
+    fallback_time = timezone.datetime.min.replace(tzinfo=datetime_timezone.utc)
+    events.sort(key=lambda event: event["timestamp"] or fallback_time, reverse=True)
+    return Response(events[:30])

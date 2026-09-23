@@ -1,3 +1,4 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.permissions import BasePermission
 from .models import UserProfile
 
@@ -9,7 +10,10 @@ class HasRole(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
 
-        profile = getattr(request.user, "profile", None)
+        try:
+            profile = getattr(request.user, "profile", None)
+        except ObjectDoesNotExist:
+            return False
 
         if not profile:
             return False
@@ -23,7 +27,11 @@ class CanUploadDatasets(BasePermission):
             self.message = "You must be logged in to upload datasets."
             return False
 
-        profile = getattr(request.user, "profile", None)
+        try:
+            profile = getattr(request.user, "profile", None)
+        except ObjectDoesNotExist:
+            self.message = "No profile is associated with this account."
+            return False
 
         if not profile:
             self.message = "No profile is associated with this account."
