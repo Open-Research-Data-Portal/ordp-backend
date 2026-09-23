@@ -101,12 +101,17 @@ def resolve_archive_request_votes(archive_request: DatasetArchiveRequest):
         archive_request.status = DatasetArchiveRequest.Status.APPROVED
         archive_request.resolved_at = timezone.now()
         archive_request.save(update_fields=["status", "resolved_at"])
+       
 
         dataset = archive_request.dataset
         dataset.is_archived = True
         dataset.archived_at = timezone.now()
-        dataset.save(update_fields=["is_archived", "archived_at"])
-
+        dataset.archived_access_downloads = dataset.access_download_count
+        dataset.archived_modification_downloads = dataset.modification_download_count
+        dataset.save(update_fields=[
+            "is_archived", "archived_at",
+            "archived_access_downloads", "archived_modification_downloads",
+        ])
         notify(
             user=archive_request.requested_by, notification_type=Notification.NotificationType.DATASET_ARCHIVED,
             message=f'"{dataset.title}" has been archived.', dataset=dataset,

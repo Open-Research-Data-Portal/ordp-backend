@@ -178,6 +178,19 @@ class ArchiveVotingTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
 
+    def test_download_counts_are_snapshotted_on_approval(self):
+        Dataset.objects.filter(id=self.dataset.id).update(
+            access_download_count=7, modification_download_count=3,
+        )
+        for reviewer in self.reviewers:
+            self.client.force_authenticate(reviewer)
+            self.client.post(f"/api/admin-panel/archive-requests/{self.request_id}/vote/", {"vote": "approve"})
+
+        self.dataset.refresh_from_db()
+        self.assertTrue(self.dataset.is_archived)
+        self.assertEqual(self.dataset.archived_access_downloads, 7)
+        self.assertEqual(self.dataset.archived_modification_downloads, 3)
+
 # ---------------------------------------------------------------------
 # Unarchive request creation — any authenticated user, not owner-only
 # ---------------------------------------------------------------------
