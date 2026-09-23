@@ -68,10 +68,7 @@ def download_dataset(request, dataset_id):
         user=request.user, action=action, target_object=f"Dataset:{dataset.id}",
         ip_address=request.META.get("REMOTE_ADDR", "unknown"),
     )
-    Dataset.objects.filter(id=dataset.id).update(
-        download_count=django_models.F("download_count") + 1,
-        access_download_count=django_models.F("access_download_count") + 1,
-    )
+    Dataset.objects.filter(id=dataset.id).update(download_count=django_models.F("download_count") + 1)
 
     return Response({"download_url": presigned_download_url(dataset.current_version.file_key)})
 

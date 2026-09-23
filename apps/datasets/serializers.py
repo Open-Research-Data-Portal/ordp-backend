@@ -120,10 +120,6 @@ class DatasetSerializer(serializers.ModelSerializer):
             "thumbnail_url_expires_at",
             "view_count",
             "download_count",
-            "access_download_count",
-            "modification_download_count",
-            "archived_access_downloads",
-            "archived_modification_downloads",
             # Dataset metadata
             "category",
             "description",
