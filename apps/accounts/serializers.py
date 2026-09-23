@@ -42,6 +42,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "id",
             "email",
             "username",
+            "full_name",
             "roles",
         ]
 
