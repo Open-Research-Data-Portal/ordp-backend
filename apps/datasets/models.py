@@ -69,12 +69,7 @@ class Dataset(models.Model):
     view_count = models.PositiveIntegerField(default=0)
     download_count = models.PositiveIntegerField(default=0)
     edit_in_progress_notice = models.BooleanField(default=False)
-    view_count = models.PositiveIntegerField(default=0)
-    download_count = models.PositiveIntegerField(default=0)
-    access_download_count = models.PositiveIntegerField(default=0)
-    modification_download_count = models.PositiveIntegerField(default=0)
-    archived_access_downloads = models.PositiveIntegerField(null=True, blank=True)
-    archived_modification_downloads = models.PositiveIntegerField(null=True, blank=True)
+    
 
     terms_accepted = models.BooleanField(default=False)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)

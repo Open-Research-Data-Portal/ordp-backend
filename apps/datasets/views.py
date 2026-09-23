@@ -1088,9 +1088,6 @@ def content_update_comparison(request, update_id):
         return Response({"detail": "You don't have permission to view this."}, status=403)
 
     current_file = update.dataset.files.latest("uploaded_at")
-    Dataset.objects.filter(id=update.dataset_id).update(
-      modification_download_count=django_models.F("modification_download_count") + 1,
-    )
     return Response({
         "dataset_title": update.dataset.title,
         "submitted_by": update.submitted_by.profile.full_name if update.submitted_by else None,
