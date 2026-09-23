@@ -7,7 +7,7 @@ from rest_framework.response import Response
 
 
 from apps.accounts.models import ActivityLog
-from apps.accounts.permissions import IsReviewerOrAdmin
+from apps.accounts.permissions import IsReviewerOrAdmin, IsReviewerOnly
 from apps.datasets.models import Dataset, Contributor, DatasetInvitation, PermissionLevel
 from apps.datasets.permissions import IsDatasetOwner
 from apps.datasets.services.storage import presigned_download_url
@@ -18,7 +18,10 @@ from apps.notifications.models import Notification
 from .models import UsabilityFormResponse, RestrictedAccessJustification, DatasetAccessRequest, AccessRequestVote, SharePermission
 from .serializers import RequestAccessSerializer, DatasetAccessRequestSerializer
 from apps.accounts.utils import is_institutional_email
-from .services import user_can_freely_download, user_can_access_dataset, resolve_access_request_votes, record_owner_decision, claim_share_access
+from .services import (
+    user_can_freely_download, user_can_access_dataset, user_meets_access_requirements,
+    resolve_access_request_votes, record_owner_decision, claim_share_access,
+)
 
 User = get_user_model()
 
@@ -31,14 +34,20 @@ def download_dataset(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     if dataset.visibility == Dataset.Visibility.PRIVATE and dataset.owner_id != request.user.id:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
+
+    if not user_meets_access_requirements(request.user):
+        return Response(
+            {"detail": "Please complete your profile before downloading datasets."}, status=403,
+        )
+
     profile = getattr(request.user, "profile", None)
-    is_reviewer = profile.has_role("reviewer", "admin")
+    is_admin = bool(profile and profile.has_role("admin"))
+    is_reviewer = bool(profile and profile.has_role("reviewer"))
     is_free_access = user_can_freely_download(request.user, dataset)
-    reviewer_bypass = is_reviewer and dataset.visibility == Dataset.Visibility.PUBLIC
     permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=request.user).first()
     has_active_share = bool(permission and permission.is_active_grant())
 
-    has_permission = is_free_access or reviewer_bypass or has_active_share
+    has_permission = is_free_access or has_active_share
     if not has_permission:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
     if dataset.current_version is None:
@@ -46,10 +55,12 @@ def download_dataset(request, dataset_id):
 
     if dataset.owner_id == request.user.id:
         action = "owner_download"
-    elif is_reviewer:
-        action = "reviewer_download"
+    elif is_admin:
+        action = "admin_download"
     elif Contributor.objects.filter(dataset=dataset, user=request.user).exists():
         action = "contributor_download"
+    elif is_reviewer:
+        action = "reviewer_download"
     else:
         action = "dataset_download"
 
@@ -76,6 +87,10 @@ def request_share_access(request, dataset_id):
     )
 
     if dataset.visibility == Dataset.Visibility.PUBLIC:
+        if not user_meets_access_requirements(request.user):
+            return Response(
+                {"detail": "Please complete your profile before accessing this dataset."}, status=403,
+            )
         SharePermission.objects.get_or_create(dataset=dataset, shared_with_user=request.user,
                                                defaults={"access_type": "download"})
         return Response({"status": "approved", "share_ready": True})
@@ -103,12 +118,6 @@ def request_share_access(request, dataset_id):
     requested_duration_days=serializer.validated_data.get("requested_duration_days"),
 )
 
-    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
-        notify(
-            user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
-            message=f'{request.user.profile.full_name} requested sharing access to "{dataset.title}".',
-            dataset=dataset, link_path=f"/admin-panel/access-requests/{access_request.id}",
-        )
     notify(
         user=dataset.owner, notification_type=Notification.NotificationType.ACCESS_REQUEST,
         message=f'{request.user.profile.full_name} requested sharing access to your dataset "{dataset.title}". Your approval is required.',
@@ -122,7 +131,9 @@ def request_share_access(request, dataset_id):
 def share_with_user(request, dataset_id):
     """Distinct from request_share_access: the ACTING user must already have
     access, and is granting access to someone ELSE by email. The recipient
-    doesn't need an existing account — see claim_share_access."""
+    doesn't need an existing account — see claim_share_access. Either way,
+    the recipient always has to personally claim it (own usability form
+    included) before a SharePermission is created for them."""
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     if not user_can_access_dataset(request.user, dataset):
         return Response({"detail": "You don't have access to this dataset to share it."}, status=403)
@@ -157,14 +168,7 @@ def share_with_user(request, dataset_id):
         )
         from .services import _approve
         _approve(access_request)
-        return Response({"status": "approved", "share_ready": bool(recipient)})
-
-    # Restricted
-    if recipient and not recipient.profile.is_profile_complete():
-        return Response(
-            {"detail": f"{recipient.profile.full_name} needs to complete their profile before receiving access to a restricted dataset."},
-            status=400,
-        )
+        return Response({"status": "approved", "claim_required": True})
 
     justification_text = (serializer.validated_data.get("justification") or "").strip()
     if not justification_text:
@@ -184,34 +188,37 @@ def share_with_user(request, dataset_id):
             else DatasetAccessRequest.OwnerDecision.PENDING
         ),
     )
-    resolve_access_request_votes(access_request)
 
-    for reviewer in User.objects.filter(profile__roles__role__in=["reviewer", "admin"]).distinct():
-        notify(
-            user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
-            message=f'{request.user.profile.full_name} requested sharing "{dataset.title}" with {recipient_email}.',
-            dataset=dataset, link_path=f"/admin-panel/access-requests/{access_request.id}",
-        )
-    if dataset.owner_id != request.user.id:
+    if dataset.owner_id == request.user.id:
+        for reviewer in User.objects.filter(profile__roles__role="reviewer").distinct():
+            notify(
+                user=reviewer, notification_type=Notification.NotificationType.ACCESS_REQUEST,
+                message=f'{request.user.profile.full_name} wants to share "{dataset.title}" with {recipient_email}.',
+                dataset=dataset, link_path=f"/admin-panel/access-requests/{access_request.id}",
+            )
+        resolve_access_request_votes(access_request)
+    else:
         notify(
             user=dataset.owner, notification_type=Notification.NotificationType.ACCESS_REQUEST,
             message=f'{request.user.profile.full_name} wants to share your dataset "{dataset.title}" with {recipient_email}. Your approval is required.',
             dataset=dataset, link_path=f"/datasets/{dataset.id}/access-requests/{access_request.id}",
         )
+
     return Response({"status": "pending", "request_id": access_request.id})
 
 
 @api_view(["GET"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def access_request_queue(request):
-    qs = DatasetAccessRequest.objects.filter(status=DatasetAccessRequest.Status.PENDING).select_related(
-        "dataset", "requester__profile", "restricted_justification"
-    )
+    qs = DatasetAccessRequest.objects.filter(
+        status=DatasetAccessRequest.Status.PENDING,
+        owner_decision=DatasetAccessRequest.OwnerDecision.APPROVED,
+    ).select_related("dataset", "requester__profile", "restricted_justification")
     return Response(DatasetAccessRequestSerializer(qs, many=True).data)
 
 
 @api_view(["POST"])
-@permission_classes([IsReviewerOrAdmin])
+@permission_classes([IsReviewerOnly])
 def vote_on_access_request(request, request_id):
     access_request = get_object_or_404(DatasetAccessRequest, id=request_id)
     if access_request.status != DatasetAccessRequest.Status.PENDING:
@@ -258,7 +265,7 @@ def invite_coauthor(request, dataset_id):
     if not email:
         return Response({"detail": "email is required."}, status=400)
 
-    permission = (request.data.get("permission") or PermissionLevel.EDIT).strip().lower()
+    permission = (request.data.get("permission") or PermissionLevel.VIEW).strip().lower()
     if permission not in PermissionLevel.values:
         return Response({"detail": "permission must be 'edit' or 'view'."}, status=400)
 
@@ -307,7 +314,7 @@ def revoke_invitation(request, dataset_id, invitation_id):
 @permission_classes([IsAuthenticated])
 def claim_access(request, token):
     try:
-        dataset = claim_share_access(token, request.user)
+        dataset = claim_share_access(token, request.user, purpose=request.data.get("purpose"))
     except ValueError as exc:
         return Response({"detail": str(exc)}, status=400)
     return Response({"status": "claimed", "dataset_id": dataset.id})

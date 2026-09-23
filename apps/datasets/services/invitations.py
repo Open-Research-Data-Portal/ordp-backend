@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from ..models import Contributor, DatasetInvitation, PermissionLevel
+from ..models import Contributor, Dataset, DatasetInvitation, PermissionLevel
 from apps.sharing.models import SharePermission
 
 User = get_user_model()
@@ -18,8 +18,26 @@ def create_invitation(dataset, invited_by, email, role, permission=PermissionLev
         permission=permission,
         invited_by=invited_by, expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
     )
-    _send_invitation_email(invitation)
+    # Only send it right away if the dataset is already live. Otherwise it
+    # sits un-notified until dispatch_pending_invitations() fires — see the
+    # call to it in apps/admin_panel/views.py once a dataset gets published.
+    if dataset.status == Dataset.Status.PUBLISHED:
+        _send_invitation_email(invitation)
+        invitation.notified_at = timezone.now()
+        invitation.save(update_fields=["notified_at"])
     return invitation
+
+
+def dispatch_pending_invitations(dataset):
+    """Send every invitation for this dataset that was created while it was
+    still in review and hasn't gone out yet."""
+    pending = dataset.invitations.filter(
+        status=DatasetInvitation.Status.PENDING, notified_at__isnull=True,
+    )
+    for invitation in pending:
+        _send_invitation_email(invitation)
+        invitation.notified_at = timezone.now()
+        invitation.save(update_fields=["notified_at"])
 
 
 def _send_invitation_email(invitation):
@@ -43,6 +61,8 @@ def accept_invitation(token, user):
     except DatasetInvitation.DoesNotExist:
         raise ValueError("This invitation link is invalid.")
 
+    if invitation.notified_at is None:
+        raise ValueError("This invitation hasn't been activated yet.")
     if invitation.status == DatasetInvitation.Status.ACCEPTED:
         raise ValueError("This invitation has already been accepted.")
     if invitation.status == DatasetInvitation.Status.REVOKED:
@@ -62,6 +82,7 @@ def accept_invitation(token, user):
         dataset=invitation.dataset, user=user,
         defaults={
             "name": user.profile.full_name, "invited_email": "", "contributor_type": contributor_type,
+            "permission": invitation.permission,
             "order": invitation.dataset.contributors.count() + 1,
         },
     )

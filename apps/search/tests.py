@@ -7,6 +7,8 @@ from apps.search.services import _dataset_supports_archive_columns
 
 
 class DatasetArchiveSchemaCompatibilityTests(SimpleTestCase):
+    databases = {"default"}
+
     @patch("apps.search.services.connection.introspection.get_table_description")
     def test_dataset_supports_archive_columns_detected_when_present(
         self,

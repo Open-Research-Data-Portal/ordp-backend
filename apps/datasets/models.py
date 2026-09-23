@@ -252,6 +252,12 @@ class Bookmark(models.Model):
 
 class RevisionRequest(models.Model):
     class Status(models.TextChoices):
+        PENDING = "pending"                    # waiting on owner decision
+        AWAITING_COMMITTEE = "awaiting_committee"  # restricted only: owner approved, waiting on reviewers
+        APPROVED = "approved"                  # final: requester may now propose a revision
+        REJECTED = "rejected"                  # final: stopped, by owner or committee
+
+    class OwnerDecision(models.TextChoices):
         PENDING = "pending"
         APPROVED = "approved"
         REJECTED = "rejected"
@@ -260,11 +266,18 @@ class RevisionRequest(models.Model):
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE, related_name="revision_requests")
     requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="revision_requests")
     reason = models.TextField()
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    additional_justification = models.TextField(
+        blank=True,
+        help_text="Extra form required for restricted datasets, on top of `reason`.",
+    )
+    owner_decision = models.CharField(max_length=16, choices=OwnerDecision.choices, default=OwnerDecision.PENDING)
+    owner_decided_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
     token = models.CharField(max_length=64, unique=True, default=generate_invitation_token)
     used = models.BooleanField(default=False)
     resolved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
 
 
 class RevisionRequestVote(models.Model):

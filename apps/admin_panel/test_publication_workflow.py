@@ -19,7 +19,7 @@ def make_submittable_dataset(owner, title='Workflow DS'):
         status=Category.Status.APPROVED,
     )
 
-    Metadata.objects.create(
+    metadata = Metadata.objects.create(
         dataset=dataset,
         description='test',
         category=category,
@@ -30,7 +30,7 @@ def make_submittable_dataset(owner, title='Workflow DS'):
         status=Language.Status.APPROVED,
     )
 
-    dataset.languages.add(language)
+    metadata.languages.add(language)
 
     return dataset
 

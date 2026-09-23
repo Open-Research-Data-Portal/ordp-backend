@@ -23,6 +23,7 @@ class StorageClientTests(SimpleTestCase):
         mock_boto_client,
         mock_config,
     ):
+        storage_client.cache_clear()
         mock_client = MagicMock()
         mock_boto_client.return_value = mock_client
 

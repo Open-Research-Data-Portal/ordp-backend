@@ -5,7 +5,7 @@ import math
 import hashlib
 from django.http import Http404
 
-from django.utils import timezone
+
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
 from .models import Bookmark, Contributor, DatasetWatcher, UploadSession
@@ -14,15 +14,14 @@ from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from .services.diffing import compute_diff
-from .serializers import DatasetRevisionSerializer, PrepareUploadSerializer
+from .serializers import PrepareUploadSerializer
 from django.db import models as django_models
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import MultiPartParser
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from django.shortcuts import get_object_or_404
 from .services.assignment import assign_reviewers
 
 
@@ -32,13 +31,11 @@ from .services.storage import (
     upload_fileobj,
     download_to_file,
 )
-import uuid as uuid_lib
 from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
-from .services.revisions import route_change
-from .models import DatasetRevision, PendingContentUpdate
+from .models import PendingContentUpdate
+from .services.revisions import route_change, request_revision_permission as create_request
+from .models import Dataset
 
-from .models import Dataset, DatasetVersion
-from .permissions import IsDatasetOwner
 
 from .serializers import (
     DatasetSerializer,
@@ -723,8 +720,6 @@ def accept_terms_and_submit(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_datasets(request):
-    from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering
-
     qs = (
         Dataset.objects
         .filter(owner=request.user, is_active=True)
@@ -780,7 +775,7 @@ def my_datasets(request):
     ).data)
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def dataset_detail(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
 
@@ -940,7 +935,7 @@ def update_dataset(request, dataset_id):
                     status=DatasetCharacteristic.Status.APPROVED,
                 )
             )
-            changed_fields.append("characteristics")
+
             changed_fields.append("characteristics")
 
     if changed_fields:
@@ -974,15 +969,31 @@ def update_dataset(request, dataset_id):
             else PendingContentUpdate.Source.CONTRIBUTOR_EDIT
         )
         result = route_change(
-        dataset=dataset, source=PendingContentUpdate.Source.REVISION, submitted_by=request.user,
-        new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
-        proposed_metadata=_build_proposed_metadata(dataset, request.data),
-        ip_address=get_client_ip(request),
-    )
+            dataset=dataset, source=source, submitted_by=request.user,
+            new_file_key=new_file_key, diff_percentage=diff_pct, change_summary=summary,
+            proposed_metadata=_build_proposed_metadata(dataset, request.data),
+            ip_address=get_client_ip(request),
+        )
         new_dataset_file.delete()
         return Response(result, status=202 if result["status"] == "pending_review" else 200)
 
     return Response({"status": "updated", "fields_changed": changed_fields}, status=200)
+
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsDatasetOwner])
+def decide_revision_request(request, request_id):
+    from .models import RevisionRequest
+    from .services.revisions import owner_decide_revision_request
+    revision_request = get_object_or_404(RevisionRequest, id=request_id)
+    decision = request.data.get("decision")
+    if decision not in ("approve", "reject"):
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+
+    result = owner_decide_revision_request(revision_request, approve=(decision == "approve"))
+    return Response(result, status=200)
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -990,12 +1001,23 @@ def request_revision_permission(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     if dataset.is_owned_by(request.user) or Contributor.objects.filter(dataset=dataset, user=request.user).exists():
         return Response({"detail": "You already have edit access to this dataset."}, status=400)
+
     reason = (request.data.get("reason") or "").strip()
     if not reason:
         return Response({"detail": "Please describe why you want to propose a change."}, status=400)
-    from .services.revisions import request_revision_permission as create_request
-    req = create_request(dataset, request.user, reason)
+
+    additional_justification = ""
+    if dataset.visibility == Dataset.Visibility.RESTRICTED:
+        additional_justification = (request.data.get("additional_justification") or "").strip()
+        if not additional_justification:
+            return Response(
+                {"detail": "Restricted datasets require the additional justification form."}, status=400,
+            )
+
+
+    req = create_request(dataset, request.user, reason, additional_justification)
     return Response({"status": "pending", "request_id": req.id}, status=201)
+
 
 
 @api_view(["POST"])
@@ -1082,27 +1104,6 @@ def content_update_comparison(request, update_id):
     })
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated, IsDatasetOwner])
-def decide_revision(request, revision_id):
-    revision = get_object_or_404(DatasetRevision, id=revision_id)
-    decision = request.data.get("decision")
-
-    if decision == "reject":
-        reason = (request.data.get("reason") or "").strip()
-        if not reason:
-            return Response({"detail": "A reason is required to reject a revision."}, status=400)
-        revision.status = DatasetRevision.Status.REJECTED
-        revision.save()
-        notify(
-            user=revision.submitted_by, notification_type=Notification.NotificationType.REVISION_REJECTED,
-            message=f'Your proposed revision to "{revision.dataset.title}" was declined: {reason}',
-            dataset=revision.dataset, reason=reason,
-        )
-        return Response({"status": "rejected"})
-
-    result = apply_revision(revision)
-    return Response(result, status=200)
 
 
 @api_view(["POST"])
