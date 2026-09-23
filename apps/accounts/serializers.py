@@ -25,7 +25,7 @@ User = get_user_model()
 class ProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(
         source="profile.full_name",
-        read_only=True,
+        read_only=False,
     )
     roles = serializers.SerializerMethodField()
 
@@ -42,7 +42,6 @@ class ProfileSerializer(serializers.ModelSerializer):
             "id",
             "email",
             "username",
-            "full_name",
             "roles",
         ]
 
@@ -50,7 +49,12 @@ class ProfileSerializer(serializers.ModelSerializer):
         return list(
             obj.profile.roles.values_list("role", flat=True)
         )
-
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop("profile", {})
+        if "full_name" in profile_data:
+            instance.profile.full_name = profile_data["full_name"]
+            instance.profile.save(update_fields=["full_name"])
+        return instance
 
 class ExtendedProfileSerializer(serializers.ModelSerializer):
 
