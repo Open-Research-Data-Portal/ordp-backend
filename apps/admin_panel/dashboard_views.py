@@ -240,7 +240,6 @@ def reviewer_guidelines(request):
         "deletion_committee_quorum": DELETION_QUORUM,
     })
 
-
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
 def admin_create_user(request):
@@ -249,39 +248,30 @@ def admin_create_user(request):
     role = request.data.get("role", UserRole.RoleChoice.PUBLIC)
 
     if not email or not full_name:
-        return Response(
-            {"detail": "email and full_name are required."},
-            status=400,
-        )
-
-
-    allowed_domains = ("@aastu.edu.et", "@aastustudent.edu.et")
-    if not email.endswith(allowed_domains):
-        return Response(
-            {"detail": "Only AASTU institutional emails are allowed."},
-            status=400,
-        )
-
-    if User.objects.filter(email=email).exists():
-        return Response(
-            {"detail": "A user with this email already exists."},
-            status=400,
-        )
+        return Response({"detail": "email and full_name are required."}, status=400)
 
     if role not in UserRole.RoleChoice.values:
-        return Response(
-            {"detail": "Invalid role."},
-            status=400,
+        return Response({"detail": "Invalid role."}, status=400)
+
+    existing = User.objects.filter(email=email).select_related("profile").first()
+    if existing:
+        is_first_role = not existing.profile.roles.exists()
+        user_role, created = UserRole.objects.get_or_create(
+            profile=existing.profile, role=role,
+            defaults={"is_primary": is_first_role},
         )
+        if role == UserRole.RoleChoice.REVIEWER:
+            from apps.datasets.services.retry_assignment import retry_pending_assignments
+            retry_pending_assignments()
+        return Response({
+            "status": "role_granted" if created else "role_already_present",
+            "user_id": existing.id,
+            "roles": list(existing.profile.roles.values_list("role", flat=True)),
+            "primary_role": existing.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
+        }, status=200)
 
     username = generate_username(full_name)
-
-    user = User.objects.create(
-        username=username,
-        email=email,
-        is_active=True,
-    )
-
+    user = User.objects.create(username=username, email=email, is_active=True)
     user.set_unusable_password()
     user.save()
 
@@ -289,46 +279,86 @@ def admin_create_user(request):
     profile.full_name = full_name
     profile.save(update_fields=["full_name"])
 
-    UserRole.objects.get_or_create(
-        profile=profile,
-        role=role,
-    )
+    UserRole.objects.get_or_create(profile=profile, role=role, defaults={"is_primary": True})
 
     uid = urlsafe_base64_encode(force_bytes(user.pk))
+    reset_token = PasswordResetToken.objects.create(user=user, expires_at=timezone.now() + timedelta(hours=24))
+    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token.token}"
+    send_mail(
+        message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
+        from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
+    )
+    return Response({"status": "created", "user_id": user.id}, status=201)
 
-    reset_token = PasswordResetToken.objects.create(
-        user=user,
-        expires_at=timezone.now() + timedelta(hours=24),
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_grant_role(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    role = request.data.get("role")
+
+    if role not in UserRole.RoleChoice.values:
+        return Response({"detail": "Invalid role."}, status=400)
+
+    is_first_role = not target_user.profile.roles.exists()
+    UserRole.objects.get_or_create(
+        profile=target_user.profile, role=role,
+        defaults={"is_primary": is_first_role},
     )
 
-    reset_link = (
-        f"{settings.FRONTEND_URL}/reset-password"
-        f"?token={reset_token.token}"
-    )
+    if role == UserRole.RoleChoice.REVIEWER:
+        from apps.datasets.services.retry_assignment import retry_pending_assignments
+        retry_pending_assignments()
+
+    return Response({
+        "status": "granted",
+        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
+        "primary_role": target_user.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
+    })
 
 
-    email_sent = True
-    try:
-        send_mail(
-            subject="Your ORDP account has been created",
-            message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-        )
-    except Exception:
-        email_sent = False
-        logging.getLogger(__name__).exception(
-            "Failed to send account-creation email to %s", email
-        )
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_revoke_role(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)  # type: ignore
+    role = request.data.get("role")
 
-    return Response(
-        {
-            "status": "created",
-            "user_id": user.id,
-            "email_sent": email_sent,
-        },
-        status=201,
-    )
+    revoked_qs = UserRole.objects.filter(profile=target_user.profile, role=role)
+    was_primary = revoked_qs.filter(is_primary=True).exists()
+    revoked_qs.delete()
+
+    if was_primary:
+        next_primary = target_user.profile.roles.order_by("granted_at").first()
+        if next_primary:
+            next_primary.is_primary = True
+            next_primary.save(update_fields=["is_primary"])
+
+    return Response({
+        "status": "revoked",
+        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
+        "primary_role": target_user.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_set_primary_role(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    role = request.data.get("role")
+
+    user_role = UserRole.objects.filter(profile=target_user.profile, role=role).first()
+    if not user_role:
+        return Response({"detail": "This user does not have that role."}, status=400)
+
+    UserRole.objects.filter(profile=target_user.profile).update(is_primary=False)
+    user_role.is_primary = True
+    user_role.save(update_fields=["is_primary"])
+
+    return Response({
+        "status": "primary_role_set",
+        "primary_role": role,
+        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
+    })
 
 
 @api_view(["POST"])
@@ -424,41 +454,6 @@ def _daily_counts(queryset, date_field, days=30):
     ]
 
 
-
-@api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def admin_grant_role(request, user_id):
-    target_user = get_object_or_404(User, id=user_id)
-    role = request.data.get("role")
-
-    if role not in UserRole.RoleChoice.values:
-        return Response({"detail": "Invalid role."}, status=400)
-
-    UserRole.objects.get_or_create(
-        profile=target_user.profile,
-        role=role,
-    )
-
-    if role == UserRole.RoleChoice.REVIEWER:
-        from apps.datasets.services.retry_assignment import retry_pending_assignments
-        retry_pending_assignments()
-
-    return Response({
-        "status": "granted",
-        "roles": list(
-            target_user.profile.roles.values_list("role", flat=True)
-        ),
-    })
-
-
-@api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def admin_revoke_role(request, user_id):
-    target_user = get_object_or_404(User, id=user_id) # type: ignore
-    role = request.data.get("role")
-    from apps.accounts.models import UserRole
-    UserRole.objects.filter(profile=target_user.profile, role=role).delete()
-    return Response({"status": "revoked", "roles": list(target_user.profile.roles.values_list("role", flat=True))})
 
 
 @api_view(["POST"])
