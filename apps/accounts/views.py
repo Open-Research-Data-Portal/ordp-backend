@@ -1,4 +1,6 @@
 from datetime import timedelta
+
+from httpcore2 import request
 from .serializers import ExtendedProfileSerializer, PublicProfileSerializer
 from django.contrib.auth import get_user_model
 from django.db.models import Q
@@ -16,8 +18,10 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from django.db import transaction
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes,parser_classes
+from rest_framework.parsers import MultiPartParser
 from apps.datasets.models import Contributor
+from apps.datasets.services.storage import upload_fileobj, presigned_download_url
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from django.utils import timezone
@@ -205,11 +209,13 @@ class CompleteProfileView(APIView):
     def get(self, request):
         data = ExtendedProfileSerializer(request.user.profile).data
         roles = list(
-    request.user.profile.roles.values_list("role", flat=True)
-)
+            request.user.profile.roles.values_list("role", flat=True)
+        )
 
         data["roles"] = roles
         data["role"] = roles[0] if roles else None
+        data["is_complete"] = request.user.profile.is_profile_complete()
+        data["missing_fields"] = request.user.profile.missing_required_fields()
         return Response(data)
 
     def patch(self, request):
@@ -261,8 +267,12 @@ class CompleteProfileView(APIView):
                 ip_address=get_client_ip(request),
             )
 
+        response_data = ExtendedProfileSerializer(profile).data
+        response_data["is_complete"] = profile_is_complete
+        response_data["missing_fields"] = profile.missing_required_fields()
+
         return Response(
-            ExtendedProfileSerializer(profile).data,
+            response_data,
             status=status.HTTP_200_OK,
         )
 
@@ -815,3 +825,26 @@ class UpdateDatasetUploadPermissionView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser])
+def upload_profile_picture(request):
+    image = request.FILES.get("profile_picture")
+    if image is None:
+        return Response({"detail": "profile_picture file is required."}, status=400)
+
+    key = f"profile_pictures/{request.user.id}/{image.name}"
+    upload_fileobj(image, key, getattr(image, "content_type", None))
+
+    request.user.profile.profile_picture_key = key
+    request.user.profile.save(update_fields=["profile_picture_key"])
+
+    log_activity(
+        user=request.user, action="profile_picture_updated",
+        target_object=str(request.user.id), ip_address=get_client_ip(request),
+    )
+
+    return Response({"status": "updated", "url": presigned_download_url(key)}, status=200)
