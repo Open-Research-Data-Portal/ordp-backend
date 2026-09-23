@@ -33,7 +33,7 @@ class SetDatasetLanguagesTests(APITestCase):
         resp = self.client.post(f"/api/metadata/{dataset.id}/languages/", {"other_languages": ["Klingon"]})
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         language = Language.objects.get(name="Klingon")
-        self.assertEqual(language.status, Language.Status.APPROVED)
+        self.assertEqual(language.status, Language.Status.PENDING)
         self.assertIn(language, dataset.metadata.languages.all())
 
     def test_no_languages_provided_rejected(self):

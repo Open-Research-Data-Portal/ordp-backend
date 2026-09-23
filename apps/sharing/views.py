@@ -26,6 +26,34 @@ from .services import (
 User = get_user_model()
 
 
+def _download_action_for(user, dataset, is_reviewer=False):
+    if dataset.owner_id == user.id:
+        return "owner_download"
+    profile = getattr(user, "profile", None)
+    if profile and profile.has_role("admin"):
+        return "admin_download"
+    if is_reviewer:
+        return "reviewer_download"
+    if Contributor.objects.filter(dataset=dataset, user=user).exists():
+        return "contributor_download"
+    return "dataset_download"
+
+
+def _download_url_response(request, dataset, is_reviewer=False):
+    if dataset.current_version is None:
+        return Response({"detail": "This dataset has no published file yet."}, status=404)
+
+    ActivityLog.objects.create(
+        user=request.user,
+        action=_download_action_for(request.user, dataset, is_reviewer=is_reviewer),
+        target_object=f"Dataset:{dataset.id}",
+        ip_address=request.META.get("REMOTE_ADDR", "unknown"),
+    )
+    Dataset.objects.filter(id=dataset.id).update(download_count=django_models.F("download_count") + 1)
+
+    return Response({"download_url": presigned_download_url(dataset.current_version.file_key)})
+
+
 
 
 @api_view(["GET"])
@@ -50,27 +78,8 @@ def download_dataset(request, dataset_id):
     has_permission = is_free_access or has_active_share
     if not has_permission:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
-    if dataset.current_version is None:
-        return Response({"detail": "This dataset has no published file yet."}, status=404)
 
-    if dataset.owner_id == request.user.id:
-        action = "owner_download"
-    elif is_admin:
-        action = "admin_download"
-    elif Contributor.objects.filter(dataset=dataset, user=request.user).exists():
-        action = "contributor_download"
-    elif is_reviewer:
-        action = "reviewer_download"
-    else:
-        action = "dataset_download"
-
-    ActivityLog.objects.create(
-        user=request.user, action=action, target_object=f"Dataset:{dataset.id}",
-        ip_address=request.META.get("REMOTE_ADDR", "unknown"),
-    )
-    Dataset.objects.filter(id=dataset.id).update(download_count=django_models.F("download_count") + 1)
-
-    return Response({"download_url": presigned_download_url(dataset.current_version.file_key)})
+    return _download_url_response(request, dataset, is_reviewer=is_reviewer)
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -93,7 +102,12 @@ def request_share_access(request, dataset_id):
             )
         SharePermission.objects.get_or_create(dataset=dataset, shared_with_user=request.user,
                                                defaults={"access_type": "download"})
-        return Response({"status": "approved", "share_ready": True})
+        response = _download_url_response(request, dataset)
+        if response.status_code != 200:
+            return response
+        response.data["status"] = "approved"
+        response.data["share_ready"] = True
+        return response
 
     if not request.user.profile.is_profile_complete():
         return Response(
@@ -272,7 +286,18 @@ def invite_coauthor(request, dataset_id):
     invitation = create_invitation(
         dataset, request.user, email, DatasetInvitation.Role.CO_AUTHOR, permission,
     )
-    return Response({"status": "invited", "invitation_id": invitation.id}, status=201)
+    existing_user = User.objects.filter(email__iexact=email).select_related("profile").first()
+    return Response({
+        "status": "invited",
+        "invitation_id": invitation.id,
+        "permission": invitation.permission,
+        "invited_email": invitation.invited_email,
+        "matched_user": {
+            "id": existing_user.id,
+            "email": existing_user.email,
+            "full_name": existing_user.profile.full_name if hasattr(existing_user, "profile") else "",
+        } if existing_user else None,
+    }, status=201)
 
 
 

@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
-from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly, IsReviewerOnly 
+from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly, IsReviewerOnly
 from apps.datasets.models import Dataset, PendingContentUpdate
 from apps.datasets.serializers import PendingContentUpdateSerializer
 from apps.metadata.models import FallbackThumbnail

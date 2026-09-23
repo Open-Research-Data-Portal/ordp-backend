@@ -8,6 +8,10 @@ def make_college(college_name="Test College"):
     return College.objects.create(name=college_name)
 
 
+def make_college_and_department(college_name="Test College", department_name="Test Department"):
+    return make_college(college_name), None
+
+
 def make_user(username, email, role="researcher", college=None):
     user = User.objects.create_user(
         username=username,

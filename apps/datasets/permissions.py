@@ -1,6 +1,5 @@
 from rest_framework.permissions import BasePermission
-from .models import Dataset, Contributor
-from .models import Dataset, PendingContentUpdate, RevisionRequest
+from .models import Contributor, Dataset, PendingContentUpdate, RevisionRequest
 
 
 class IsDatasetOwner(BasePermission):
@@ -54,9 +53,7 @@ class IsDatasetOwnerOrContributor(BasePermission):
         if Dataset.objects.filter(id=dataset_id, owner=request.user).exists():
             return True
 
-        contributor = Contributor.objects.filter(
-            dataset_id=dataset_id, user=request.user
-        ).first()
+        contributor = Contributor.objects.filter(dataset_id=dataset_id, user=request.user).first()
 
         if contributor and contributor.can_edit():
             return True

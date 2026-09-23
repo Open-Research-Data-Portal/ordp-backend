@@ -3,7 +3,7 @@ from rest_framework import status
 
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset
-from .models import ModerationDecision
+from .models import DatasetReviewerAssignment, ModerationDecision
 from apps.datasets.factories import make_user as _mu
 from apps.admin_panel.models import DatasetArchiveRequest, ArchiveRequestVote
 
@@ -18,12 +18,29 @@ class ReviewerOverviewTests(APITestCase):
         checker = make_user("rowchecker", "rowchecker@aastu.edu.et", role="reviewer")
         other_checker = make_user("rowother", "rowother@aastu.edu.et", role="reviewer")
 
-        make_dataset(owner, "Assigned To Me", assigned_reviewer=checker)
-        make_dataset(owner, "Assigned To Other", assigned_reviewer=other_checker)
+        assigned_to_me = make_dataset(owner, "Assigned To Me")
+        assigned_to_other = make_dataset(owner, "Assigned To Other")
         make_dataset(owner, "Unassigned")
+        DatasetReviewerAssignment.objects.create(dataset=assigned_to_me, reviewer=checker)
+        DatasetReviewerAssignment.objects.create(dataset=assigned_to_other, reviewer=other_checker)
 
         self.client.force_authenticate(checker)
         resp = self.client.get("/api/admin-panel/dashboard/reviewer/overview/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["assigned_datasets_pending"], 1)
+
+    def test_assigned_pending_excludes_dataset_already_reviewed_by_me(self):
+        owner = make_user("rowdoneowner", "rowdoneowner@aastu.edu.et")
+        checker = make_user("rowdonechecker", "rowdonechecker@aastu.edu.et", role="reviewer")
+        pending = make_dataset(owner, "Still Pending")
+        reviewed = make_dataset(owner, "Already Reviewed")
+        DatasetReviewerAssignment.objects.create(dataset=pending, reviewer=checker)
+        DatasetReviewerAssignment.objects.create(dataset=reviewed, reviewer=checker)
+        ModerationDecision.objects.create(dataset=reviewed, reviewer=checker, decision="approved")
+
+        self.client.force_authenticate(checker)
+        resp = self.client.get("/api/admin-panel/dashboard/reviewer/overview/")
+
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data["assigned_datasets_pending"], 1)
 
@@ -138,6 +155,26 @@ class ReviewerMetricsTests(APITestCase):
         self.assertEqual(resp.data["total_reviewed"], 2)
         self.assertEqual(resp.data["total_approved"], 1)
         self.assertEqual(resp.data["total_rejected"], 1)
+        self.assertEqual(resp.data["approved"], 1)
+        self.assertEqual(resp.data["rejected"], 1)
+        self.assertEqual(resp.data["reviews_last_30_days"], 2)
+
+    def test_metrics_include_assigned_pending_from_assignment_table(self):
+        owner = make_user("rmpowner", "rmpowner@aastu.edu.et")
+        checker = make_user("rmpchecker", "rmpchecker@aastu.edu.et", role="reviewer")
+        pending = make_dataset(owner, "Pending Assignment")
+        reviewed = make_dataset(owner, "Reviewed Assignment")
+        DatasetReviewerAssignment.objects.create(dataset=pending, reviewer=checker)
+        DatasetReviewerAssignment.objects.create(dataset=reviewed, reviewer=checker)
+        ModerationDecision.objects.create(dataset=reviewed, reviewer=checker, decision="changes_requested", reason="fix metadata")
+
+        self.client.force_authenticate(checker)
+        resp = self.client.get("/api/admin-panel/dashboard/reviewer/metrics/")
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["assigned_pending"], 1)
+        self.assertEqual(resp.data["total_changes_requested"], 1)
+        self.assertEqual(resp.data["changes_requested"], 1)
 
 
 class ReviewerGuidelinesTests(APITestCase):

@@ -7,7 +7,14 @@ from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from apps.datasets.models import Dataset, PendingContentUpdate, PendingContentUpdateVote
 from apps.sharing.models import DatasetAccessRequest, AccessRequestVote
-from .models import ModerationDecision, DatasetDeletionRequest, DeletionRequestVote,DatasetArchiveRequest, ArchiveRequestVote, DatasetUnarchiveRequest
+from .models import (
+    ModerationDecision,
+    DatasetDeletionRequest,
+    DeletionRequestVote,
+    DatasetArchiveRequest,
+    ArchiveRequestVote,
+    DatasetUnarchiveRequest,
+)
 from apps.datasets.models import DatasetFile
 import csv
 import logging
@@ -163,11 +170,29 @@ def reviewer_overview(request):
     whole platform, so the number is actually actionable rather than overwhelming."""
     user = request.user
 
-    assigned_pending = Dataset.objects.filter(
-        status=Dataset.Status.PENDING, is_active=True, assigned_reviewer=user
-    ).count()
+    assigned_pending = (
+        Dataset.objects
+        .filter(
+            Q(reviewer_assignments__reviewer=user) | Q(assigned_reviewer=user),
+            status=Dataset.Status.PENDING,
+            is_active=True,
+        )
+        .exclude(moderation_decisions__reviewer=user)
+        .distinct()
+        .count()
+    )
 
-    content_updates_pending = PendingContentUpdate.objects.filter(status="pending").count()
+    from apps.datasets.models import PendingContentUpdateVote, RevisionRequest, RevisionRequestVote
+
+    voted_update_ids = PendingContentUpdateVote.objects.filter(reviewer=user).values_list("update_id", flat=True)
+    content_updates_pending = PendingContentUpdate.objects.filter(
+        status=PendingContentUpdate.Status.PENDING
+    ).exclude(id__in=voted_update_ids).count()
+
+    voted_revision_ids = RevisionRequestVote.objects.filter(reviewer=user).values_list("revision_request_id", flat=True)
+    revision_requests_pending = RevisionRequest.objects.filter(
+        status=RevisionRequest.Status.PENDING
+    ).exclude(id__in=voted_revision_ids).count()
 
     voted_access_ids = AccessRequestVote.objects.filter(reviewer=user).values_list("access_request_id", flat=True)
     access_requests_pending = DatasetAccessRequest.objects.filter(
@@ -193,6 +218,7 @@ def reviewer_overview(request):
     return Response({
         "assigned_datasets_pending": assigned_pending,
         "content_updates_pending": content_updates_pending,
+        "revision_requests_awaiting_my_vote": revision_requests_pending,
         "access_requests_awaiting_my_vote": access_requests_pending,
         "deletion_requests_awaiting_my_vote": deletion_requests_pending,
         "archive_requests_awaiting_my_vote": archive_requests_pending,      
@@ -208,12 +234,36 @@ def reviewer_metrics(request):
     user = request.user
     decisions = ModerationDecision.objects.filter(reviewer=user)
     thirty_days_ago = timezone.now() - timedelta(days=30)
+    assigned_pending = (
+        Dataset.objects
+        .filter(
+            Q(reviewer_assignments__reviewer=user) | Q(assigned_reviewer=user),
+            status=Dataset.Status.PENDING,
+            is_active=True,
+        )
+        .exclude(moderation_decisions__reviewer=user)
+        .distinct()
+        .count()
+    )
+    approved = decisions.filter(decision=ModerationDecision.Decision.APPROVED).count()
+    rejected = decisions.filter(decision=ModerationDecision.Decision.REJECTED).count()
+    changes_requested = decisions.filter(decision=ModerationDecision.Decision.CHANGES_REQUESTED).count()
+    total_reviewed = decisions.count()
+    reviewed_last_30_days = decisions.filter(decided_at__gte=thirty_days_ago).count()
 
     return Response({
-        "total_reviewed": decisions.count(),
-        "total_approved": decisions.filter(decision=ModerationDecision.Decision.APPROVED).count(),
-        "total_rejected": decisions.filter(decision=ModerationDecision.Decision.REJECTED).count(),
-        "reviewed_last_30_days": decisions.filter(decided_at__gte=thirty_days_ago).count(),
+        "total_reviewed": total_reviewed,
+        "total_approved": approved,
+        "total_rejected": rejected,
+        "total_changes_requested": changes_requested,
+        "reviewed_last_30_days": reviewed_last_30_days,
+        "assigned_pending": assigned_pending,
+        "approval_rate": round((approved / total_reviewed) * 100) if total_reviewed else 0,
+        "rejection_rate": round((rejected / total_reviewed) * 100) if total_reviewed else 0,
+        "approved": approved,
+        "rejected": rejected,
+        "changes_requested": changes_requested,
+        "reviews_last_30_days": reviewed_last_30_days,
     })
 
 
@@ -705,6 +755,33 @@ def admin_revoke_share_permission(request, permission_id):
     permission = get_object_or_404(SharePermission, id=permission_id)
     revoke_share_permission(permission, request.user)
     return Response({"status": "revoked"})
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_languages(request):
+    from apps.metadata.models import Language
+    qs = Language.objects.filter(status=Language.Status.PENDING).select_related("suggested_by__profile")
+    return Response([{
+        "id": l.id, "name": l.name,
+        "suggested_by": l.suggested_by.profile.full_name if l.suggested_by else None,
+    } for l in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def decide_pending_language(request, language_id):
+    from apps.metadata.models import Language
+    language = get_object_or_404(Language, id=language_id, status=Language.Status.PENDING)
+    decision = request.data.get("decision")
+    if decision == "approve":
+        language.status = Language.Status.APPROVED
+    elif decision == "reject":
+        language.status = Language.Status.REJECTED
+    else:
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+    language.save(update_fields=["status"])
+    return Response({"status": language.status})
+
 
 
 

@@ -19,25 +19,12 @@ def create_invitation(dataset, invited_by, email, role, permission=PermissionLev
         invited_by=invited_by, expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
     )
     # Only send it right away if the dataset is already live. Otherwise it
-    # sits un-notified until dispatch_pending_invitations() fires — see the
-    # call to it in apps/admin_panel/views.py once a dataset gets published.
+    # stays un-notified until dispatch_pending_invitations() fires after publish.
     if dataset.status == Dataset.Status.PUBLISHED:
         _send_invitation_email(invitation)
         invitation.notified_at = timezone.now()
         invitation.save(update_fields=["notified_at"])
     return invitation
-
-
-def dispatch_pending_invitations(dataset):
-    """Send every invitation for this dataset that was created while it was
-    still in review and hasn't gone out yet."""
-    pending = dataset.invitations.filter(
-        status=DatasetInvitation.Status.PENDING, notified_at__isnull=True,
-    )
-    for invitation in pending:
-        _send_invitation_email(invitation)
-        invitation.notified_at = timezone.now()
-        invitation.save(update_fields=["notified_at"])
 
 
 def _send_invitation_email(invitation):
@@ -55,6 +42,25 @@ def _send_invitation_email(invitation):
     )
 
 
+def dispatch_pending_invitations(dataset):
+    if dataset.status != Dataset.Status.PUBLISHED:
+        return 0
+
+    sent_count = 0
+    invitations = DatasetInvitation.objects.filter(
+        dataset=dataset,
+        status=DatasetInvitation.Status.PENDING,
+        notified_at__isnull=True,
+    )
+    for invitation in invitations:
+        _send_invitation_email(invitation)
+        invitation.notified_at = timezone.now()
+        invitation.save(update_fields=["notified_at"])
+        sent_count += 1
+
+    return sent_count
+
+
 def accept_invitation(token, user):
     try:
         invitation = DatasetInvitation.objects.select_related("dataset").get(token=token)
@@ -67,6 +73,8 @@ def accept_invitation(token, user):
         raise ValueError("This invitation has already been accepted.")
     if invitation.status == DatasetInvitation.Status.REVOKED:
         raise ValueError("This invitation has been revoked.")
+    if invitation.dataset.status != Dataset.Status.PUBLISHED:
+        raise ValueError("This invitation will be available after the dataset is published.")
     if invitation.expires_at <= timezone.now():
         invitation.status = DatasetInvitation.Status.EXPIRED
         invitation.save(update_fields=["status"])
