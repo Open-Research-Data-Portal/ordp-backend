@@ -15,6 +15,8 @@ from apps.datasets.services.storage import (
 
 
 class StorageClientTests(SimpleTestCase):
+    def setUp(self):
+        storage_client.cache_clear()
 
     @patch("apps.datasets.services.storage.Config")
     @patch("apps.datasets.services.storage.boto3.client")

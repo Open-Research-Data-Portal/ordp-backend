@@ -136,7 +136,12 @@ class PublicInstitutionalShareTests(APITestCase):
         resp = self.client.post(f"/api/sharing/{dataset.id}/request-share/", {"purpose": "research"})
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertTrue(resp.data["share_ready"])
+        self.assertEqual(resp.data["status"], "approved")
+        self.assertIn("download_url", resp.data)
         self.assertFalse(DatasetAccessRequest.objects.filter(dataset=dataset).exists())
+
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.download_count, 1)
 
 
 class RestrictedShareVotingTests(APITestCase):

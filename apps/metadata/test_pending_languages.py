@@ -15,7 +15,7 @@ class SetDatasetLanguagesTests(APITestCase):
         self.client.force_authenticate(researcher)
         resp = self.client.post(f"/api/metadata/{dataset.id}/languages/", {"language_ids": [str(language.id)]})
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertIn(language, dataset.languages.all())
+        self.assertIn(language, dataset.metadata.languages.all())
 
     def test_other_language_created_as_pending_and_still_usable(self):
         researcher = make_user("olresearcher", "olresearcher@aastu.edu.et", role="researcher")
@@ -26,7 +26,7 @@ class SetDatasetLanguagesTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         language = Language.objects.get(name="Klingon")
         self.assertEqual(language.status, Language.Status.PENDING)
-        self.assertIn(language, dataset.languages.all())
+        self.assertIn(language, dataset.metadata.languages.all())
 
     def test_no_languages_provided_rejected(self):
         researcher = make_user("nlresearcher", "nlresearcher@aastu.edu.et", role="researcher")

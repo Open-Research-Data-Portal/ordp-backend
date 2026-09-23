@@ -129,13 +129,12 @@ class ProposeRevisionPermissionTests(APITestCase):
         self.assertIn("profile", resp.data["detail"].lower())
 
     def test_propose_without_message_is_blocked(self):
-        from apps.accounts.models import UserProfile, College, Department
+        from apps.accounts.models import College
         owner = make_user("prpowner3", "prpowner3@aastu.edu.et")
         outsider = make_user("prpoutsider3", "prpoutsider3@aastu.edu.et", role="researcher")
         college = College.objects.create(name="PRP College")
-        department = Department.objects.create(name="PRP Dept", college=college)
         outsider.profile.academia = "researcher"
-        outsider.profile.department = department
+        outsider.profile.college = college
         outsider.profile.terms_accepted = True
         outsider.profile.save()
         dataset = make_published_dataset(owner)

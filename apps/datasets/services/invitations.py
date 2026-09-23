@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from ..models import Contributor, DatasetInvitation, PermissionLevel
+from ..models import Contributor, Dataset, DatasetInvitation, PermissionLevel
 from apps.sharing.models import SharePermission
 
 User = get_user_model()
@@ -18,7 +18,10 @@ def create_invitation(dataset, invited_by, email, role, permission=PermissionLev
         permission=permission,
         invited_by=invited_by, expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
     )
-    _send_invitation_email(invitation)
+    if dataset.status == Dataset.Status.PUBLISHED:
+        _send_invitation_email(invitation)
+        invitation.notified_at = timezone.now()
+        invitation.save(update_fields=["notified_at"])
     return invitation
 
 
@@ -37,6 +40,25 @@ def _send_invitation_email(invitation):
     )
 
 
+def dispatch_pending_invitations(dataset):
+    if dataset.status != Dataset.Status.PUBLISHED:
+        return 0
+
+    sent_count = 0
+    invitations = DatasetInvitation.objects.filter(
+        dataset=dataset,
+        status=DatasetInvitation.Status.PENDING,
+        notified_at__isnull=True,
+    )
+    for invitation in invitations:
+        _send_invitation_email(invitation)
+        invitation.notified_at = timezone.now()
+        invitation.save(update_fields=["notified_at"])
+        sent_count += 1
+
+    return sent_count
+
+
 def accept_invitation(token, user):
     try:
         invitation = DatasetInvitation.objects.select_related("dataset").get(token=token)
@@ -47,6 +69,8 @@ def accept_invitation(token, user):
         raise ValueError("This invitation has already been accepted.")
     if invitation.status == DatasetInvitation.Status.REVOKED:
         raise ValueError("This invitation has been revoked.")
+    if invitation.dataset.status != Dataset.Status.PUBLISHED:
+        raise ValueError("This invitation will be available after the dataset is published.")
     if invitation.expires_at <= timezone.now():
         invitation.status = DatasetInvitation.Status.EXPIRED
         invitation.save(update_fields=["status"])

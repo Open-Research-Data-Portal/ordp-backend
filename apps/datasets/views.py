@@ -57,6 +57,52 @@ from .services.assembly import (
 )
 from apps.search.services import apply_common_filters, FILE_SIZE_MAP, apply_ordering, InvalidFilterError
 
+def _profile_file_url(request, file_field):
+    if not file_field:
+        return None
+    try:
+        url = file_field.url
+    except ValueError:
+        return None
+    return request.build_absolute_uri(url)
+
+
+def _can_view_dataset_reviewers(user, dataset):
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    profile = getattr(user, "profile", None)
+    return dataset.is_owned_by(user) or (profile and profile.has_role("admin"))
+
+
+def _reviewer_contact_payload(request, reviewer, decided_at=None):
+    profile = reviewer.profile
+    return {
+        "id": reviewer.id,
+        "username": reviewer.username,
+        "full_name": profile.full_name,
+        "email": reviewer.email,
+        "contact_email": reviewer.email,
+        "contact_url": f"mailto:{reviewer.email}",
+        "affiliation": profile.affiliation,
+        "academic_title": profile.academic_title,
+        "academic_rank": profile.academic_rank,
+        "highest_degree": profile.highest_degree,
+        "college": profile.college.name if profile.college else None,
+        "center_of_excellence": (
+            profile.center_of_excellence.name
+            if profile.center_of_excellence
+            else None
+        ),
+        "profile_picture_url": _profile_file_url(request, profile.profile_picture),
+        "interests": [
+            {"id": str(interest.id), "name": interest.name}
+            for interest in profile.interests.all()
+        ],
+        "assigned_at": None,
+        "decision_submitted_at": decided_at,
+    }
+
+
 @api_view(["POST"])
 @permission_classes([CanUploadDatasets])
 def init_upload(request):
@@ -717,6 +763,66 @@ def accept_terms_and_submit(request, dataset_id):
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
     return Response({"status": "submitted for review"}, status=200)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def dataset_reviewers(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if not _can_view_dataset_reviewers(request.user, dataset):
+        return Response(
+            {"detail": "You do not have permission to view this dataset's reviewers."},
+            status=403,
+        )
+
+    from apps.admin_panel.models import DatasetReviewerAssignment, ModerationDecision
+
+    assignments = (
+        DatasetReviewerAssignment.objects
+        .filter(dataset=dataset)
+        .select_related(
+            "reviewer",
+            "reviewer__profile",
+            "reviewer__profile__college",
+            "reviewer__profile__center_of_excellence",
+        )
+        .prefetch_related("reviewer__profile__interests")
+        .order_by("assigned_at")
+    )
+    decisions_by_reviewer_id = {
+        decision.reviewer_id: decision.decided_at
+        for decision in ModerationDecision.objects.filter(dataset=dataset)
+    }
+
+    reviewers = []
+    seen = set()
+    for assignment in assignments:
+        reviewer = assignment.reviewer
+        seen.add(reviewer.id)
+        payload = _reviewer_contact_payload(
+            request,
+            reviewer,
+            decisions_by_reviewer_id.get(reviewer.id),
+        )
+        payload["assigned_at"] = assignment.assigned_at
+        reviewers.append(payload)
+
+    if dataset.assigned_reviewer_id and dataset.assigned_reviewer_id not in seen:
+        reviewer = dataset.assigned_reviewer
+        reviewers.append(
+            _reviewer_contact_payload(
+                request,
+                reviewer,
+                decisions_by_reviewer_id.get(reviewer.id),
+            )
+        )
+
+    return Response({
+        "dataset_id": str(dataset.id),
+        "dataset_title": dataset.title,
+        "status": dataset.status,
+        "reviewers": reviewers,
+    })
 
 
 

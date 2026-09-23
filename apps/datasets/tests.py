@@ -6,7 +6,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 
 from .factories import make_user
-from apps.accounts.models import UserProfile, Department, College
+from apps.accounts.models import UserProfile, College
 from .models import Dataset
 
 User = get_user_model()
@@ -24,16 +24,11 @@ def make_researcher(username, email):
         name=f"{username} College"
     )
 
-    department = Department.objects.create(
-        name=f"{username} Department",
-        college=college,
-    )
-
     profile = user.profile
     profile.full_name = username.title()
     profile.affiliation = "AASTU"
     profile.academia = UserProfile.Academia.RESEARCHER
-    profile.department = department
+    profile.college = college
     profile.profile_visibility = "public"
     profile.terms_accepted = True
     profile.can_upload_datasets = True
