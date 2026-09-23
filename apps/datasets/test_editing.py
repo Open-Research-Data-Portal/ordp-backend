@@ -5,7 +5,7 @@ from rest_framework import status
 
 from apps.datasets.factories import make_user
 from apps.datasets.models import (
-    Dataset, DatasetFile, Contributor, RevisionRequest, PendingContentUpdate,
+    Dataset, DatasetFile, Contributor, RevisionRequest, PendingContentUpdate,  PermissionLevel
 )
 from apps.datasets.services.revisions import route_change, resolve_revision_request_votes, resolve_content_update_votes
 from apps.metadata.models import Category, Metadata
@@ -240,4 +240,41 @@ class WatcherNotificationTests(APITestCase):
                 new_file_key="minor-key", diff_percentage=5.0, change_summary={}, proposed_metadata={},
             )
         self.assertTrue(Notification.objects.filter(user=watcher, dataset=dataset).exists())
-        self.assertFalse(DatasetWatcher.objects.filter(dataset=dataset, user=watcher).exists())  # one-shot, cleared
+        self.assertFalse(DatasetWatcher.objects.filter(dataset=dataset, user=watcher).exists())  
+
+class ContributorStatusGrantTests(APITestCase):
+    """route_change -> _grant_contributor_status: existing relationships must
+    survive a later revision being applied, since get_or_create only sets
+    `defaults` on creation, never on an existing match."""
+
+    def test_existing_co_author_keeps_type_after_minor_revision(self):
+        owner = make_user("csgowner", "csgowner@aastu.edu.et")
+        co_author = make_user("csgcoauthor", "csgcoauthor@aastu.edu.et", role="researcher")
+        dataset = make_published_dataset(owner, "CSG DS")
+        Contributor.objects.create(
+            dataset=dataset, user=co_author, name="Co Author",
+            contributor_type=Contributor.ContributorType.CO_AUTHOR,
+            permission=PermissionLevel.EDIT,
+        )
+
+        with override_settings(VERSION_BUMP_THRESHOLD_PCT=50.0):
+            route_change(
+                dataset=dataset, source=PendingContentUpdate.Source.CONTRIBUTOR_EDIT, submitted_by=co_author,
+                new_file_key="new-key", diff_percentage=5.0, change_summary={}, proposed_metadata={},
+            )
+
+        contributor = Contributor.objects.get(dataset=dataset, user=co_author)
+        self.assertEqual(contributor.contributor_type, Contributor.ContributorType.CO_AUTHOR)
+        self.assertEqual(Contributor.objects.filter(dataset=dataset, user=co_author).count(), 1)
+
+    def test_owner_editing_own_dataset_creates_no_contributor_row(self):
+        owner = make_user("csgowner2", "csgowner2@aastu.edu.et")
+        dataset = make_published_dataset(owner, "CSG Owner DS")
+
+        with override_settings(VERSION_BUMP_THRESHOLD_PCT=50.0):
+            route_change(
+                dataset=dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=owner,
+                new_file_key="new-key", diff_percentage=5.0, change_summary={}, proposed_metadata={},
+            )
+
+        self.assertFalse(Contributor.objects.filter(dataset=dataset, user=owner).exists())

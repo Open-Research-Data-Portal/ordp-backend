@@ -2,10 +2,12 @@ from django.db.models import Q, Sum, F
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from apps.accounts.models import ActivityLog
-from .models import Dataset, Contributor, DatasetRevision, DatasetVersion
+from .models import Dataset, Contributor, DatasetVersion
 from .serializers import DatasetSerializer
 from rest_framework.permissions import IsAuthenticated
 from apps.accounts.permissions import CanUploadDatasets
+from django.contrib.auth import get_user_model
+from apps.sharing.models import DatasetAccessRequest
 import uuid
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 
@@ -48,20 +50,87 @@ def dashboard_stats(request):
     })
 
 
+
+UPLOAD_ACTIONS = ["dataset_upload_initiated", "dataset_upload_session_initiated"]
+MODIFY_LOG_ACTIONS = ["minor_revision_applied"]
+DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download", "admin_download"]
+
+
+def _actor_name(user):
+    if not user:
+        return "Unknown"
+    profile = getattr(user, "profile", None)
+    return profile.full_name if profile else user.email
+
+
 @api_view(["GET"])
 @permission_classes([CanUploadDatasets])
 def recent_activity(request):
-    """Interactions made ON datasets this researcher owns or co-owns — someone
-    else downloading their work, a revision proposed against it, etc."""
+    """Interactions made ON datasets this researcher owns or co-owns.
+    Pulled from three tables since they're recorded differently:
+      - ActivityLog: upload, minor-revision "modify", download
+      - DatasetVersion: major-revision "modify" (these never hit ActivityLog)
+      - DatasetAccessRequest: "request" (requester acted for themself, shared_by
+        is null) vs "share" (someone with access shared it onward, shared_by is set)
+    """
     my_ids = _my_dataset_ids(request.user)
+    titles = dict(Dataset.objects.filter(id__in=my_ids).values_list("id", "title"))
     targets = [f"Dataset:{id}" for id in my_ids]
-    logs = ActivityLog.objects.filter(target_object__in=targets).exclude(user=request.user).order_by("-timestamp")[:30]
-    return Response([{
-        "user": log.user.profile.full_name if log.user else "Unknown",
-        "action": log.action,
-        "target_object": log.target_object,
-        "timestamp": log.timestamp,
-    } for log in logs])
+
+    events = []
+
+    logs = ActivityLog.objects.filter(
+        target_object__in=targets,
+        action__in=UPLOAD_ACTIONS + MODIFY_LOG_ACTIONS + DOWNLOAD_ACTIONS,
+    ).exclude(user=request.user).select_related("user__profile")
+
+    for log in logs:
+        if log.action in UPLOAD_ACTIONS:
+            action = "upload"
+        elif log.action in MODIFY_LOG_ACTIONS:
+            action = "modify"
+        else:
+            action = "download"
+        dataset_id = uuid.UUID(log.target_object.split(":", 1)[1])
+        events.append({
+            "action": action,
+            "dataset_id": dataset_id,
+            "dataset_title": titles.get(dataset_id, "Unknown dataset"),
+            "user": _actor_name(log.user),
+            "timestamp": log.timestamp,
+        })
+
+    major_versions = DatasetVersion.objects.filter(
+        dataset_id__in=my_ids,
+    ).exclude(changed_by=request.user).select_related("changed_by__profile")
+
+    for v in major_versions:
+        events.append({
+            "action": "modify",
+            "dataset_id": v.dataset_id,
+            "dataset_title": titles.get(v.dataset_id, "Unknown dataset"),
+            "user": _actor_name(v.changed_by),
+            "timestamp": v.created_at,
+        })
+
+    access_events = DatasetAccessRequest.objects.filter(
+        dataset_id__in=my_ids,
+    ).exclude(requester=request.user).exclude(shared_by=request.user).select_related(
+        "requester__profile", "shared_by__profile",
+    )
+
+    for ar in access_events:
+        actor = ar.shared_by or ar.requester
+        events.append({
+            "action": "share" if ar.shared_by_id else "request",
+            "dataset_id": ar.dataset_id,
+            "dataset_title": titles.get(ar.dataset_id, "Unknown dataset"),
+            "user": _actor_name(actor) if actor else ar.requester_email,
+            "timestamp": ar.created_at,
+        })
+
+    events.sort(key=lambda e: e["timestamp"], reverse=True)
+    return Response(events[:30])
 
 @api_view(["GET"])
 @permission_classes([CanUploadDatasets])

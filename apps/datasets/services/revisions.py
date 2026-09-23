@@ -66,7 +66,21 @@ def _notify_watchers(dataset, exclude_user, message):
         )
     DatasetWatcher.objects.filter(dataset=dataset).delete()
 
-
+def _grant_contributor_status(dataset, user):
+    """Earned the first time someone's revision (minor or major) is applied
+    to a dataset they have no prior relationship with. Owner is excluded —
+    they don't need a Contributor row to have full rights. get_or_create
+    means later revisions from the same person are a no-op here."""
+    if dataset.owner_id == user.id:
+        return
+    Contributor.objects.get_or_create(
+        dataset=dataset, user=user,
+        defaults={
+            "name": user.profile.full_name,
+            "contributor_type": Contributor.ContributorType.CONTRIBUTOR,
+            "order": dataset.contributors.count() + 1,
+        },
+    )
 def bump_version_and_notify(dataset, changed_by):
     dataset.version += 1
     dataset.save(update_fields=["version"])
@@ -102,6 +116,7 @@ def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage
         ip_address=ip_address,
         extra={"diff_percentage": diff_percentage, "change_summary": change_summary},
     )
+    _grant_contributor_status(dataset, submitted_by)
     _notify_watchers(
         dataset, exclude_user=submitted_by,
         message=f'"{dataset.title}" was updated with a minor change.',
@@ -278,6 +293,7 @@ def _apply_pending_content_update(update):
         source=update.source, changed_by=update.submitted_by, change_summary=update.change_summary,
         diff_percentage=update.diff_percentage,
     )
+    _grant_contributor_status(update.dataset, update.submitted_by)
     update.status = PendingContentUpdate.Status.APPROVED
     update.decided_at = timezone.now()
     update.save(update_fields=["status", "decided_at"])
