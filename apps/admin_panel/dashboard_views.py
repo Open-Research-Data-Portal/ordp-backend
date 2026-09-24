@@ -20,6 +20,7 @@ import csv
 import logging
 from io import BytesIO
 from django.db.models import Q
+from django.db import transaction
 from django.core.mail import send_mail
 from django.conf import settings
 from apps.accounts.models import (
@@ -28,7 +29,8 @@ from apps.accounts.models import (
     CenterOfExcellence,
     PasswordResetToken,
     ActivityLog,
-    UserRole
+    UserRole,
+    BlockedCredential,
 )
 from django.http import HttpResponse
 from reportlab.lib import colors # type: ignore
@@ -44,6 +46,7 @@ from apps.accounts.utils import generate_username
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from apps.datasets.services.revisions import resolve_content_update_votes
+from apps.datasets.services.draft_expiration import draft_expiration_days, expire_inactive_drafts, expired_drafts_qs
 User = get_user_model()
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 FLAGGED_DOWNLOAD_THRESHOLD_PER_HOUR = 20
@@ -250,6 +253,14 @@ def reviewer_metrics(request):
     changes_requested = decisions.filter(decision=ModerationDecision.Decision.CHANGES_REQUESTED).count()
     total_reviewed = decisions.count()
     reviewed_last_30_days = decisions.filter(decided_at__gte=thirty_days_ago).count()
+    avg_hours = None
+    durations = []
+    for decision in decisions.select_related("dataset"):
+        submitted_at = getattr(decision.dataset, "updated_at", None)
+        if submitted_at and decision.decided_at:
+            durations.append((decision.decided_at - submitted_at).total_seconds() / 3600)
+    if durations:
+        avg_hours = round(sum(durations) / len(durations), 1)
 
     return Response({
         "total_reviewed": total_reviewed,
@@ -258,6 +269,7 @@ def reviewer_metrics(request):
         "total_changes_requested": changes_requested,
         "reviewed_last_30_days": reviewed_last_30_days,
         "assigned_pending": assigned_pending,
+        "average_review_hours": avg_hours,
         "approval_rate": round((approved / total_reviewed) * 100) if total_reviewed else 0,
         "rejection_rate": round((rejected / total_reviewed) * 100) if total_reviewed else 0,
         "approved": approved,
@@ -529,6 +541,155 @@ def admin_reactivate_user(request, user_id):
     target_user.is_active = True
     target_user.save(update_fields=["is_active"])
     return Response({"status": "reactivated"})
+
+
+def _active_admin_count(exclude_user_id=None):
+    qs = UserRole.objects.filter(role=UserRole.RoleChoice.ADMIN, profile__user__is_active=True)
+    if exclude_user_id:
+        qs = qs.exclude(profile__user_id=exclude_user_id)
+    return qs.values("profile__user_id").distinct().count()
+
+
+def _serialize_admin_user(user):
+    profile = getattr(user, "profile", None)
+    roles = list(profile.roles.values_list("role", flat=True)) if profile else []
+    return {
+        "id": user.id,
+        "email": user.email,
+        "username": user.username,
+        "full_name": getattr(profile, "full_name", "") if profile else "",
+        "roles": roles,
+        "is_active": user.is_active,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def inactive_users(request):
+    days = int(request.query_params.get("days", 90))
+    cutoff = timezone.now() - timedelta(days=days)
+    qs = User.objects.select_related("profile").prefetch_related("profile__roles").filter(
+        Q(is_active=False) | Q(last_login__lt=cutoff) | Q(last_login__isnull=True, date_joined__lt=cutoff)
+    ).exclude(id=request.user.id).order_by("is_active", "last_login", "date_joined")
+
+    return Response({
+        "days": days,
+        "count": qs.count(),
+        "users": [
+            {
+                **_serialize_admin_user(user),
+                "last_login": user.last_login,
+                "date_joined": user.date_joined,
+                "eligible_for_delete": not user.is_active,
+            }
+            for user in qs[:200]
+        ],
+    })
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAdminOnly])
+def admin_delete_inactive_user(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    if target_user.id == request.user.id:
+        return Response({"detail": "You can't delete your own account."}, status=400)
+    if target_user.is_active:
+        return Response({"detail": "Deactivate the user before permanent deletion."}, status=400)
+    if target_user.profile.roles.filter(role=UserRole.RoleChoice.ADMIN).exists() and _active_admin_count(exclude_user_id=target_user.id) == 0:
+        return Response({"detail": "You can't delete the last admin account."}, status=400)
+
+    BlockedCredential.block_user(target_user, admin=request.user, reason="Inactive user deleted by admin.")
+    email = target_user.email
+    target_user.delete()
+    ActivityLog.objects.create(
+        user=request.user, action="inactive_user_deleted", target_object=f"User:{user_id}",
+        ip_address=get_client_ip(request), extra={"email": email},
+    )
+    return Response({"status": "deleted", "email": email})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAdminOnly])
+def draft_expiration(request):
+    days = int(request.query_params.get("days") or request.data.get("days") or draft_expiration_days())
+    if request.method == "GET":
+        drafts = expired_drafts_qs(days)
+        return Response({
+            "days": days,
+            "expired_count": drafts.count(),
+            "drafts": [
+                {
+                    "id": str(draft.id),
+                    "title": draft.title,
+                    "owner": getattr(draft.owner.profile, "full_name", "") if hasattr(draft.owner, "profile") else draft.owner.email,
+                    "updated_at": draft.updated_at,
+                    "created_at": draft.created_at,
+                }
+                for draft in drafts.select_related("owner", "owner__profile")[:100]
+            ],
+        })
+
+    dry_run = bool(request.data.get("dry_run", False))
+    result = expire_inactive_drafts(days=days, actor=request.user, dry_run=dry_run)
+    return Response({"status": "preview" if dry_run else "completed", "days": days, **result})
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_succession(request):
+    previous_admin_id = request.data.get("previous_admin_id")
+    new_admin_id = request.data.get("new_admin_id")
+    email = (request.data.get("email") or "").strip().lower()
+    full_name = (request.data.get("full_name") or "").strip()
+    deactivate_raw = request.data.get("deactivate_previous", True)
+    deactivate_previous = str(deactivate_raw).lower() not in ("false", "0", "no")
+
+    previous_admin = get_object_or_404(User, id=previous_admin_id)
+    if previous_admin.id == request.user.id and not new_admin_id and not email:
+        return Response({"detail": "Choose a successor before revoking your own admin role."}, status=400)
+
+    if not previous_admin.profile.roles.filter(role=UserRole.RoleChoice.ADMIN).exists():
+        return Response({"detail": "Previous user is not an admin."}, status=400)
+
+    with transaction.atomic():
+        if new_admin_id:
+            new_admin = get_object_or_404(User, id=new_admin_id)
+        else:
+            if not email or not full_name:
+                return Response({"detail": "Provide new_admin_id or email and full_name."}, status=400)
+            if BlockedCredential.is_email_blocked(email):
+                return Response({"detail": "This email is blocked and cannot be used for succession."}, status=400)
+            new_admin = User.objects.filter(email__iexact=email).first()
+            if not new_admin:
+                new_admin = User.objects.create(username=generate_username(full_name), email=email, is_active=True)
+                new_admin.set_unusable_password()
+                new_admin.save()
+                new_admin.profile.full_name = full_name
+                new_admin.profile.save(update_fields=["full_name"])
+
+        if new_admin.id == previous_admin.id:
+            return Response({"detail": "A different successor admin is required."}, status=400)
+
+        new_admin.is_active = True
+        new_admin.save(update_fields=["is_active"])
+        UserRole.objects.get_or_create(profile=new_admin.profile, role=UserRole.RoleChoice.ADMIN)
+
+        UserRole.objects.filter(profile=previous_admin.profile, role=UserRole.RoleChoice.ADMIN).delete()
+        BlockedCredential.block_user(previous_admin, admin=request.user, reason="Admin succession completed.")
+        if deactivate_previous:
+            previous_admin.is_active = False
+            previous_admin.save(update_fields=["is_active"])
+
+        ActivityLog.objects.create(
+            user=request.user, action="admin_succession", target_object=f"User:{previous_admin.id}",
+            ip_address=get_client_ip(request), extra={"new_admin_id": new_admin.id},
+        )
+
+    return Response({
+        "status": "completed",
+        "previous_admin": _serialize_admin_user(previous_admin),
+        "new_admin": _serialize_admin_user(new_admin),
+    })
 
 
 @api_view(["POST"])

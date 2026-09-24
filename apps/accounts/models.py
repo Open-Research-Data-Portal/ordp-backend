@@ -346,6 +346,7 @@ class BlockedCredential(models.Model):
 
     class CredentialType(models.TextChoices):
         EMAIL = "email", "Email"
+        USERNAME = "username", "Username"
         PASSWORD_HASH = "password_hash", "Password hash"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -372,6 +373,14 @@ class BlockedCredential(models.Model):
         return cls.objects.filter(
             credential_type=cls.CredentialType.EMAIL,
             value=email.strip().lower(),
+            expires_at__gt=timezone.now(),
+        ).exists()
+
+    @classmethod
+    def is_username_blocked(cls, username):
+        return cls.objects.filter(
+            credential_type=cls.CredentialType.USERNAME,
+            value=username.strip().lower(),
             expires_at__gt=timezone.now(),
         ).exists()
 
@@ -406,6 +415,14 @@ class BlockedCredential(models.Model):
             blocked_by=admin,
             expires_at=expires_at,
         )
+        if user.username:
+            cls.objects.create(
+                credential_type=cls.CredentialType.USERNAME,
+                value=user.username.strip().lower(),
+                reason=reason,
+                blocked_by=admin,
+                expires_at=expires_at,
+            )
         cls.objects.create(
             credential_type=cls.CredentialType.PASSWORD_HASH,
             value=user.password,
