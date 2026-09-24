@@ -156,6 +156,10 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError("Username may only contain lowercase letters, numbers, and underscores.")
         if User.objects.filter(username__iexact=value).exists():
             raise serializers.ValidationError("This username is already taken.")
+        if BlockedCredential.is_username_blocked(value):
+            raise serializers.ValidationError(
+                "This username can't be used to create an account right now."
+            )
         return value
 
     def validate_password(self, value):

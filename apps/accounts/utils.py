@@ -20,11 +20,13 @@ def is_institutional_email(email: str) -> bool:
 
 
 def generate_username(full_name: str) -> str:
+    from apps.accounts.models import BlockedCredential
+
     base = re.sub(r"[^a-z]", "", full_name.lower().replace(" ", "."))
     base = base or "user"
     username = base
     suffix = 1
-    while User.objects.filter(username=username).exists():
+    while User.objects.filter(username=username).exists() or BlockedCredential.is_username_blocked(username):
         suffix += 1
         username = f"{base}{suffix}"
     return username
