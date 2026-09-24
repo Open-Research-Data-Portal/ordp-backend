@@ -7,7 +7,9 @@ def backfill_missing_profiles(apps, schema_editor):
     UserRole = apps.get_model("accounts", "UserRole")
 
     for user in User.objects.all().iterator():
-        full_name = user.get_full_name() or user.username or user.email or f"User {user.pk}"
+        name_parts = [getattr(user, "first_name", ""), getattr(user, "last_name", "")]
+        full_name = " ".join(part for part in name_parts if part).strip()
+        full_name = full_name or user.username or user.email or f"User {user.pk}"
         profile, _ = UserProfile.objects.get_or_create(
             user=user,
             defaults={"full_name": full_name},
