@@ -1,4 +1,7 @@
+
 import random
+from django.conf import settings
+from django.core.mail import send_mail
 from django.db.models import Count, Q
 
 from apps.accounts.models import ActivityLog, UserProfile, UserRole
@@ -7,6 +10,26 @@ from apps.notifications.services import notify
 from apps.notifications.models import Notification
 
 MIN_REVIEWERS = 3
+
+
+def _send_reviewer_assigned_email(reviewer, dataset):
+    """Emails the reviewer directly, same pattern as invitations.py /
+    revisions.py. notify() below only creates the in-app dashboard
+    notification — it does not send email on its own."""
+    link = f"{settings.FRONTEND_URL}/datasets/{dataset.id}"
+    send_mail(
+        subject=f'You have been assigned to review "{dataset.title}"',
+        message=(
+            f'Hi {reviewer.profile.full_name},\n\n'
+            f'You have been assigned as a reviewer for the dataset '
+            f'"{dataset.title}".\n\n'
+            f'Review it here: {link}\n\n'
+            f'You can also see this assignment in your ORDP dashboard '
+            f'under Notifications.'
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[reviewer.email],
+    )
 
 
 def assign_reviewers(dataset):
@@ -128,6 +151,7 @@ def assign_reviewers(dataset):
             dataset=dataset,
             link_path=f"/datasets/{dataset.id}",
         )
+        _send_reviewer_assigned_email(profile.user, dataset)
 
     dataset.assigned_reviewer = selected[0].user
     dataset.save(update_fields=["assigned_reviewer"])
