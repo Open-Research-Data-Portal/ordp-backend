@@ -23,6 +23,7 @@ class ProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(
         source="profile.full_name",
         read_only=True,
+       
     )
     roles = serializers.SerializerMethodField()
 
