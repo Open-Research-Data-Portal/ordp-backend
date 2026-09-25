@@ -11,7 +11,23 @@ from .services import (
     get_or_create_category_from_dataset_other,
     get_or_create_pending,
     get_or_create_approved_term,
+    get_or_create_pending,
 )
+
+
+def _metadata_defaults(dataset):
+    category, _ = Category.objects.get_or_create(
+        name="Uncategorized",
+        defaults={
+            "description": "Fallback category for partially completed dataset metadata.",
+            "status": Category.Status.APPROVED,
+            "origin": Category.Origin.STANDARD,
+        },
+    )
+    return {
+        "description": getattr(dataset, "description", "") or "",
+        "category": category,
+    }
 
 
 @api_view(["POST"])
@@ -89,12 +105,15 @@ def set_dataset_languages(request, dataset_id):
     for name in other_languages:
         name = (name or "").strip()
         if name:
-            languages.append(get_or_create_approved_term(Language, name, request.user))
+            languages.append(get_or_create_pending(Language, name, request.user))
 
     if not languages:
         return Response({"detail": "At least one language is required."}, status=400)
 
-    metadata, _ = Metadata.objects.get_or_create(dataset=dataset)
+    metadata, _ = Metadata.objects.get_or_create(
+        dataset=dataset,
+        defaults=_metadata_defaults(dataset),
+    )
     metadata.languages.set(languages)
     return Response({"status": "languages set", "count": len(languages)})
 

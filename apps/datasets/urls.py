@@ -16,6 +16,7 @@ urlpatterns = [
     path("archived/", views.archived_datasets, name="archived-datasets"),
     path("<uuid:dataset_id>/archive/", views.request_archive_dataset, name="request-archive-dataset"),
     path("<uuid:dataset_id>/unarchive/", views.request_unarchive_dataset, name="request-unarchive-dataset"),
+    path("<uuid:dataset_id>/reviewers/", views.dataset_reviewers, name="dataset-reviewers"),
     path("<uuid:dataset_id>/", views.dataset_detail, name="dataset-detail"),
     path("<uuid:dataset_id>/update/", views.update_dataset, name="dataset-update"),
     path("<uuid:dataset_id>/propose-revision/", views.propose_revision, name="propose-revision"),

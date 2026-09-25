@@ -64,6 +64,8 @@ class RecentActivityTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]["action"], "dataset_download")
+        self.assertEqual(str(resp.data[0]["dataset_id"]), str(dataset.id))
+        self.assertEqual(resp.data[0]["dataset_title"], "RA DS")
 
     def test_my_own_actions_excluded_from_my_activity(self):
         owner = make_user("raowner2", "raowner2@aastu.edu.et", role="researcher")

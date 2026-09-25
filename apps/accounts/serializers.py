@@ -5,7 +5,7 @@ import re
 from .models import UserProfile, BlockedCredential
 from django.utils import timezone
 from apps.metadata.models import Category
-from apps.datasets.services.storage import presigned_download_url
+
 
 class LoginSerializer(serializers.Serializer):
     identifier = serializers.CharField()
@@ -35,7 +35,6 @@ class ProfileSerializer(serializers.ModelSerializer):
             "username",
             "full_name",
             "roles",
-            "primary_role",
         ]
         read_only_fields = [
             "id",
@@ -49,8 +48,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         return list(
             obj.profile.roles.values_list("role", flat=True)
         )
-    def get_primary_role(self, obj):
-        return obj.profile.roles.filter(is_primary=True).values_list("role", flat=True).first()
+
 
 class ExtendedProfileSerializer(serializers.ModelSerializer):
 
@@ -60,12 +58,11 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
         required=False,
     )
 
-    profile_picture_url = serializers.SerializerMethodField()
     class Meta:
         model = UserProfile
         fields = [
             "full_name",
-            "profile_picture_url",
+            "profile_picture",
             "affiliation",
             "college",
             "center_of_excellence",
@@ -82,11 +79,7 @@ class ExtendedProfileSerializer(serializers.ModelSerializer):
             "profile_visibility",
             "terms_accepted",
         ]
-    def get_profile_picture_url(self, obj):
-        if not obj.profile_picture_key:
-            return None
-        return presigned_download_url(obj.profile_picture_key)
-    
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
 
@@ -164,6 +157,10 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError("Username may only contain lowercase letters, numbers, and underscores.")
         if User.objects.filter(username__iexact=value).exists():
             raise serializers.ValidationError("This username is already taken.")
+        if BlockedCredential.is_username_blocked(value):
+            raise serializers.ValidationError(
+                "This username can't be used to create an account right now."
+            )
         return value
 
     def validate_password(self, value):
@@ -200,12 +197,11 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ["id", "name", "description"]
 
 class PublicProfileSerializer(serializers.ModelSerializer):
-    profile_picture_url = serializers.SerializerMethodField()
     class Meta:
         model = UserProfile
         fields = [
             "full_name",
-            "profile_picture_url",
+            "profile_picture",
             "affiliation",
             "college",
             "center_of_excellence",
@@ -219,7 +215,3 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             "additional_link",
         ]
 
-    def get_profile_picture_url(self, obj):
-        if not obj.profile_picture_key:
-            return None
-        return presigned_download_url(obj.profile_picture_key)

@@ -7,12 +7,20 @@ from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from apps.datasets.models import Dataset, PendingContentUpdate, PendingContentUpdateVote
 from apps.sharing.models import DatasetAccessRequest, AccessRequestVote
-from .models import ModerationDecision, DatasetDeletionRequest, DeletionRequestVote,DatasetArchiveRequest, ArchiveRequestVote, DatasetUnarchiveRequest
+from .models import (
+    ModerationDecision,
+    DatasetDeletionRequest,
+    DeletionRequestVote,
+    DatasetArchiveRequest,
+    ArchiveRequestVote,
+    DatasetUnarchiveRequest,
+)
 from apps.datasets.models import DatasetFile
 import csv
 import logging
 from io import BytesIO
 from django.db.models import Q
+from django.db import transaction
 from django.core.mail import send_mail
 from django.conf import settings
 from apps.accounts.models import (
@@ -21,7 +29,8 @@ from apps.accounts.models import (
     CenterOfExcellence,
     PasswordResetToken,
     ActivityLog,
-    UserRole
+    UserRole,
+    BlockedCredential,
 )
 from django.http import HttpResponse
 from reportlab.lib import colors # type: ignore
@@ -37,6 +46,7 @@ from apps.accounts.utils import generate_username
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from apps.datasets.services.revisions import resolve_content_update_votes
+from apps.datasets.services.draft_expiration import draft_expiration_days, expire_inactive_drafts, expired_drafts_qs
 User = get_user_model()
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 FLAGGED_DOWNLOAD_THRESHOLD_PER_HOUR = 20
@@ -163,11 +173,29 @@ def reviewer_overview(request):
     whole platform, so the number is actually actionable rather than overwhelming."""
     user = request.user
 
-    assigned_pending = Dataset.objects.filter(
-        status=Dataset.Status.PENDING, is_active=True, assigned_reviewer=user
-    ).count()
+    assigned_pending = (
+        Dataset.objects
+        .filter(
+            Q(reviewer_assignments__reviewer=user) | Q(assigned_reviewer=user),
+            status=Dataset.Status.PENDING,
+            is_active=True,
+        )
+        .exclude(moderation_decisions__reviewer=user)
+        .distinct()
+        .count()
+    )
 
-    content_updates_pending = PendingContentUpdate.objects.filter(status="pending").count()
+    from apps.datasets.models import PendingContentUpdateVote, RevisionRequest, RevisionRequestVote
+
+    voted_update_ids = PendingContentUpdateVote.objects.filter(reviewer=user).values_list("update_id", flat=True)
+    content_updates_pending = PendingContentUpdate.objects.filter(
+        status=PendingContentUpdate.Status.PENDING
+    ).exclude(id__in=voted_update_ids).count()
+
+    voted_revision_ids = RevisionRequestVote.objects.filter(reviewer=user).values_list("revision_request_id", flat=True)
+    revision_requests_pending = RevisionRequest.objects.filter(
+        status=RevisionRequest.Status.PENDING
+    ).exclude(id__in=voted_revision_ids).count()
 
     voted_access_ids = AccessRequestVote.objects.filter(reviewer=user).values_list("access_request_id", flat=True)
     access_requests_pending = DatasetAccessRequest.objects.filter(
@@ -193,6 +221,7 @@ def reviewer_overview(request):
     return Response({
         "assigned_datasets_pending": assigned_pending,
         "content_updates_pending": content_updates_pending,
+        "revision_requests_awaiting_my_vote": revision_requests_pending,
         "access_requests_awaiting_my_vote": access_requests_pending,
         "deletion_requests_awaiting_my_vote": deletion_requests_pending,
         "archive_requests_awaiting_my_vote": archive_requests_pending,      
@@ -208,12 +237,45 @@ def reviewer_metrics(request):
     user = request.user
     decisions = ModerationDecision.objects.filter(reviewer=user)
     thirty_days_ago = timezone.now() - timedelta(days=30)
+    assigned_pending = (
+        Dataset.objects
+        .filter(
+            Q(reviewer_assignments__reviewer=user) | Q(assigned_reviewer=user),
+            status=Dataset.Status.PENDING,
+            is_active=True,
+        )
+        .exclude(moderation_decisions__reviewer=user)
+        .distinct()
+        .count()
+    )
+    approved = decisions.filter(decision=ModerationDecision.Decision.APPROVED).count()
+    rejected = decisions.filter(decision=ModerationDecision.Decision.REJECTED).count()
+    changes_requested = decisions.filter(decision=ModerationDecision.Decision.CHANGES_REQUESTED).count()
+    total_reviewed = decisions.count()
+    reviewed_last_30_days = decisions.filter(decided_at__gte=thirty_days_ago).count()
+    avg_hours = None
+    durations = []
+    for decision in decisions.select_related("dataset"):
+        submitted_at = getattr(decision.dataset, "updated_at", None)
+        if submitted_at and decision.decided_at:
+            durations.append((decision.decided_at - submitted_at).total_seconds() / 3600)
+    if durations:
+        avg_hours = round(sum(durations) / len(durations), 1)
 
     return Response({
-        "total_reviewed": decisions.count(),
-        "total_approved": decisions.filter(decision=ModerationDecision.Decision.APPROVED).count(),
-        "total_rejected": decisions.filter(decision=ModerationDecision.Decision.REJECTED).count(),
-        "reviewed_last_30_days": decisions.filter(decided_at__gte=thirty_days_ago).count(),
+        "total_reviewed": total_reviewed,
+        "total_approved": approved,
+        "total_rejected": rejected,
+        "total_changes_requested": changes_requested,
+        "reviewed_last_30_days": reviewed_last_30_days,
+        "assigned_pending": assigned_pending,
+        "average_review_hours": avg_hours,
+        "approval_rate": round((approved / total_reviewed) * 100) if total_reviewed else 0,
+        "rejection_rate": round((rejected / total_reviewed) * 100) if total_reviewed else 0,
+        "approved": approved,
+        "rejected": rejected,
+        "changes_requested": changes_requested,
+        "reviews_last_30_days": reviewed_last_30_days,
     })
 
 
@@ -240,6 +302,7 @@ def reviewer_guidelines(request):
         "deletion_committee_quorum": DELETION_QUORUM,
     })
 
+
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
 def admin_create_user(request):
@@ -248,30 +311,39 @@ def admin_create_user(request):
     role = request.data.get("role", UserRole.RoleChoice.PUBLIC)
 
     if not email or not full_name:
-        return Response({"detail": "email and full_name are required."}, status=400)
+        return Response(
+            {"detail": "email and full_name are required."},
+            status=400,
+        )
+
+
+    allowed_domains = ("@aastu.edu.et", "@aastustudent.edu.et")
+    if not email.endswith(allowed_domains):
+        return Response(
+            {"detail": "Only AASTU institutional emails are allowed."},
+            status=400,
+        )
+
+    if User.objects.filter(email=email).exists():
+        return Response(
+            {"detail": "A user with this email already exists."},
+            status=400,
+        )
 
     if role not in UserRole.RoleChoice.values:
-        return Response({"detail": "Invalid role."}, status=400)
-
-    existing = User.objects.filter(email=email).select_related("profile").first()
-    if existing:
-        is_first_role = not existing.profile.roles.exists()
-        user_role, created = UserRole.objects.get_or_create(
-            profile=existing.profile, role=role,
-            defaults={"is_primary": is_first_role},
+        return Response(
+            {"detail": "Invalid role."},
+            status=400,
         )
-        if role == UserRole.RoleChoice.REVIEWER:
-            from apps.datasets.services.retry_assignment import retry_pending_assignments
-            retry_pending_assignments()
-        return Response({
-            "status": "role_granted" if created else "role_already_present",
-            "user_id": existing.id,
-            "roles": list(existing.profile.roles.values_list("role", flat=True)),
-            "primary_role": existing.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
-        }, status=200)
 
     username = generate_username(full_name)
-    user = User.objects.create(username=username, email=email, is_active=True)
+
+    user = User.objects.create(
+        username=username,
+        email=email,
+        is_active=True,
+    )
+
     user.set_unusable_password()
     user.save()
 
@@ -279,86 +351,46 @@ def admin_create_user(request):
     profile.full_name = full_name
     profile.save(update_fields=["full_name"])
 
-    UserRole.objects.get_or_create(profile=profile, role=role, defaults={"is_primary": True})
+    UserRole.objects.get_or_create(
+        profile=profile,
+        role=role,
+    )
 
     uid = urlsafe_base64_encode(force_bytes(user.pk))
-    reset_token = PasswordResetToken.objects.create(user=user, expires_at=timezone.now() + timedelta(hours=24))
-    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token.token}"
-    send_mail(
-        message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
-        from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
-    )
-    return Response({"status": "created", "user_id": user.id}, status=201)
 
-
-@api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def admin_grant_role(request, user_id):
-    target_user = get_object_or_404(User, id=user_id)
-    role = request.data.get("role")
-
-    if role not in UserRole.RoleChoice.values:
-        return Response({"detail": "Invalid role."}, status=400)
-
-    is_first_role = not target_user.profile.roles.exists()
-    UserRole.objects.get_or_create(
-        profile=target_user.profile, role=role,
-        defaults={"is_primary": is_first_role},
+    reset_token = PasswordResetToken.objects.create(
+        user=user,
+        expires_at=timezone.now() + timedelta(hours=24),
     )
 
-    if role == UserRole.RoleChoice.REVIEWER:
-        from apps.datasets.services.retry_assignment import retry_pending_assignments
-        retry_pending_assignments()
-
-    return Response({
-        "status": "granted",
-        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
-        "primary_role": target_user.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
-    })
+    reset_link = (
+        f"{settings.FRONTEND_URL}/reset-password"
+        f"?token={reset_token.token}"
+    )
 
 
-@api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def admin_revoke_role(request, user_id):
-    target_user = get_object_or_404(User, id=user_id)  # type: ignore
-    role = request.data.get("role")
+    email_sent = True
+    try:
+        send_mail(
+            subject="Your ORDP account has been created",
+            message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+        )
+    except Exception:
+        email_sent = False
+        logging.getLogger(__name__).exception(
+            "Failed to send account-creation email to %s", email
+        )
 
-    revoked_qs = UserRole.objects.filter(profile=target_user.profile, role=role)
-    was_primary = revoked_qs.filter(is_primary=True).exists()
-    revoked_qs.delete()
-
-    if was_primary:
-        next_primary = target_user.profile.roles.order_by("granted_at").first()
-        if next_primary:
-            next_primary.is_primary = True
-            next_primary.save(update_fields=["is_primary"])
-
-    return Response({
-        "status": "revoked",
-        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
-        "primary_role": target_user.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
-    })
-
-
-@api_view(["POST"])
-@permission_classes([IsAdminOnly])
-def admin_set_primary_role(request, user_id):
-    target_user = get_object_or_404(User, id=user_id)
-    role = request.data.get("role")
-
-    user_role = UserRole.objects.filter(profile=target_user.profile, role=role).first()
-    if not user_role:
-        return Response({"detail": "This user does not have that role."}, status=400)
-
-    UserRole.objects.filter(profile=target_user.profile).update(is_primary=False)
-    user_role.is_primary = True
-    user_role.save(update_fields=["is_primary"])
-
-    return Response({
-        "status": "primary_role_set",
-        "primary_role": role,
-        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
-    })
+    return Response(
+        {
+            "status": "created",
+            "user_id": user.id,
+            "email_sent": email_sent,
+        },
+        status=201,
+    )
 
 
 @api_view(["POST"])
@@ -455,6 +487,41 @@ def _daily_counts(queryset, date_field, days=30):
 
 
 
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_grant_role(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    role = request.data.get("role")
+
+    if role not in UserRole.RoleChoice.values:
+        return Response({"detail": "Invalid role."}, status=400)
+
+    UserRole.objects.get_or_create(
+        profile=target_user.profile,
+        role=role,
+    )
+
+    if role == UserRole.RoleChoice.REVIEWER:
+        from apps.datasets.services.retry_assignment import retry_pending_assignments
+        retry_pending_assignments()
+
+    return Response({
+        "status": "granted",
+        "roles": list(
+            target_user.profile.roles.values_list("role", flat=True)
+        ),
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_revoke_role(request, user_id):
+    target_user = get_object_or_404(User, id=user_id) # type: ignore
+    role = request.data.get("role")
+    from apps.accounts.models import UserRole
+    UserRole.objects.filter(profile=target_user.profile, role=role).delete()
+    return Response({"status": "revoked", "roles": list(target_user.profile.roles.values_list("role", flat=True))})
+
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
@@ -474,6 +541,155 @@ def admin_reactivate_user(request, user_id):
     target_user.is_active = True
     target_user.save(update_fields=["is_active"])
     return Response({"status": "reactivated"})
+
+
+def _active_admin_count(exclude_user_id=None):
+    qs = UserRole.objects.filter(role=UserRole.RoleChoice.ADMIN, profile__user__is_active=True)
+    if exclude_user_id:
+        qs = qs.exclude(profile__user_id=exclude_user_id)
+    return qs.values("profile__user_id").distinct().count()
+
+
+def _serialize_admin_user(user):
+    profile = getattr(user, "profile", None)
+    roles = list(profile.roles.values_list("role", flat=True)) if profile else []
+    return {
+        "id": user.id,
+        "email": user.email,
+        "username": user.username,
+        "full_name": getattr(profile, "full_name", "") if profile else "",
+        "roles": roles,
+        "is_active": user.is_active,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def inactive_users(request):
+    days = int(request.query_params.get("days", 90))
+    cutoff = timezone.now() - timedelta(days=days)
+    qs = User.objects.select_related("profile").prefetch_related("profile__roles").filter(
+        Q(is_active=False) | Q(last_login__lt=cutoff) | Q(last_login__isnull=True, date_joined__lt=cutoff)
+    ).exclude(id=request.user.id).order_by("is_active", "last_login", "date_joined")
+
+    return Response({
+        "days": days,
+        "count": qs.count(),
+        "users": [
+            {
+                **_serialize_admin_user(user),
+                "last_login": user.last_login,
+                "date_joined": user.date_joined,
+                "eligible_for_delete": not user.is_active,
+            }
+            for user in qs[:200]
+        ],
+    })
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAdminOnly])
+def admin_delete_inactive_user(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    if target_user.id == request.user.id:
+        return Response({"detail": "You can't delete your own account."}, status=400)
+    if target_user.is_active:
+        return Response({"detail": "Deactivate the user before permanent deletion."}, status=400)
+    if target_user.profile.roles.filter(role=UserRole.RoleChoice.ADMIN).exists() and _active_admin_count(exclude_user_id=target_user.id) == 0:
+        return Response({"detail": "You can't delete the last admin account."}, status=400)
+
+    BlockedCredential.block_user(target_user, admin=request.user, reason="Inactive user deleted by admin.")
+    email = target_user.email
+    target_user.delete()
+    ActivityLog.objects.create(
+        user=request.user, action="inactive_user_deleted", target_object=f"User:{user_id}",
+        ip_address=get_client_ip(request), extra={"email": email},
+    )
+    return Response({"status": "deleted", "email": email})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAdminOnly])
+def draft_expiration(request):
+    days = int(request.query_params.get("days") or request.data.get("days") or draft_expiration_days())
+    if request.method == "GET":
+        drafts = expired_drafts_qs(days)
+        return Response({
+            "days": days,
+            "expired_count": drafts.count(),
+            "drafts": [
+                {
+                    "id": str(draft.id),
+                    "title": draft.title,
+                    "owner": getattr(draft.owner.profile, "full_name", "") if hasattr(draft.owner, "profile") else draft.owner.email,
+                    "updated_at": draft.updated_at,
+                    "created_at": draft.created_at,
+                }
+                for draft in drafts.select_related("owner", "owner__profile")[:100]
+            ],
+        })
+
+    dry_run = bool(request.data.get("dry_run", False))
+    result = expire_inactive_drafts(days=days, actor=request.user, dry_run=dry_run)
+    return Response({"status": "preview" if dry_run else "completed", "days": days, **result})
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_succession(request):
+    previous_admin_id = request.data.get("previous_admin_id")
+    new_admin_id = request.data.get("new_admin_id")
+    email = (request.data.get("email") or "").strip().lower()
+    full_name = (request.data.get("full_name") or "").strip()
+    deactivate_raw = request.data.get("deactivate_previous", True)
+    deactivate_previous = str(deactivate_raw).lower() not in ("false", "0", "no")
+
+    previous_admin = get_object_or_404(User, id=previous_admin_id)
+    if previous_admin.id == request.user.id and not new_admin_id and not email:
+        return Response({"detail": "Choose a successor before revoking your own admin role."}, status=400)
+
+    if not previous_admin.profile.roles.filter(role=UserRole.RoleChoice.ADMIN).exists():
+        return Response({"detail": "Previous user is not an admin."}, status=400)
+
+    with transaction.atomic():
+        if new_admin_id:
+            new_admin = get_object_or_404(User, id=new_admin_id)
+        else:
+            if not email or not full_name:
+                return Response({"detail": "Provide new_admin_id or email and full_name."}, status=400)
+            if BlockedCredential.is_email_blocked(email):
+                return Response({"detail": "This email is blocked and cannot be used for succession."}, status=400)
+            new_admin = User.objects.filter(email__iexact=email).first()
+            if not new_admin:
+                new_admin = User.objects.create(username=generate_username(full_name), email=email, is_active=True)
+                new_admin.set_unusable_password()
+                new_admin.save()
+                new_admin.profile.full_name = full_name
+                new_admin.profile.save(update_fields=["full_name"])
+
+        if new_admin.id == previous_admin.id:
+            return Response({"detail": "A different successor admin is required."}, status=400)
+
+        new_admin.is_active = True
+        new_admin.save(update_fields=["is_active"])
+        UserRole.objects.get_or_create(profile=new_admin.profile, role=UserRole.RoleChoice.ADMIN)
+
+        UserRole.objects.filter(profile=previous_admin.profile, role=UserRole.RoleChoice.ADMIN).delete()
+        BlockedCredential.block_user(previous_admin, admin=request.user, reason="Admin succession completed.")
+        if deactivate_previous:
+            previous_admin.is_active = False
+            previous_admin.save(update_fields=["is_active"])
+
+        ActivityLog.objects.create(
+            user=request.user, action="admin_succession", target_object=f"User:{previous_admin.id}",
+            ip_address=get_client_ip(request), extra={"new_admin_id": new_admin.id},
+        )
+
+    return Response({
+        "status": "completed",
+        "previous_admin": _serialize_admin_user(previous_admin),
+        "new_admin": _serialize_admin_user(new_admin),
+    })
 
 
 @api_view(["POST"])
@@ -700,6 +916,33 @@ def admin_revoke_share_permission(request, permission_id):
     permission = get_object_or_404(SharePermission, id=permission_id)
     revoke_share_permission(permission, request.user)
     return Response({"status": "revoked"})
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_languages(request):
+    from apps.metadata.models import Language
+    qs = Language.objects.filter(status=Language.Status.PENDING).select_related("suggested_by__profile")
+    return Response([{
+        "id": l.id, "name": l.name,
+        "suggested_by": l.suggested_by.profile.full_name if l.suggested_by else None,
+    } for l in qs])
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def decide_pending_language(request, language_id):
+    from apps.metadata.models import Language
+    language = get_object_or_404(Language, id=language_id, status=Language.Status.PENDING)
+    decision = request.data.get("decision")
+    if decision == "approve":
+        language.status = Language.Status.APPROVED
+    elif decision == "reject":
+        language.status = Language.Status.REJECTED
+    else:
+        return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
+    language.save(update_fields=["status"])
+    return Response({"status": language.status})
+
 
 
 
