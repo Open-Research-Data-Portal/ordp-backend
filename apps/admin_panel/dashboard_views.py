@@ -324,11 +324,24 @@ def admin_create_user(request):
             status=400,
         )
 
-    if User.objects.filter(email=email).exists():
-        return Response(
-            {"detail": "A user with this email already exists."},
-            status=400,
+    existing = User.objects.filter(email=email).select_related("profile").first()
+    if existing:
+        # A user already exists at this email — treat this as granting them
+        # an additional role rather than rejecting the request outright.
+        _, created = UserRole.objects.get_or_create(
+            profile=existing.profile,
+            role=role,
         )
+
+        if role == UserRole.RoleChoice.REVIEWER:
+            from apps.datasets.services.retry_assignment import retry_pending_assignments
+            retry_pending_assignments()
+
+        return Response({
+            "status": "role_granted" if created else "role_already_present",
+            "user_id": existing.id,
+            "roles": list(existing.profile.roles.values_list("role", flat=True)),
+        }, status=200)
 
     if role not in UserRole.RoleChoice.values:
         return Response(
