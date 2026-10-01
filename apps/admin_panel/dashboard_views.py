@@ -1045,19 +1045,42 @@ def decide_pending_category(request, category_id):
         })
 
     if decision == "reject":
-        if Metadata.objects.filter(category=category).exists():
-            return Response(
-                {"detail": "Datasets already use this category. Use decision='merge' with merge_into."},
-                status=400,
-            )
+        dataset_metadata = Metadata.objects.filter(category=category)
+        replacement_id = request.data.get("replacement_category_id")
+        replacement = None
+        if dataset_metadata.exists():
+            if not replacement_id:
+                return Response(
+                    {"detail": "replacement_category_id is required because datasets use this category."},
+                    status=400,
+                )
+            replacement = Category.objects.filter(
+                id=replacement_id,
+                status=Category.Status.APPROVED,
+            ).first()
+            if replacement is None:
+                return Response(
+                    {"detail": "replacement_category_id must identify an approved category."},
+                    status=400,
+                )
+            dataset_metadata.update(category=replacement)
+
         category.users_with_interests.clear()
         category.status = Category.Status.REJECTED
         category.save(update_fields=["status"])
         message = f'Your suggested category "{category.name}" was not approved.'
+        if replacement:
+            message += f' Datasets using it were reassigned to "{replacement.name}".'
         if reason:
             message += f" Reason: {reason}"
         _notify_category_suggester(category, message)
-        return Response({"status": "rejected"})
+        response = {"status": "rejected"}
+        if replacement:
+            response["replacement_category"] = {
+                "id": str(replacement.id),
+                "name": replacement.name,
+            }
+        return Response(response)
 
     if decision == "merge":
         target = get_object_or_404(

@@ -217,7 +217,7 @@ class AdminCategoryReviewTests(APITestCase):
         self.assertIn(target, researcher.profile.interests.all())
         self.assertFalse(Category.objects.filter(id=dup.id).exists())
 
-    def test_reject_blocked_when_category_in_use(self):
+    def test_reject_in_use_category_requires_approved_replacement(self):
         admin = make_user("acuadmin", "acuadmin@aastu.edu.et", role="admin")
         researcher = make_user("acures", "acures@aastu.edu.et", role="researcher")
         cat = Category.objects.create(name="InUse", status=Category.Status.PENDING, suggested_by=researcher)
@@ -227,3 +227,56 @@ class AdminCategoryReviewTests(APITestCase):
         self.client.force_authenticate(admin)
         resp = self.client.post(f"/api/admin-panel/categories/{cat.id}/decide/", {"decision": "reject"})
         self.assertEqual(resp.status_code, 400)
+        cat.refresh_from_db()
+        self.assertEqual(cat.status, Category.Status.PENDING)
+
+    def test_reject_in_use_category_reassigns_datasets_to_replacement(self):
+        admin = make_user("acurepladmin", "acurepladmin@aastu.edu.et", role="admin")
+        researcher = make_user("acureplresearcher", "acureplresearcher@aastu.edu.et", role="researcher")
+        rejected = Category.objects.create(
+            name="Invalid Category", status=Category.Status.PENDING, suggested_by=researcher
+        )
+        replacement = Category.objects.create(
+            name="Approved Replacement", status=Category.Status.APPROVED
+        )
+        dataset = Dataset.objects.create(title="Replacement DS", owner=researcher)
+        Metadata.objects.create(dataset=dataset, description="x", category=rejected)
+        researcher.profile.interests.add(rejected)
+
+        self.client.force_authenticate(admin)
+        resp = self.client.post(
+            f"/api/admin-panel/categories/{rejected.id}/decide/",
+            {
+                "decision": "reject",
+                "replacement_category_id": str(replacement.id),
+            },
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["replacement_category"]["id"], str(replacement.id))
+        rejected.refresh_from_db()
+        self.assertEqual(rejected.status, Category.Status.REJECTED)
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.metadata.category, replacement)
+        self.assertFalse(researcher.profile.interests.filter(id=rejected.id).exists())
+
+    def test_reject_in_use_category_rejects_unapproved_replacement(self):
+        admin = make_user("acuinvadmin", "acuinvadmin@aastu.edu.et", role="admin")
+        researcher = make_user("acuinvresearcher", "acuinvresearcher@aastu.edu.et", role="researcher")
+        rejected = Category.objects.create(name="Pending Source", status=Category.Status.PENDING)
+        unapproved = Category.objects.create(name="Pending Target", status=Category.Status.PENDING)
+        dataset = Dataset.objects.create(title="Invalid Replacement DS", owner=researcher)
+        Metadata.objects.create(dataset=dataset, description="x", category=rejected)
+
+        self.client.force_authenticate(admin)
+        resp = self.client.post(
+            f"/api/admin-panel/categories/{rejected.id}/decide/",
+            {
+                "decision": "reject",
+                "replacement_category_id": str(unapproved.id),
+            },
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        rejected.refresh_from_db()
+        self.assertEqual(rejected.status, Category.Status.PENDING)
