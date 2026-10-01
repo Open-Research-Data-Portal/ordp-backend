@@ -74,6 +74,12 @@ urlpatterns = [
         dashboard_views.admin_ban_user,
         name="admin-ban-user",
     ),
+    path(
+        "users/<int:user_id>/set-primary-role/",
+        dashboard_views.admin_set_primary_role,
+        name="admin-set-primary-role",
+    ),
+    
     path("archive-requests/queue/", dashboard_views.archive_request_queue, name="archive-request-queue"),
     path("archive-requests/<uuid:request_id>/vote/", dashboard_views.vote_on_archive_request, name="archive-request-vote"),
     path("unarchive-requests/queue/", dashboard_views.unarchive_request_queue, name="unarchive-request-queue"),
