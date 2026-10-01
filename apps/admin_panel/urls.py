@@ -27,6 +27,13 @@ urlpatterns = [
     path("users/<int:user_id>/delete-inactive/", dashboard_views.admin_delete_inactive_user, name="admin-delete-inactive-user"),
     path("users/<int:user_id>/deactivate/", dashboard_views.admin_deactivate_user, name="admin-deactivate-user"),
     path("categories/create/", dashboard_views.admin_create_category, name="admin-create-category"),  
+    path("categories/pending/", dashboard_views.pending_categories, name="pending-categories"),
+    path("categories/approved/", dashboard_views.approved_categories, name="approved-categories"),
+    path(
+        "categories/<uuid:category_id>/decide/",
+        dashboard_views.decide_pending_category,
+        name="decide-pending-category",
+    ),
     path("users/<int:user_id>/reactivate/", dashboard_views.admin_reactivate_user, name="admin-reactivate-user"),
     path("share-permissions/<uuid:permission_id>/revoke/", dashboard_views.admin_revoke_share_permission, name="admin-revoke-share-permission"),
     path("languages/pending/", dashboard_views.pending_languages, name="pending-languages"),
