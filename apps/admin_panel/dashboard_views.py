@@ -14,12 +14,13 @@ from .models import (
     DatasetArchiveRequest,
     ArchiveRequestVote,
     DatasetUnarchiveRequest,
+    DatasetReviewerAssignment,
 )
 from apps.datasets.models import DatasetFile
 import csv
 import logging
 from io import BytesIO
-from django.db.models import Q
+from django.db.models import Q,Count
 from django.db import transaction
 from django.core.mail import send_mail
 from django.conf import settings
@@ -40,7 +41,7 @@ from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import IsAdminOnly, IsReviewerOrAdmin, IsReviewerOnly
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
-from apps.metadata.models import Category
+from apps.metadata.models import Category,Metadata
 from apps.accounts.views import get_client_ip
 from apps.accounts.utils import generate_username
 from apps.notifications.services import notify
@@ -311,26 +312,27 @@ def admin_create_user(request):
     role = request.data.get("role", UserRole.RoleChoice.PUBLIC)
 
     if not email or not full_name:
-        return Response(
-            {"detail": "email and full_name are required."},
-            status=400,
-        )
-
+        return Response({"detail": "email and full_name are required."}, status=400)
 
     allowed_domains = ("@aastu.edu.et", "@aastustudent.edu.et")
     if not email.endswith(allowed_domains):
-        return Response(
-            {"detail": "Only AASTU institutional emails are allowed."},
-            status=400,
-        )
+        return Response({"detail": "Only AASTU institutional emails are allowed."}, status=400)
+
+    if role not in UserRole.RoleChoice.values:
+        return Response({"detail": "Invalid role."}, status=400)
 
     existing = User.objects.filter(email=email).select_related("profile").first()
     if existing:
-        # A user already exists at this email — treat this as granting them
-        # an additional role rather than rejecting the request outright.
-        _, created = UserRole.objects.get_or_create(
-            profile=existing.profile,
-            role=role,
+        if existing.profile.roles.filter(role=role).exists():
+            return Response({"detail": "This user already has that role."}, status=400)
+
+        is_first_role = not existing.profile.roles.exists()
+        UserRole.objects.create(profile=existing.profile, role=role, is_primary=is_first_role)
+
+        ActivityLog.log(
+            user=request.user, action="role_granted",
+            target_object=str(existing.id), ip_address=get_client_ip(request),
+            extra={"role": role, "via": "create_user_existing_email"},
         )
 
         if role == UserRole.RoleChoice.REVIEWER:
@@ -338,25 +340,15 @@ def admin_create_user(request):
             retry_pending_assignments()
 
         return Response({
-            "status": "role_granted" if created else "role_already_present",
+            "status": "role_granted",
+            "detail": "That email already has an account, so the role was added to it.",
             "user_id": existing.id,
             "roles": list(existing.profile.roles.values_list("role", flat=True)),
+            "primary_role": existing.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
         }, status=200)
 
-    if role not in UserRole.RoleChoice.values:
-        return Response(
-            {"detail": "Invalid role."},
-            status=400,
-        )
-
     username = generate_username(full_name)
-
-    user = User.objects.create(
-        username=username,
-        email=email,
-        is_active=True,
-    )
-
+    user = User.objects.create(username=username, email=email, is_active=True)
     user.set_unusable_password()
     user.save()
 
@@ -364,46 +356,22 @@ def admin_create_user(request):
     profile.full_name = full_name
     profile.save(update_fields=["full_name"])
 
-    UserRole.objects.get_or_create(
-        profile=profile,
-        role=role,
+    UserRole.objects.create(profile=profile, role=role, is_primary=True)
+
+    ActivityLog.log(
+        user=request.user, action="user_created",
+        target_object=str(user.id), ip_address=get_client_ip(request),
+        extra={"role": role},
     )
 
-    uid = urlsafe_base64_encode(force_bytes(user.pk))
-
-    reset_token = PasswordResetToken.objects.create(
-        user=user,
-        expires_at=timezone.now() + timedelta(hours=24),
-    )
-
-    reset_link = (
-        f"{settings.FRONTEND_URL}/reset-password"
-        f"?token={reset_token.token}"
-    )
-
-
-    email_sent = True
-    try:
-        send_mail(
-            subject="Your ORDP account has been created",
-            message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-        )
-    except Exception:
-        email_sent = False
-        logging.getLogger(__name__).exception(
-            "Failed to send account-creation email to %s", email
-        )
-
-    return Response(
-        {
-            "status": "created",
-            "user_id": user.id,
-            "email_sent": email_sent,
-        },
-        status=201,
-    )
+    reset_token = PasswordResetToken.objects.create(user=user, expires_at=timezone.now() + timedelta(hours=24))
+    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token.token}"
+    send_mail(
+    subject="Your ORDP account has been created",
+    message=f"An admin created an account for you on ORDP. Set your password here: {reset_link}",
+    from_email=settings.DEFAULT_FROM_EMAIL, recipient_list=[email],
+)
+    return Response({"status": "created", "user_id": user.id}, status=201)
 
 
 @api_view(["POST"])
@@ -499,7 +467,6 @@ def _daily_counts(queryset, date_field, days=30):
     ]
 
 
-
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
 def admin_grant_role(request, user_id):
@@ -509,9 +476,16 @@ def admin_grant_role(request, user_id):
     if role not in UserRole.RoleChoice.values:
         return Response({"detail": "Invalid role."}, status=400)
 
-    UserRole.objects.get_or_create(
-        profile=target_user.profile,
-        role=role,
+    if target_user.profile.roles.filter(role=role).exists():
+        return Response({"detail": "This user already has that role."}, status=400)
+
+    is_first_role = not target_user.profile.roles.exists()
+    UserRole.objects.create(profile=target_user.profile, role=role, is_primary=is_first_role)
+
+    ActivityLog.log(
+        user=request.user, action="role_granted",
+        target_object=str(target_user.id), ip_address=get_client_ip(request),
+        extra={"role": role, "via": "grant_role"},
     )
 
     if role == UserRole.RoleChoice.REVIEWER:
@@ -520,21 +494,105 @@ def admin_grant_role(request, user_id):
 
     return Response({
         "status": "granted",
-        "roles": list(
-            target_user.profile.roles.values_list("role", flat=True)
-        ),
+        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
+        "primary_role": target_user.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
+    })
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+def admin_revoke_role(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+    role = request.data.get("role")
+
+    if role == UserRole.RoleChoice.PUBLIC:
+        return Response(
+            {"detail": "The public role can't be revoked — every user keeps a baseline role."},
+            status=400,
+        )
+
+    user_role = UserRole.objects.filter(profile=target_user.profile, role=role).first()
+    if not user_role:
+        return Response({"detail": "This user does not have that role."}, status=400)
+
+    if role == UserRole.RoleChoice.ADMIN:
+        if target_user.id == request.user.id:
+            return Response({"detail": "You can't revoke your own admin role."}, status=400)
+        if UserRole.objects.filter(role=UserRole.RoleChoice.ADMIN).count() <= 1:
+            return Response({"detail": "Can't revoke the last remaining admin."}, status=400)
+
+    released_dataset_ids = []
+    top_up_counts = {}
+
+    with transaction.atomic():
+        was_primary = user_role.is_primary
+        user_role.delete()
+
+        if role == UserRole.RoleChoice.REVIEWER:
+            from apps.datasets.services.assignment import top_up_reviewers
+
+            assignments = DatasetReviewerAssignment.objects.filter(
+                dataset__status=Dataset.Status.PENDING, reviewer=target_user,
+            ).select_related("dataset")
+
+            for assignment in assignments:
+                has_voted = ModerationDecision.objects.filter(
+                    dataset=assignment.dataset, reviewer=target_user,
+                ).exists()
+                if not has_voted:
+                    dataset = assignment.dataset
+                    released_dataset_ids.append(dataset.id)
+                    assignment.delete()
+                    new_assignments = top_up_reviewers(dataset)
+                    top_up_counts[str(dataset.id)] = len(new_assignments)
+
+        if was_primary:
+            next_primary = (
+                target_user.profile.roles
+                .exclude(role=UserRole.RoleChoice.PUBLIC)
+                .order_by("-granted_at")
+                .first()
+            )
+            if next_primary is None:
+                next_primary = target_user.profile.roles.first()
+            if next_primary:
+                next_primary.is_primary = True
+                next_primary.save(update_fields=["is_primary"])
+    ActivityLog.log(
+        user=request.user, action="role_revoked",
+        target_object=str(target_user.id), ip_address=get_client_ip(request),
+        extra={
+            "role": role,
+            "released_datasets": [str(d) for d in released_dataset_ids],
+            "top_up_counts": top_up_counts,
+        },
+    )
+
+    return Response({
+        "status": "revoked",
+        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
+        "primary_role": target_user.profile.roles.filter(is_primary=True).values_list("role", flat=True).first(),
+        "released_datasets": [str(d) for d in released_dataset_ids],
     })
 
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
-def admin_revoke_role(request, user_id):
-    target_user = get_object_or_404(User, id=user_id) # type: ignore
+def admin_set_primary_role(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
     role = request.data.get("role")
-    from apps.accounts.models import UserRole
-    UserRole.objects.filter(profile=target_user.profile, role=role).delete()
-    return Response({"status": "revoked", "roles": list(target_user.profile.roles.values_list("role", flat=True))})
 
+    user_role = UserRole.objects.filter(profile=target_user.profile, role=role).first()
+    if not user_role:
+        return Response({"detail": "This user does not have that role."}, status=400)
+
+    UserRole.objects.filter(profile=target_user.profile).update(is_primary=False)
+    user_role.is_primary = True
+    user_role.save(update_fields=["is_primary"])
+
+    return Response({
+        "status": "primary_role_set",
+        "primary_role": role,
+        "roles": list(target_user.profile.roles.values_list("role", flat=True)),
+    })
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])
@@ -920,6 +978,95 @@ def admin_create_category(request):
 
 
 
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_categories(request):
+    qs = (
+        Category.objects.filter(status=Category.Status.PENDING)
+        .select_related("suggested_by__profile")
+        .annotate(
+            dataset_count=Count("metadata", distinct=True),
+            interest_count=Count("users_with_interests", distinct=True),
+        )
+    )
+    return Response([{
+        "id": c.id,
+        "name": c.name,
+        "description": c.description,
+        "suggested_by": c.suggested_by.profile.full_name if c.suggested_by else None,
+        "dataset_count": c.dataset_count,
+        "interest_count": c.interest_count,
+        # helps the admin spot duplicates
+        "similar_existing": list(
+            Category.objects.filter(status=Category.Status.APPROVED, name__icontains=c.name[:4])
+            .values("id", "name")[:5]
+        ),
+    } for c in qs])
+
+
+def _notify_suggester(category, message):
+    if category.suggested_by:
+        notify(
+            user=category.suggested_by,
+            notification_type=Notification.NotificationType.CATEGORY_DECISION,
+            message=message,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+@transaction.atomic
+def decide_pending_category(request, category_id):
+    category = get_object_or_404(Category, id=category_id, status=Category.Status.PENDING)
+    decision = request.data.get("decision")
+    reason = (request.data.get("reason") or "").strip()
+
+    if decision == "approve":
+        new_name = (request.data.get("name") or "").strip()
+        if new_name and new_name != category.name:
+            if Category.objects.filter(name__iexact=new_name).exclude(id=category.id).exists():
+                return Response({"detail": "A category with that name already exists."}, status=400)
+            category.name = new_name
+        if "description" in request.data:
+            category.description = (request.data.get("description") or "").strip()
+        category.status = Category.Status.APPROVED
+        category.save()
+        _notify_suggester(category, f'Your suggested category "{category.name}" was approved.')
+        return Response({"status": "approved", "id": category.id, "name": category.name})
+
+    if decision == "reject":
+        if Metadata.objects.filter(category=category).exists():
+            return Response(
+                {"detail": "Datasets already use this category. Use decision='merge' with merge_into."},
+                status=400,
+            )
+        category.users_with_interests.clear()
+        category.status = Category.Status.REJECTED
+        category.save(update_fields=["status"])
+        msg = f'Your suggested category "{category.name}" was not approved.'
+        if reason:
+            msg += f" Reason: {reason}"
+        _notify_suggester(category, msg)
+        return Response({"status": "rejected"})
+
+    if decision == "merge":
+        target = get_object_or_404(
+            Category, id=request.data.get("merge_into"), status=Category.Status.APPROVED
+        )
+        if target.id == category.id:
+            return Response({"detail": "Cannot merge a category into itself."}, status=400)
+        Metadata.objects.filter(category=category).update(category=target)
+        for profile in category.users_with_interests.all():
+            profile.interests.add(target)
+        _notify_suggester(
+            category,
+            f'Your suggested category "{category.name}" was merged into the existing "{target.name}".',
+        )
+        category.delete()
+        return Response({"status": "merged", "merged_into": target.id})
+
+    return Response({"detail": "decision must be 'approve', 'reject' or 'merge'."}, status=400)
 
 @api_view(["POST"])
 @permission_classes([IsAdminOnly])

@@ -133,3 +133,61 @@ def assign_reviewers(dataset):
     dataset.save(update_fields=["assigned_reviewer"])
 
     return assignments
+def top_up_reviewers(dataset):
+    """
+    Called after a reviewer is revoked mid-review. Fills only the
+    remaining slots needed to reach MIN_REVIEWERS, rather than
+    reassigning a fresh set of 3. Returns the list of new assignments
+    (empty if there aren't enough eligible reviewers left — the dataset
+    is simply left short, which already shows up in the moderation
+    queue for any admin to see).
+    """
+    from ..models import Dataset
+
+    already_assigned = list(
+        DatasetReviewerAssignment.objects.filter(dataset=dataset).values_list("reviewer_id", flat=True)
+    )
+    needed = MIN_REVIEWERS - len(already_assigned)
+    if needed <= 0:
+        return []
+
+    category = getattr(getattr(dataset, "metadata", None), "category", None)
+
+    base = (
+        UserProfile.objects
+        .filter(roles__role=UserRole.RoleChoice.REVIEWER)
+        .exclude(user_id=dataset.owner_id)
+        .exclude(user_id__in=already_assigned)
+        .distinct()
+    )
+
+    def get_least_loaded(queryset, limit):
+        candidates = list(
+            queryset.annotate(
+                pending_count=Count(
+                    "user__assigned_datasets",
+                    filter=Q(user__assigned_datasets__status=Dataset.Status.PENDING),
+                )
+            )
+        )
+        if not candidates:
+            return []
+        candidates.sort(key=lambda profile: profile.pending_count)
+        min_load = candidates[0].pending_count
+        least_loaded = [p for p in candidates if p.pending_count == min_load]
+        random.shuffle(least_loaded)
+        return least_loaded[:limit]
+
+    selected = []
+    if category is not None:
+        selected = get_least_loaded(base.filter(interests=category), needed)
+    if len(selected) < needed:
+        remaining_needed = needed - len(selected)
+        already_picked_ids = {p.user_id for p in selected}
+        fallback = get_least_loaded(base.exclude(user_id__in=already_picked_ids), remaining_needed)
+        selected += fallback
+
+    return [
+        DatasetReviewerAssignment.objects.create(dataset=dataset, reviewer=profile.user)
+        for profile in selected
+    ]
