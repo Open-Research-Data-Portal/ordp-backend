@@ -44,6 +44,7 @@ User = get_user_model()
 @permission_classes([IsAuthenticated])
 def add_other_interest(request):
     from apps.metadata.services import get_or_create_category_from_interest_other
+    from apps.metadata.models import Category
 
     name = (request.data.get("name") or "").strip()
 
@@ -61,6 +62,7 @@ def add_other_interest(request):
         {
             "status": "added",
             "category_id": category.id,
+            "pending_review": category.status == Category.Status.PENDING,
         },
         status=status.HTTP_201_CREATED,
     )

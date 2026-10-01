@@ -7,19 +7,6 @@ from apps.datasets.models import Dataset
 from .models import Category, FallbackThumbnail
 
 
-# Hand-maintained: add an entry whenever a real abbreviation/synonym should
-# merge into an existing category instead of becoming its own row.
-# Left side lowercase (what a user might type), right side must match an
-# existing category's name exactly (case-insensitive) or is ignored.
-CATEGORY_SYNONYMS = {
-    "ai": "Artificial Intelligence",
-    "ml": "Machine Learning",
-    "cs": "Computer Science",
-    "it": "Information Technology",
-    "nlp": "Natural Language Processing",
-    "gis": "Geographic Information Systems",
-}
-
 # Acronyms allowed to render in uppercase during display normalization.
 # Anything NOT in this set is title-cased normally, no matter how the
 # user typed it — this is what fixes "DATA" / "WEB" being misread as
@@ -106,26 +93,25 @@ def _category_similarity(name1, name2):
     )
 
 
-def find_similar_category(name):
-    """
-    Finds an existing category equivalent to the supplied name.
+def rank_similar_categories(name, categories, limit=5, minimum_score=0.35):
+    """Return likely approved-category matches without making a decision."""
+    ranked = []
+    for category in categories:
+        score = _category_similarity(name, category.name)
+        if score >= minimum_score:
+            ranked.append((score, category))
 
-    Priority:
-        1. A known synonym/abbreviation mapping (admin-curated).
-        2. Exact match after normalization.
-        3. High-confidence fuzzy match — standard categories checked
-           before other 'other'-origin categories, so a near-duplicate
-           always prefers the real admin category.
-        4. No match -> None (a new category gets created).
-    """
+    ranked.sort(key=lambda item: (-item[0], item[1].name.casefold(), str(item[1].id)))
+    return [
+        {"id": str(category.id), "name": category.name, "score": round(score, 3)}
+        for score, category in ranked[:limit]
+    ]
+
+
+def find_existing_category(name):
+    """Find an exact existing category; leave similar-name decisions to admins."""
     if not name or not name.strip():
         return None
-
-    synonym_target = CATEGORY_SYNONYMS.get(name.strip().lower())
-    if synonym_target:
-        mapped = Category.objects.filter(name__iexact=synonym_target).first()
-        if mapped:
-            return mapped
 
     normalized_name = normalize_taxonomy_name(name)
     if not normalized_name:
@@ -135,17 +121,11 @@ def find_similar_category(name):
         Category.objects.filter(origin=Category.Origin.STANDARD),
         Category.objects.exclude(origin=Category.Origin.STANDARD),
     ):
-        exact = queryset.filter(name__iexact=normalized_name).first()
+        exact = queryset.exclude(status=Category.Status.REJECTED).filter(
+            name__iexact=normalized_name
+        ).first()
         if exact:
             return exact
-
-        best_match, best_score = None, 0.0
-        for category in queryset.only("id", "name"):
-            score = _category_similarity(normalized_name, category.name)
-            if score > best_score:
-                best_score, best_match = score, category
-        if best_match and best_score >= 0.90:
-            return best_match
 
     return None
 def find_similar_term(model, name):
@@ -216,17 +196,18 @@ def assign_fallback_thumbnail(dataset):
 
 
 def get_or_create_category(name, user, origin):
-    """No approval step: an 'other' category is usable and saved immediately.
-    The typed name is checked against synonyms, then normalized/fuzzy-matched
-    against existing categories; if nothing matches, a new category is
-    created using the normalized (consistently cased) name."""
-    name = name.strip()
-    existing = find_similar_category(name)
+    """Reuse exact matches or create a pending suggestion usable by its author."""
+    name = (name or "").strip()
+    if not name:
+        return None
+
+    existing = find_existing_category(name)
     if existing:
         return existing
     return Category.objects.create(
         name=normalize_taxonomy_name(name),
         origin=origin,
+        status=Category.Status.PENDING,
         suggested_by=user,
     )
 

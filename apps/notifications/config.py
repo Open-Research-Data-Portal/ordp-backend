@@ -28,6 +28,7 @@ EMAIL_SUBJECTS = {
     NT.UNARCHIVE_REJECTED: "An unarchive request for a dataset you own was declined",
     NT.ARCHIVE_REQUESTED: "A dataset archive request needs your review",
     NT.UNARCHIVE_REQUESTED: "A dataset restoration request needs your decision",
+    NT.CATEGORY_DECISION: "Update on your suggested category",
 }
 
 

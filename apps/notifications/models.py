@@ -27,6 +27,7 @@ class Notification(models.Model):
         UNARCHIVE_REQUESTED = "unarchive_requested"
         DATASET_RESTORED = "dataset_restored"
         UNARCHIVE_REJECTED = "unarchive_rejected"
+        CATEGORY_DECISION = "category_decision"
 
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

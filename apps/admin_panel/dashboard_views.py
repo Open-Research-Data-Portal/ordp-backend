@@ -40,7 +40,8 @@ from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import IsAdminOnly, IsReviewerOrAdmin, IsReviewerOnly
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
-from apps.metadata.models import Category
+from apps.metadata.models import Category, Metadata
+from apps.metadata.services import rank_similar_categories
 from apps.accounts.views import get_client_ip
 from apps.accounts.utils import generate_username
 from apps.notifications.services import notify
@@ -903,20 +904,123 @@ def admin_create_category(request):
         status=201,
     )
 
-# @api_view(["POST"])
-# @permission_classes([IsAdminOnly])
-# def decide_pending_category(request, category_id):
-#     from apps.metadata.models import Category
-#     category = get_object_or_404(Category, id=category_id, status=Category.Status.PENDING)
-#     decision = request.data.get("decision")
-#     if decision == "approve":
-#         category.status = Category.Status.APPROVED
-#     elif decision == "reject":
-#         category.status = Category.Status.REJECTED
-#     else:
-#         return Response({"detail": "decision must be 'approve' or 'reject'."}, status=400)
-#     category.save(update_fields=["status"])
-#     return Response({"status": category.status})
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def pending_categories(request):
+    pending = list(
+        Category.objects.filter(status=Category.Status.PENDING)
+        .select_related("suggested_by__profile")
+        .annotate(
+            dataset_count=Count("metadata", distinct=True),
+            interest_count=Count("users_with_interests", distinct=True),
+        )
+        .order_by("name")
+    )
+    approved = list(
+        Category.objects.filter(status=Category.Status.APPROVED).only("id", "name")
+    )
+
+    return Response([{
+        "id": str(category.id),
+        "name": category.name,
+        "description": category.description,
+        "suggested_by": (
+            category.suggested_by.profile.full_name
+            if category.suggested_by else None
+        ),
+        "dataset_count": category.dataset_count,
+        "interest_count": category.interest_count,
+        "similar_existing": rank_similar_categories(category.name, approved),
+    } for category in pending])
+
+
+@api_view(["GET"])
+@permission_classes([IsAdminOnly])
+def approved_categories(request):
+    categories = Category.objects.filter(status=Category.Status.APPROVED)
+    search = (request.query_params.get("search") or "").strip()
+    if search:
+        categories = categories.filter(name__icontains=search)
+
+    return Response([
+        {"id": str(category.id), "name": category.name}
+        for category in categories.order_by("name")[:50]
+    ])
+
+
+def _notify_category_suggester(category, message):
+    if category.suggested_by:
+        notify(
+            user=category.suggested_by,
+            notification_type=Notification.NotificationType.CATEGORY_DECISION,
+            message=message,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOnly])
+@transaction.atomic
+def decide_pending_category(request, category_id):
+    category = get_object_or_404(
+        Category, id=category_id, status=Category.Status.PENDING
+    )
+    decision = request.data.get("decision")
+    reason = (request.data.get("reason") or "").strip()
+
+    if decision == "approve":
+        new_name = (request.data.get("name") or "").strip()
+        if new_name and new_name != category.name:
+            if Category.objects.filter(name__iexact=new_name).exclude(id=category.id).exists():
+                return Response({"detail": "A category with that name already exists."}, status=400)
+            category.name = new_name
+        if "description" in request.data:
+            category.description = (request.data.get("description") or "").strip()
+        category.status = Category.Status.APPROVED
+        category.save()
+        _notify_category_suggester(
+            category, f'Your suggested category "{category.name}" was approved.'
+        )
+        return Response({
+            "status": "approved",
+            "id": str(category.id),
+            "name": category.name,
+        })
+
+    if decision == "reject":
+        if Metadata.objects.filter(category=category).exists():
+            return Response(
+                {"detail": "Datasets already use this category. Use decision='merge' with merge_into."},
+                status=400,
+            )
+        category.users_with_interests.clear()
+        category.status = Category.Status.REJECTED
+        category.save(update_fields=["status"])
+        message = f'Your suggested category "{category.name}" was not approved.'
+        if reason:
+            message += f" Reason: {reason}"
+        _notify_category_suggester(category, message)
+        return Response({"status": "rejected"})
+
+    if decision == "merge":
+        target = get_object_or_404(
+            Category,
+            id=request.data.get("merge_into"),
+            status=Category.Status.APPROVED,
+        )
+        Metadata.objects.filter(category=category).update(category=target)
+        for profile in category.users_with_interests.all():
+            profile.interests.add(target)
+        _notify_category_suggester(
+            category,
+            f'Your suggested category "{category.name}" was merged into the existing "{target.name}".',
+        )
+        category.delete()
+        return Response({"status": "merged", "merged_into": str(target.id)})
+
+    return Response(
+        {"detail": "decision must be 'approve', 'reject' or 'merge'."},
+        status=400,
+    )
 
 
 

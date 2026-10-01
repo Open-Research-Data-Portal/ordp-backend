@@ -40,7 +40,7 @@ def attach_metadata(request, dataset_id):
     if not category_id and not other_category:
         return Response({"detail": "category_id or other_category is required."}, status=400)
     category = (
-        get_object_or_404(Category, id=category_id)
+        get_object_or_404(Category, id=category_id, status=Category.Status.APPROVED)
         if category_id
         else get_or_create_category_from_dataset_other(other_category, request.user)
     )
@@ -75,14 +75,16 @@ def attach_metadata(request, dataset_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_categories(request):
-    qs = Category.objects.exclude(origin=Category.Origin.INTEREST_OTHER).order_by("name")
+    qs = Category.objects.filter(status=Category.Status.APPROVED).order_by("name")
     return Response([{"id": c.id, "name": c.name} for c in qs])
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_interest_categories(request):
-    qs = Category.objects.filter(origin=Category.Origin.STANDARD).order_by("name")
+    qs = Category.objects.filter(
+        status=Category.Status.APPROVED,
+    ).order_by("name")
     return Response([{"id": c.id, "name": c.name} for c in qs])
 
 
