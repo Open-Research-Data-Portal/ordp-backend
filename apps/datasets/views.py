@@ -766,6 +766,12 @@ def dataset_reviewers(request, dataset_id):
 
     from apps.admin_panel.models import DatasetReviewerAssignment, ModerationDecision
 
+    if (
+        dataset.status == Dataset.Status.PENDING
+        and not DatasetReviewerAssignment.objects.filter(dataset=dataset).exists()
+    ):
+        assign_reviewers(dataset)
+
     assignments = (
         DatasetReviewerAssignment.objects
         .filter(dataset=dataset)
