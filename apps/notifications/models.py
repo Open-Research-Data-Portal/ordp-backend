@@ -40,6 +40,7 @@ class Notification(models.Model):
 
     link_path = models.CharField(max_length=512, blank=True)
     is_read = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False)
     email_sent = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 

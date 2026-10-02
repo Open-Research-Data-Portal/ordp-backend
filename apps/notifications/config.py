@@ -1,7 +1,10 @@
 from .models import Notification
 
 NT = Notification.NotificationType
-DASHBOARD_VISIBLE = {NT.NEW_VERSION_AVAILABLE: True}
+DASHBOARD_VISIBLE = {
+    NT.NEW_VERSION_AVAILABLE: True,
+    NT.CATEGORY_DECISION: True,
+}
 DASHBOARD_VISIBLE[Notification.NotificationType.SYSTEM_ANNOUNCEMENT] = True
 
 

@@ -3,6 +3,7 @@ from rest_framework import status
 
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset
+from apps.notifications.models import Notification
 from .models import Category, Metadata
 
 
@@ -162,6 +163,11 @@ class AdminCategoryReviewTests(APITestCase):
         self.client.force_authenticate(admin)
         resp = self.client.post(f"/api/admin-panel/categories/{category.id}/decide/", {"decision": "approve"})
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(Notification.objects.filter(
+            user=researcher,
+            notification_type=Notification.NotificationType.CATEGORY_DECISION,
+            message__contains="was approved",
+        ).exists())
         category.refresh_from_db()
         self.assertEqual(category.status, Category.Status.APPROVED)
         dataset.refresh_from_db()
@@ -169,6 +175,12 @@ class AdminCategoryReviewTests(APITestCase):
         self.assertIn(category, researcher.profile.interests.all())
 
         self.client.force_authenticate(researcher)
+        bell_resp = self.client.get("/api/notifications/bell/")
+        self.assertEqual(bell_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(
+            item["notification_type"] == Notification.NotificationType.CATEGORY_DECISION
+            for item in bell_resp.data["notifications"]
+        ))
         list_resp = self.client.get("/api/metadata/categories/")
         names = {c["name"] for c in list_resp.data}
         self.assertIn("Newly Approved", names)
@@ -181,6 +193,11 @@ class AdminCategoryReviewTests(APITestCase):
         self.client.force_authenticate(admin)
         resp = self.client.post(f"/api/admin-panel/categories/{category.id}/decide/", {"decision": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(Notification.objects.filter(
+            user=researcher,
+            notification_type=Notification.NotificationType.CATEGORY_DECISION,
+            message__contains="not approved",
+        ).exists())
         category.refresh_from_db()
         self.assertEqual(category.status, Category.Status.REJECTED)
 
@@ -212,6 +229,11 @@ class AdminCategoryReviewTests(APITestCase):
             {"decision": "merge", "merge_into": str(target.id)},
         )
         self.assertEqual(resp.status_code, 200)
+        self.assertTrue(Notification.objects.filter(
+            user=researcher,
+            notification_type=Notification.NotificationType.CATEGORY_DECISION,
+            message__contains="merged into",
+        ).exists())
         dataset.refresh_from_db()
         self.assertEqual(dataset.metadata.category, target)
         self.assertIn(target, researcher.profile.interests.all())
