@@ -747,15 +747,7 @@ def accept_terms_and_submit(request, dataset_id):
     dataset.status = Dataset.Status.PENDING
     dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status"])
 
-    assignments = assign_reviewers(dataset)
-    for assignment in assignments:
-        notify(
-            user=assignment.reviewer,
-            notification_type=Notification.NotificationType.DATASET_ASSIGNED_FOR_REVIEW,
-            message=f'You have been assigned to review "{dataset.title}".',
-            dataset=dataset,
-            link_path=f"/admin-panel/queue/{dataset.id}",
-        )
+    assign_reviewers(dataset)
 
     log_activity(user=request.user, action="dataset_submitted",
                  target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request))
