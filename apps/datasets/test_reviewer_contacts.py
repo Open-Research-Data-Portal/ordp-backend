@@ -58,6 +58,26 @@ class DatasetReviewerContactTests(APITestCase):
         self.assertEqual([row["id"] for row in resp.data["reviewers"]], [reviewer.id])
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_contacts_view_assigns_pending_dataset_without_reviewers(self):
+        owner = make_user("contactautoowner", "contactautoowner@aastu.edu.et", role="researcher")
+        reviewers = [
+            make_user(f"contactautoreviewer{i}", f"contactautoreviewer{i}@aastu.edu.et", role="reviewer")
+            for i in range(3)
+        ]
+        dataset = make_dataset(owner, title="Auto Contact DS", status=Dataset.Status.PENDING)
+
+        self.client.force_authenticate(owner)
+        resp = self.client.get(f"/api/datasets/{dataset.id}/reviewers/")
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data["reviewers"]), 3)
+        self.assertEqual(DatasetReviewerAssignment.objects.filter(dataset=dataset).count(), 3)
+        self.assertEqual(
+            sorted(message.to[0] for message in mail.outbox),
+            sorted(reviewer.email for reviewer in reviewers),
+        )
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     def test_submit_assigns_available_reviewers_and_emails_them(self):
         owner = make_user("contactsubmitowner", "contactsubmitowner@aastu.edu.et", role="researcher")
         reviewer1 = make_user("contactsubmitreviewer1", "contactsubmitreviewer1@aastu.edu.et", role="reviewer")
