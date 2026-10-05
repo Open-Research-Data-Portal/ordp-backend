@@ -6,31 +6,16 @@ from apps.admin_panel.models import DatasetReviewerAssignment
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 
-MIN_REVIEWERS = 2
-MAX_REVIEWERS = 3
-
-
-def _create_assignment(dataset, reviewer_profile):
-    assignment = DatasetReviewerAssignment.objects.create(
-        dataset=dataset,
-        reviewer=reviewer_profile.user,
-    )
-    notify(
-        user=reviewer_profile.user,
-        notification_type=Notification.NotificationType.DATASET_ASSIGNED_FOR_REVIEW,
-        message=f'You have been assigned to review "{dataset.title}".',
-        dataset=dataset,
-        link_path=f"/admin-panel/queue/{dataset.id}",
-    )
-    return assignment
+MIN_REVIEWERS = 3
 
 
 def assign_reviewers(dataset):
     """
-    Assign reviewers to a dataset.
+    Assign exactly 3 eligible reviewers to a dataset.
 
-    The workflow needs at least two eligible reviewers before moderation can
-    begin, and uses up to three reviewers when available.
+    If fewer than 3 eligible reviewers exist, the dataset remains pending
+    without reviewer assignments. It can be assigned later when enough
+    reviewers become available.
     """
     from ..models import Dataset, Contributor
 
@@ -72,7 +57,7 @@ def assign_reviewers(dataset):
 
     base = base.exclude(user_id__in=already_assigned)
 
-    # We need the minimum reviewer count before moderation can begin.
+    # We need three reviewers before moderation can begin.
     if base.count() < MIN_REVIEWERS:
         dataset.assigned_reviewer = None
         dataset.save(update_fields=["assigned_reviewer"])
@@ -113,14 +98,14 @@ def assign_reviewers(dataset):
         preferred = get_least_loaded(base.filter(interests=category))
 
         if len(preferred) >= MIN_REVIEWERS:
-            selected = preferred[:MAX_REVIEWERS]
+            selected = preferred[:MIN_REVIEWERS]
         else:
             # Not enough category-matched reviewers; use all eligible
-            # reviewers while still requiring the minimum total.
+            # reviewers while still requiring three total.
             all_candidates = get_least_loaded(base)
-            selected = all_candidates[:MAX_REVIEWERS]
+            selected = all_candidates[:MIN_REVIEWERS]
     else:
-        selected = get_least_loaded(base)[:MAX_REVIEWERS]
+        selected = get_least_loaded(base)[:MIN_REVIEWERS]
 
     if len(selected) < MIN_REVIEWERS:
         dataset.assigned_reviewer = None
@@ -130,7 +115,19 @@ def assign_reviewers(dataset):
     assignments = []
 
     for profile in selected:
-        assignments.append(_create_assignment(dataset, profile))
+        assignment = DatasetReviewerAssignment.objects.create(
+            dataset=dataset,
+            reviewer=profile.user,
+        )
+        assignments.append(assignment)
+
+        notify(
+            user=profile.user,
+            notification_type=Notification.NotificationType.DATASET_ASSIGNED_FOR_REVIEW,
+            message=f'You have been assigned to review the dataset "{dataset.title}".',
+            dataset=dataset,
+            link_path=f"/datasets/{dataset.id}",
+        )
 
     dataset.assigned_reviewer = selected[0].user
     dataset.save(update_fields=["assigned_reviewer"])
@@ -139,8 +136,8 @@ def assign_reviewers(dataset):
 def top_up_reviewers(dataset):
     """
     Called after a reviewer is revoked mid-review. Fills only the
-    remaining slots needed to reach MAX_REVIEWERS, rather than
-    reassigning a fresh set of reviewers. Returns the list of new assignments
+    remaining slots needed to reach MIN_REVIEWERS, rather than
+    reassigning a fresh set of 3. Returns the list of new assignments
     (empty if there aren't enough eligible reviewers left — the dataset
     is simply left short, which already shows up in the moderation
     queue for any admin to see).
@@ -150,7 +147,7 @@ def top_up_reviewers(dataset):
     already_assigned = list(
         DatasetReviewerAssignment.objects.filter(dataset=dataset).values_list("reviewer_id", flat=True)
     )
-    needed = MAX_REVIEWERS - len(already_assigned)
+    needed = MIN_REVIEWERS - len(already_assigned)
     if needed <= 0:
         return []
 
@@ -190,4 +187,7 @@ def top_up_reviewers(dataset):
         fallback = get_least_loaded(base.exclude(user_id__in=already_picked_ids), remaining_needed)
         selected += fallback
 
-    return [_create_assignment(dataset, profile) for profile in selected]
+    return [
+        DatasetReviewerAssignment.objects.create(dataset=dataset, reviewer=profile.user)
+        for profile in selected
+    ]

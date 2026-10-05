@@ -116,13 +116,13 @@ class ReviewerAssignmentRetryTests(APITestCase):
 
         from apps.datasets.services.assignment import assign_reviewers
 
-        # Two eligible reviewers is enough to start review immediately.
+        # Only two eligible reviewers exist, so assignment must wait.
         assignments = assign_reviewers(dataset)
 
-        self.assertEqual(len(assignments), 2)
+        self.assertEqual(assignments, [])
         self.assertEqual(
             DatasetReviewerAssignment.objects.filter(dataset=dataset).count(),
-            2,
+            0,
         )
 
         self.client.force_authenticate(admin)
@@ -144,7 +144,10 @@ class ReviewerAssignmentRetryTests(APITestCase):
 
         dataset.refresh_from_db()
 
-        self.assertEqual(DatasetReviewerAssignment.objects.filter(dataset=dataset).count(), 3)
+        self.assertEqual(
+            DatasetReviewerAssignment.objects.filter(dataset=dataset).count(),
+            3,
+        )
 
         assigned_ids = set(
             DatasetReviewerAssignment.objects.filter(

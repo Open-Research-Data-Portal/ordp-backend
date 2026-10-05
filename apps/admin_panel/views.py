@@ -9,7 +9,6 @@ from apps.metadata.models import FallbackThumbnail
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
 from django.contrib.auth import get_user_model
-from apps.datasets.services.assignment import MIN_REVIEWERS
 from apps.datasets.services.storage import presigned_download_url
 from .models import (
     ModerationDecision,
@@ -168,7 +167,7 @@ def moderate_dataset(request, dataset_id):
         dataset=dataset,
     ).count()
 
-    if assigned_count < MIN_REVIEWERS:
+    if assigned_count < 3:
         return Response(
     {"detail": "Your review decision has been submitted successfully."},
     status=200,
