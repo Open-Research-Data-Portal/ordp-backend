@@ -3,6 +3,7 @@ from . import views
 
 urlpatterns = [
     path("<uuid:dataset_id>/attach/", views.attach_metadata, name="attach-metadata"),
+    path("categories/suggestions/", views.suggest_categories, name="suggest-categories"),
     path("categories/", views.list_categories, name="list-categories"),
     path("categories/interests/", views.list_interest_categories, name="list-interest-categories"),
     path("languages/", views.list_languages, name="list-languages"),

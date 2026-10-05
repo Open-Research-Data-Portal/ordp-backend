@@ -196,18 +196,21 @@ def assign_fallback_thumbnail(dataset):
 
 
 def get_or_create_category(name, user, origin):
-    """Reuse exact matches or create a pending suggestion usable by its author."""
-    name = (name or "").strip()
+    """Reuse exact matches or create an approved category visible to everyone."""
+    name = normalize_taxonomy_name(name or "")
     if not name:
         return None
 
     existing = find_existing_category(name)
     if existing:
+        if existing.status == Category.Status.PENDING:
+            existing.status = Category.Status.APPROVED
+            existing.save(update_fields=["status"])
         return existing
     return Category.objects.create(
-        name=normalize_taxonomy_name(name),
+        name=name,
         origin=origin,
-        status=Category.Status.PENDING,
+        status=Category.Status.APPROVED,
         suggested_by=user,
     )
 

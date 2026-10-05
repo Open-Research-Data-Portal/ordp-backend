@@ -9,7 +9,7 @@ from .models import Category, Metadata
 
 class DatasetOtherCategoryTests(APITestCase):
 
-    def test_new_category_created_as_pending_and_still_usable(self):
+    def test_new_category_is_approved_and_visible_to_other_users(self):
         researcher = make_user("ocresearcher", "ocresearcher@aastu.edu.et", role="researcher")
         dataset = Dataset.objects.create(title="OC DS", owner=researcher)
 
@@ -19,9 +19,14 @@ class DatasetOtherCategoryTests(APITestCase):
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         category = Category.objects.get(name="Quantum Beekeeping")
-        self.assertEqual(category.status, Category.Status.PENDING)
+        self.assertEqual(category.status, Category.Status.APPROVED)
         dataset.refresh_from_db()
         self.assertEqual(dataset.metadata.category, category)
+
+        other_researcher = make_user("ocother", "ocother@aastu.edu.et", role="researcher")
+        self.client.force_authenticate(other_researcher)
+        visible = self.client.get("/api/metadata/categories/")
+        self.assertIn("Quantum Beekeeping", {item["name"] for item in visible.data})
 
     def test_existing_approved_category_used_via_category_id(self):
         researcher = make_user("ocresearcher2", "ocresearcher2@aastu.edu.et", role="researcher")
@@ -63,7 +68,7 @@ class DatasetOtherCategoryTests(APITestCase):
 
         self.assertEqual(Category.objects.filter(name__iexact="Marine Robotics").count(), 1)
 
-    def test_near_duplicate_is_pending_for_admin_to_decide(self):
+    def test_near_duplicate_can_be_created_and_is_immediately_approved(self):
         researcher = make_user("ocnearresearcher", "ocnearresearcher@aastu.edu.et", role="researcher")
         approved = Category.objects.create(
             name="Climate Science", status=Category.Status.APPROVED
@@ -77,19 +82,41 @@ class DatasetOtherCategoryTests(APITestCase):
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         suggestion = Category.objects.get(name="Climate Sci")
-        self.assertEqual(suggestion.status, Category.Status.PENDING)
+        self.assertEqual(suggestion.status, Category.Status.APPROVED)
         self.assertNotEqual(suggestion, approved)
         dataset.refresh_from_db()
         self.assertEqual(dataset.metadata.category, suggestion)
 
+    def test_reusing_exact_pending_category_promotes_existing_record(self):
+        researcher = make_user("ocpendingreuse", "ocpendingreuse@aastu.edu.et", role="researcher")
+        dataset = Dataset.objects.create(title="Pending Reuse", owner=researcher)
+        category = Category.objects.create(
+            name="Marine Biology", status=Category.Status.PENDING,
+            origin=Category.Origin.DATASET_OTHER,
+        )
+
+        self.client.force_authenticate(researcher)
+        resp = self.client.post(f"/api/metadata/{dataset.id}/attach/", {
+            "description": "test data", "other_category": "marine biology",
+        })
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(Category.objects.filter(name__iexact="Marine Biology").count(), 1)
+        category.refresh_from_db()
+        self.assertEqual(category.status, Category.Status.APPROVED)
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.metadata.category, category)
+
 
 class ProfileOtherInterestTests(APITestCase):
-    def test_add_other_interest_creates_pending_category(self):
+    def test_add_other_interest_creates_approved_category(self):
         researcher = make_user("piresearcher", "piresearcher@aastu.edu.et", role="researcher")
         self.client.force_authenticate(researcher)
         resp = self.client.post("/api/accounts/profile/interests/other/", {"name": "Applied Cryptozoology"})
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(resp.data["pending_review"])
+        self.assertFalse(resp.data["pending_review"])
+        category = Category.objects.get(name="Applied Cryptozoology")
+        self.assertEqual(category.status, Category.Status.APPROVED)
         researcher.profile.refresh_from_db()
         self.assertTrue(researcher.profile.interests.filter(name="Applied Cryptozoology").exists())
 
@@ -114,6 +141,24 @@ class CategoryVisibilityTests(APITestCase):
         names = {c["name"] for c in resp.data}
         self.assertIn("Approved Cat", names)
         self.assertNotIn("Pending Cat", names)
+
+    def test_user_gets_ranked_suggestions_from_approved_categories_only(self):
+        researcher = make_user("cvsuggest", "cvsuggest@aastu.edu.et", role="researcher")
+        target = Category.objects.create(name="Climate Science", status=Category.Status.APPROVED)
+        Category.objects.create(name="Agriculture", status=Category.Status.APPROVED)
+        Category.objects.create(name="Climate Sci", status=Category.Status.PENDING)
+
+        self.client.force_authenticate(researcher)
+        resp = self.client.get("/api/metadata/categories/suggestions/?q=Climate%20Sci")
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data[0]["id"], str(target.id))
+        self.assertEqual(resp.data[0]["name"], "Climate Science")
+        self.assertNotIn("Climate Sci", {item["name"] for item in resp.data})
+
+    def test_category_suggestions_require_authentication(self):
+        resp = self.client.get("/api/metadata/categories/suggestions/?q=Climate")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
 class AdminCategoryReviewTests(APITestCase):

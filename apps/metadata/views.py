@@ -12,6 +12,7 @@ from .services import (
     get_or_create_pending,
     get_or_create_approved_term,
     get_or_create_pending,
+    rank_similar_categories,
 )
 
 
@@ -39,14 +40,14 @@ def attach_metadata(request, dataset_id):
     other_category = (request.data.get("other_category") or "").strip()
     if not category_id and not other_category:
         return Response({"detail": "category_id or other_category is required."}, status=400)
+
+    serializer = MetadataSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
     category = (
         get_object_or_404(Category, id=category_id, status=Category.Status.APPROVED)
         if category_id
         else get_or_create_category_from_dataset_other(other_category, request.user)
     )
-
-    serializer = MetadataSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
     validated = dict(serializer.validated_data)
     validated["category"] = category
     keywords = validated.pop("keywords", None)
@@ -77,6 +78,19 @@ def attach_metadata(request, dataset_id):
 def list_categories(request):
     qs = Category.objects.filter(status=Category.Status.APPROVED).order_by("name")
     return Response([{"id": c.id, "name": c.name} for c in qs])
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def suggest_categories(request):
+    query = (request.query_params.get("q") or "").strip()
+    if not query:
+        return Response([])
+
+    categories = Category.objects.filter(
+        status=Category.Status.APPROVED
+    ).only("id", "name")
+    return Response(rank_similar_categories(query, categories))
 
 
 @api_view(["GET"])
