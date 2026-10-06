@@ -1,4 +1,4 @@
-from datetime import timezone as datetime_timezone
+from datetime import timedelta, timezone as datetime_timezone
 
 from django.db.models import Q, Sum, F
 from django.utils import timezone
@@ -145,8 +145,12 @@ def feed(request):
     interest_category_ids = list(profile.interests.values_list("id", flat=True))
     my_ids = _my_dataset_ids(request.user)
 
+    cutoff = timezone.now() - timedelta(days=30)
     qs = Dataset.objects.filter(
-        status=Dataset.Status.APPROVED, is_active=True, is_archived=False,
+        status=Dataset.Status.APPROVED,
+        is_active=True,
+        is_archived=False,
+        created_at__gte=cutoff,
     ).exclude(id__in=my_ids).exclude(visibility=Dataset.Visibility.PRIVATE)
 
     if interest_category_ids:

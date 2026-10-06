@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework import status
 
@@ -116,6 +119,22 @@ class FeedTests(APITestCase):
         resp = self.client.get("/api/datasets/dashboard/feed/")
         titles = {d["title"] for d in resp.data}
         self.assertNotIn("My Own Ag DS", titles)
+
+    def test_feed_only_includes_datasets_created_within_last_30_days(self):
+        researcher = make_user("feedresearcher3", "feedresearcher3@aastu.edu.et", role="researcher")
+        researcher.profile.interests.set([self.category])
+        other_owner = make_user("feedowner2", "feedowner2@aastu.edu.et", role="researcher")
+
+        recent_ds = self._dataset_with_category(other_owner, "Recent Ag DS", self.category)
+        old_ds = self._dataset_with_category(other_owner, "Old Ag DS", self.category)
+        Dataset.objects.filter(id=recent_ds.id).update(created_at=timezone.now() - timedelta(days=5))
+        Dataset.objects.filter(id=old_ds.id).update(created_at=timezone.now() - timedelta(days=31))
+
+        self.client.force_authenticate(researcher)
+        resp = self.client.get("/api/datasets/dashboard/feed/")
+        titles = {d["title"] for d in resp.data}
+        self.assertIn("Recent Ag DS", titles)
+        self.assertNotIn("Old Ag DS", titles)
 
 
 class MyContributionsTests(APITestCase):
