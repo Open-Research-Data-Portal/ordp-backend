@@ -33,6 +33,12 @@ from apps.accounts.models import (
     UserRole,
     BlockedCredential,
 )
+from apps.accounts.services import (
+    AUTO_DEACTIVATION_ACTION,
+    INACTIVITY_REASON,
+    MANUAL_DEACTIVATION_ACTION,
+    REACTIVATION_ACTION,
+)
 from django.http import HttpResponse
 from reportlab.lib import colors # type: ignore
 from reportlab.lib.pagesizes import landscape, letter # type: ignore
@@ -601,8 +607,19 @@ def admin_deactivate_user(request, user_id):
     target_user = get_object_or_404(User, id=user_id)
     if target_user.id == request.user.id:
         return Response({"detail": "You can't deactivate your own account."}, status=400)
+    reason = (request.data.get("reason") or "").strip() or "MANUAL_ADMIN_ACTION"
+    if target_user.is_active and hasattr(target_user, "profile") and not target_user.profile.email_verified:
+        target_user.profile.email_verified = True
+        target_user.profile.save(update_fields=["email_verified"])
     target_user.is_active = False
     target_user.save(update_fields=["is_active"])
+    ActivityLog.log(
+        user=request.user,
+        action=MANUAL_DEACTIVATION_ACTION,
+        target_object=str(target_user.id),
+        ip_address=get_client_ip(request),
+        extra={"reason": reason},
+    )
     return Response({"status": "deactivated"})
 
 
@@ -612,6 +629,12 @@ def admin_reactivate_user(request, user_id):
     target_user = get_object_or_404(User, id=user_id) # type: ignore
     target_user.is_active = True
     target_user.save(update_fields=["is_active"])
+    ActivityLog.log(
+        user=request.user,
+        action=REACTIVATION_ACTION,
+        target_object=str(target_user.id),
+        ip_address=get_client_ip(request),
+    )
     return Response({"status": "reactivated"})
 
 
@@ -644,6 +667,15 @@ def inactive_users(request):
         Q(is_active=False) | Q(last_login__lt=cutoff) | Q(last_login__isnull=True, date_joined__lt=cutoff)
     ).exclude(id=request.user.id).order_by("is_active", "last_login", "date_joined")
 
+    users = list(qs[:200])
+    deactivation_logs = ActivityLog.objects.filter(
+        target_object__in=[str(user.id) for user in users],
+        action__in=(AUTO_DEACTIVATION_ACTION, MANUAL_DEACTIVATION_ACTION),
+    ).order_by("-timestamp")
+    latest_deactivation = {}
+    for entry in deactivation_logs:
+        latest_deactivation.setdefault(entry.target_object, entry)
+
     return Response({
         "days": days,
         "count": qs.count(),
@@ -653,8 +685,27 @@ def inactive_users(request):
                 "last_login": user.last_login,
                 "date_joined": user.date_joined,
                 "eligible_for_delete": not user.is_active,
+                "deactivation_type": (
+                    "automatic"
+                    if latest_deactivation.get(str(user.id))
+                    and latest_deactivation[str(user.id)].action == AUTO_DEACTIVATION_ACTION
+                    else "manual"
+                    if latest_deactivation.get(str(user.id))
+                    and latest_deactivation[str(user.id)].action == MANUAL_DEACTIVATION_ACTION
+                    else "unknown"
+                ),
+                "deactivation_reason": (
+                    latest_deactivation[str(user.id)].extra.get("reason")
+                    if latest_deactivation.get(str(user.id))
+                    else "No deactivation audit record available"
+                ),
+                "deactivated_at": (
+                    latest_deactivation[str(user.id)].timestamp
+                    if latest_deactivation.get(str(user.id))
+                    else None
+                ),
             }
-            for user in qs[:200]
+            for user in users
         ],
     })
 

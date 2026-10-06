@@ -32,6 +32,7 @@ from .models import (
     CenterOfExcellence,
     UserRole,
 )
+from .services import account_was_activated
 from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from apps.accounts.permissions import IsAdminOnly
 from .throttles import (
@@ -130,13 +131,29 @@ class LoginView(APIView):
             return generic_error
 
         if not user.is_active:
-            log_activity(user=user, action="login_failure", target_object=str(user.id), ip_address=ip, extra={"reason": "unverified"})
+            previously_activated = account_was_activated(user)
+            reason = "inactive" if previously_activated else "unverified"
+            log_activity(user=user, action="login_failure", target_object=str(user.id), ip_address=ip, extra={"reason": reason})
+            if previously_activated:
+                return Response(
+                    {"error": {
+                        "code": "ACCOUNT_INACTIVE",
+                        "message": "Your account is inactive. Please contact an administrator to request reactivation.",
+                        "field": None,
+                    }},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             return Response(
                 {"error": {"code": "EMAIL_NOT_VERIFIED", "message": "Please verify your email before logging in.", "field": None}},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         security.reset()
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
+        if hasattr(user, "profile") and not user.profile.email_verified:
+            user.profile.email_verified = True
+            user.profile.save(update_fields=["email_verified"])
         log_activity(user=user, action="login_success", target_object=str(user.id), ip_address=ip)
 
         stay_logged_in = serializer.validated_data.get("stay_logged_in", False)
@@ -402,12 +419,21 @@ class ResendVerificationEmailView(APIView):
                 target_object=str(user.id),
                 ip_address=ip,
             )
-
             return Response(
                 {
                     "detail": "This account has already been verified."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if account_was_activated(user):
+            return Response(
+                {"error": {
+                    "code": "ACCOUNT_INACTIVE",
+                    "message": "This verified account is inactive. Please contact an administrator to request reactivation.",
+                    "field": None,
+                }},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # Invalidate all previous unused verification tokens.
@@ -522,12 +548,32 @@ class VerifyEmailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        user = verification.user
+        if not user.is_active and account_was_activated(user):
+            log_activity(
+                user=user,
+                action="email_verification_failure",
+                target_object=str(user.id),
+                ip_address=ip,
+                extra={"reason": "account_inactive"},
+            )
+            return Response(
+                {"error": {
+                    "code": "ACCOUNT_INACTIVE",
+                    "message": "Your account is inactive. Please contact an administrator to request reactivation.",
+                    "field": None,
+                }},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         verification.is_used = True
         verification.save(update_fields=["is_used"])
 
-        user = verification.user
         user.is_active = True
-        user.save(update_fields=["is_active"])
+        user.last_login = timezone.now()
+        user.save(update_fields=["is_active", "last_login"])
+        user.profile.email_verified = True
+        user.profile.save(update_fields=["email_verified"])
 
         log_activity(
             user=user,
