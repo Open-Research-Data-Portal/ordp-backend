@@ -146,18 +146,34 @@ def feed(request):
     my_ids = _my_dataset_ids(request.user)
 
     cutoff = timezone.now() - timedelta(days=30)
-    qs = Dataset.objects.filter(
+    recent_qs = Dataset.objects.filter(
         status=Dataset.Status.APPROVED,
         is_active=True,
         is_archived=False,
         created_at__gte=cutoff,
     ).exclude(id__in=my_ids).exclude(visibility=Dataset.Visibility.PRIVATE)
 
-    if interest_category_ids:
-        qs = qs.filter(metadata__category_id__in=interest_category_ids)
+    recent_datasets = list(recent_qs)
 
-    qs = qs.order_by("-created_at")[:20]
-    return Response(DatasetSerializer(qs, many=True).data)
+    def ranking_key(dataset):
+        return (
+            (dataset.download_count or 0) * 5 + (dataset.view_count or 0) * 2,
+            dataset.download_count or 0,
+            dataset.view_count or 0,
+            dataset.created_at,
+        )
+
+    if interest_category_ids:
+        matching = [
+            d for d in recent_datasets
+            if getattr(getattr(d, "metadata", None), "category_id", None) in interest_category_ids
+        ]
+        if matching:
+            ranked = sorted(matching, key=ranking_key, reverse=True)
+            return Response(DatasetSerializer(ranked[:20], many=True).data)
+
+    ranked_recent = sorted(recent_datasets, key=ranking_key, reverse=True)
+    return Response(DatasetSerializer(ranked_recent[:20], many=True).data)
 
 @api_view(["GET"])
 @permission_classes([CanUploadDatasets])
