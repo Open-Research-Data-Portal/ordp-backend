@@ -1,9 +1,14 @@
 from calendar import monthrange
 
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 
 from .models import ActivityLog, EmailVerificationToken, UserRole
 
@@ -12,6 +17,18 @@ AUTO_DEACTIVATION_ACTION = "USER_AUTO_DEACTIVATED"
 MANUAL_DEACTIVATION_ACTION = "USER_MANUALLY_DEACTIVATED"
 REACTIVATION_ACTION = "USER_REACTIVATED"
 INACTIVITY_REASON = "SIX_MONTH_INACTIVITY"
+
+
+def validate_new_password(password, user=None):
+    validate_password(password, user=user)
+
+
+def set_password_and_revoke_tokens(user, password):
+    user.set_password(password)
+    user.save(update_fields=["password"])
+
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)
 
 
 def six_months_before(value):

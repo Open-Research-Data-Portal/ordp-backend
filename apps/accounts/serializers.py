@@ -1,9 +1,10 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 import re
 from .models import UserProfile, BlockedCredential
 from django.utils import timezone
+from .services import validate_new_password
 from apps.metadata.models import Category
 
 
@@ -164,11 +165,10 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate_password(self, value):
-        validate_password(value)
-        if BlockedCredential.is_password_blocked(value):
-            raise serializers.ValidationError(
-                "This password can't be used right now. Please choose a different one."
-            )
+        try:
+            validate_new_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
         return value
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -182,11 +182,32 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     def validate(self, data):
         if data["new_password"] != data["confirm_password"]:
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
-        validate_password(data["new_password"])
-        if BlockedCredential.is_password_blocked(data["new_password"]):
+        try:
+            validate_new_password(data["new_password"])
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": exc.messages}) from exc
+        return data
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = self.context["request"].user
+        if not user.check_password(data["current_password"]):
             raise serializers.ValidationError({
-                "new_password": "This password can't be used right now. Please choose a different one."
+                "current_password": "Current password is incorrect."
             })
+        if data["new_password"] != data["confirm_password"]:
+            raise serializers.ValidationError({
+                "confirm_password": "Passwords do not match."
+            })
+        try:
+            validate_new_password(data["new_password"], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": exc.messages}) from exc
         return data
 
 
@@ -214,4 +235,3 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             "bio",
             "additional_link",
         ]
-

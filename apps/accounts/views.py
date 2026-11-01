@@ -13,7 +13,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.tokens import RefreshToken as RefreshTokenObj
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
-from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from django.db import transaction
 from rest_framework.decorators import api_view, permission_classes
 from apps.datasets.models import Contributor
@@ -33,7 +32,16 @@ from .models import (
     UserRole,
 )
 from .services import account_was_activated
-from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
+from .serializers import (
+    ChangePasswordSerializer,
+    LoginSerializer,
+    LogoutSerializer,
+    ProfileSerializer,
+    RegisterSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetConfirmSerializer,
+)
+from .services import set_password_and_revoke_tokens
 from apps.accounts.permissions import IsAdminOnly
 from .throttles import (
     VerificationEmailRateThrottle,
@@ -685,20 +693,42 @@ class PasswordResetConfirmView(APIView):
             )
 
         user = reset_token.user
-        user.set_password(data["new_password"])
-        user.save()
-
-        reset_token.is_used = True
-        reset_token.save(update_fields=["is_used"])
-
-        for token_obj in OutstandingToken.objects.filter(user=user):
-            BlacklistedToken.objects.get_or_create(token=token_obj)
+        with transaction.atomic():
+            set_password_and_revoke_tokens(user, data["new_password"])
+            reset_token.is_used = True
+            reset_token.save(update_fields=["is_used"])
 
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
         if user.profile.roles.filter(role=UserRole.RoleChoice.REVIEWER).exists():
             retry_pending_assignments()
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
+
+
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            set_password_and_revoke_tokens(request.user, data["new_password"])
+
+        log_activity(
+            user=request.user,
+            action="password_change_completed",
+            target_object=str(request.user.id),
+            ip_address=get_client_ip(request),
+        )
+        return Response(
+            {"detail": "Password changed successfully. Please log in again."},
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])

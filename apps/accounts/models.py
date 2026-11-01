@@ -336,18 +336,13 @@ class PasswordResetToken(models.Model):
     class Meta:
         ordering = ["-created_at"]
 class BlockedCredential(models.Model):
-    """Email/password blocklist for banned users. Prevents the same email or
-    the same password from being used to create a new account for
-    BLOCK_DURATION_DAYS (~6 months) after a ban. Entries older than that are
-    simply ignored by the lookup helpers below — no cleanup job required,
-    though you can periodically delete expired rows if the table grows large."""
+    """Temporarily blocks email addresses and usernames after an account is blocked."""
 
-    BLOCK_DURATION_DAYS = 182  # ~6 months
+    BLOCK_DURATION_DAYS = 30
 
     class CredentialType(models.TextChoices):
         EMAIL = "email", "Email"
         USERNAME = "username", "Username"
-        PASSWORD_HASH = "password_hash", "Password hash"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     credential_type = models.CharField(max_length=20, choices=CredentialType.choices)
@@ -385,27 +380,8 @@ class BlockedCredential(models.Model):
         ).exists()
 
     @classmethod
-    def is_password_blocked(cls, raw_password):
-        """Password hashes can't be looked up by value directly (they're
-        salted), so this checks the candidate password against every
-        currently-active blocked hash. Fine at the scale of a handful of
-        bans; if this list grows into the hundreds, worth revisiting."""
-        from django.contrib.auth.hashers import check_password
-
-        active_hashes = cls.objects.filter(
-            credential_type=cls.CredentialType.PASSWORD_HASH,
-            expires_at__gt=timezone.now(),
-        ).values_list("value", flat=True)
-
-        return any(check_password(raw_password, hashed) for hashed in active_hashes)
-
-    @classmethod
     def block_user(cls, user, admin=None, reason=""):
-        """Blocks the user's current email and current password hash for
-        BLOCK_DURATION_DAYS. The password hash is copied as-is from
-        user.password — this is safe because Django's check_password() only
-        needs a correctly-formatted hash to verify against, never the
-        original plaintext."""
+        """Block the user's current email and username for 30 days."""
         expires_at = timezone.now() + timedelta(days=cls.BLOCK_DURATION_DAYS)
 
         cls.objects.create(
@@ -423,11 +399,4 @@ class BlockedCredential(models.Model):
                 blocked_by=admin,
                 expires_at=expires_at,
             )
-        cls.objects.create(
-            credential_type=cls.CredentialType.PASSWORD_HASH,
-            value=user.password,
-            reason=reason,
-            blocked_by=admin,
-            expires_at=expires_at,
-        )
         return expires_at
