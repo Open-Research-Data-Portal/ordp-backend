@@ -31,7 +31,11 @@ from .services.storage import (
     upload_fileobj,
     download_to_file,
 )
-from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
+from .permissions import (
+    IsDatasetOwner,
+    IsDatasetOwnerOrContributor,
+    can_access_private_dataset,
+)
 from .models import PendingContentUpdate
 from .services.revisions import route_change, request_revision_permission as create_request
 from .models import Dataset
@@ -546,6 +550,12 @@ def get_thumbnail_url(request, dataset_id):
         is_active=True,
     )
 
+    if (
+        dataset.visibility == Dataset.Visibility.PRIVATE
+        and not can_access_private_dataset(request.user, dataset)
+    ):
+        return Response({"detail": "Not found."}, status=404)
+
     if not dataset.thumbnail_key:
         return Response({
             "thumbnail_url": None,
@@ -888,7 +898,10 @@ def dataset_detail(request, dataset_id):
     profile = getattr(user, "profile", None) if user.is_authenticated else None
     is_reviewer_or_admin = bool(profile and profile.has_role("reviewer", "admin"))
 
-    if dataset.visibility == Dataset.Visibility.PRIVATE and not is_owner:
+    if (
+        dataset.visibility == Dataset.Visibility.PRIVATE
+        and not can_access_private_dataset(user, dataset)
+    ):
         return Response({"detail": "Not found."}, status=404)
 
     if dataset.is_archived and not (is_owner or is_reviewer_or_admin):
@@ -908,6 +921,11 @@ def dataset_detail(request, dataset_id):
 @permission_classes([IsAuthenticated])
 def dataset_versions(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if (
+        dataset.visibility == Dataset.Visibility.PRIVATE
+        and not can_access_private_dataset(request.user, dataset)
+    ):
+        return Response({"detail": "Not found."}, status=404)
     versions = dataset.versions.select_related("changed_by", "changed_by__profile")
     return Response(DatasetVersionSerializer(versions, many=True).data)
 
@@ -1188,6 +1206,11 @@ def content_update_comparison(request, update_id):
     update = get_object_or_404(PendingContentUpdate.objects.select_related("dataset", "submitted_by"), id=update_id)
     profile = getattr(request.user, "profile", None)
     is_reviewer = bool(profile and profile.has_role("reviewer", "admin"))
+    if (
+        update.dataset.visibility == Dataset.Visibility.PRIVATE
+        and not can_access_private_dataset(request.user, update.dataset)
+    ):
+        return Response({"detail": "You don't have permission to view this."}, status=403)
     if not (update.dataset.is_owned_by(request.user) or is_reviewer):
         return Response({"detail": "You don't have permission to view this."}, status=403)
 
