@@ -1,5 +1,28 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.permissions import BasePermission
 from .models import Contributor, Dataset, PendingContentUpdate, RevisionRequest
+
+
+def can_access_private_dataset(user, dataset):
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if dataset.owner_id == user.id:
+        return True
+
+    try:
+        profile = user.profile
+    except ObjectDoesNotExist:
+        profile = None
+    if profile and profile.has_role("admin"):
+        return True
+    if not profile or not profile.has_role("reviewer"):
+        return False
+
+    from apps.admin_panel.models import DatasetReviewerAssignment
+
+    return DatasetReviewerAssignment.objects.filter(
+        dataset=dataset, reviewer=user
+    ).exists()
 
 
 class IsDatasetOwner(BasePermission):
