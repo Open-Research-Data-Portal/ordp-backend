@@ -23,6 +23,10 @@ class Category(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
 
+    @classmethod
+    def available_for_interests(cls):
+        return cls.objects.filter(status=cls.Status.APPROVED).order_by("name")
+
     def __str__(self):
         return self.name
 

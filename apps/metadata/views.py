@@ -96,9 +96,7 @@ def suggest_categories(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_interest_categories(request):
-    qs = Category.objects.filter(
-        status=Category.Status.APPROVED,
-    ).order_by("name")
+    qs = Category.available_for_interests()
     return Response([{"id": c.id, "name": c.name} for c in qs])
 
 

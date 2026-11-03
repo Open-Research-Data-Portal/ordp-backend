@@ -1,3 +1,5 @@
+import uuid
+
 from rest_framework.test import APITestCase
 from rest_framework import status
 
@@ -128,6 +130,157 @@ class ProfileOtherInterestTests(APITestCase):
         resp = self.client.post("/api/accounts/profile/interests/other/", {"name": "Public Health"})
         self.assertFalse(resp.data["pending_review"])
         self.assertEqual(Category.objects.filter(name="Public Health").count(), 1)
+
+
+class ResearchInterestOnboardingTests(APITestCase):
+    url = "/api/accounts/profile/complete/"
+    interest_list_url = "/api/metadata/categories/interests/"
+    unavailable_message = (
+        "One or more selected research interests are no longer available. "
+        "Please refresh the list and select valid interests."
+    )
+
+    def setUp(self):
+        self.researcher = make_user(
+            "interestonboarding",
+            "interestonboarding@aastu.edu.et",
+            role="researcher",
+        )
+        self.client.force_authenticate(self.researcher)
+
+    def test_interest_list_returns_approved_categories_only(self):
+        standard = Category.objects.create(
+            name="Approved Standard",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.STANDARD,
+        )
+        interest_other = Category.objects.create(
+            name="Approved Interest Other",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.INTEREST_OTHER,
+        )
+        dataset_other = Category.objects.create(
+            name="Approved Dataset Other",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.DATASET_OTHER,
+        )
+        pending = Category.objects.create(
+            name="Pending Interest",
+            status=Category.Status.PENDING,
+        )
+        rejected = Category.objects.create(
+            name="Rejected Interest",
+            status=Category.Status.REJECTED,
+        )
+
+        response = self.client.get(self.interest_list_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {str(item["id"]) for item in response.data},
+            {str(standard.id), str(interest_other.id), str(dataset_other.id)},
+        )
+        listed_ids = {str(item["id"]) for item in response.data}
+        self.assertNotIn(str(pending.id), listed_ids)
+        self.assertNotIn(str(rejected.id), listed_ids)
+
+    def test_approved_standard_category_can_be_submitted(self):
+        category = Category.objects.create(
+            name="Standard Research",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.STANDARD,
+        )
+
+        response = self.client.patch(
+            self.url,
+            {"interests": [str(category.id)]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(category, self.researcher.profile.interests.all())
+        self.assertTrue(self.researcher.profile.is_profile_complete())
+        self.assertTrue(self.researcher.profile.can_upload_datasets)
+
+    def test_approved_interest_other_category_can_be_submitted(self):
+        category = Category.objects.create(
+            name="Custom Research",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.INTEREST_OTHER,
+        )
+
+        response = self.client.patch(
+            self.url,
+            {"interests": [str(category.id)]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(category, self.researcher.profile.interests.all())
+
+    def test_pending_and_rejected_categories_cannot_be_submitted(self):
+        for category_status in (Category.Status.PENDING, Category.Status.REJECTED):
+            with self.subTest(category_status=category_status):
+                category = Category.objects.create(
+                    name=f"{category_status.title()} Research",
+                    status=category_status,
+                )
+
+                response = self.client.patch(
+                    self.url,
+                    {"interests": [str(category.id)]},
+                    format="json",
+                )
+
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn(self.unavailable_message, str(response.data["interests"]))
+                self.assertFalse(
+                    self.researcher.profile.interests.filter(id=category.id).exists()
+                )
+
+    def test_stale_category_uuid_returns_actionable_validation_error(self):
+        response = self.client.patch(
+            self.url,
+            {"interests": [str(uuid.uuid4())]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(self.unavailable_message, str(response.data["interests"]))
+
+    def test_invalid_uuid_keeps_uuid_validation_error(self):
+        response = self.client.patch(
+            self.url,
+            {"interests": ["not-a-uuid"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn(self.unavailable_message, str(response.data["interests"]))
+
+    def test_every_listed_interest_is_accepted_by_profile_completion(self):
+        categories = [
+            Category.objects.create(
+                name=f"Listed Interest {origin}",
+                status=Category.Status.APPROVED,
+                origin=origin,
+            )
+            for origin in Category.Origin.values
+        ]
+        listed = self.client.get(self.interest_list_url)
+        listed_ids = [str(item["id"]) for item in listed.data]
+
+        response = self.client.patch(
+            self.url,
+            {"interests": listed_ids},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            set(self.researcher.profile.interests.values_list("id", flat=True)),
+            {category.id for category in categories},
+        )
 
 
 class CategoryVisibilityTests(APITestCase):
