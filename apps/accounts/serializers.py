@@ -20,6 +20,26 @@ class LogoutSerializer(serializers.Serializer):
 User = get_user_model()
 
 
+class InterestCategoryField(serializers.PrimaryKeyRelatedField):
+    default_error_messages = {
+        "unavailable": (
+            "One or more selected research interests are no longer available. "
+            "Please refresh the list and select valid interests."
+        ),
+    }
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("pk_field", serializers.UUIDField())
+        super().__init__(queryset=Category.available_for_interests(), **kwargs)
+
+    def to_internal_value(self, data):
+        category_id = self.pk_field.to_internal_value(data)
+        try:
+            return self.get_queryset().get(pk=category_id)
+        except Category.DoesNotExist:
+            self.fail("unavailable")
+
+
 class ProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(
         source="profile.full_name",
@@ -53,9 +73,8 @@ class ProfileSerializer(serializers.ModelSerializer):
 
 class ExtendedProfileSerializer(serializers.ModelSerializer):
 
-    interests = serializers.PrimaryKeyRelatedField(
+    interests = InterestCategoryField(
         many=True,
-        queryset=Category.objects.filter(origin=Category.Origin.STANDARD),
         required=False,
     )
 
