@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "apps.metadata",
     "apps.search",
     "apps.sharing",
+    "apps.access_control",
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
@@ -102,6 +103,7 @@ DATABASES = {
 }
 
 DRAFT_EXPIRATION_DAYS = config("DRAFT_EXPIRATION_DAYS", default=30, cast=int)
+ACCESS_REQUEST_EXPIRATION_DAYS = config("ACCESS_REQUEST_EXPIRATION_DAYS", default=30, cast=int)
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators

@@ -14,6 +14,7 @@ from apps.datasets.services.storage import presigned_download_url
 from apps.datasets.services.invitations import create_invitation, accept_invitation
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
+from apps.access_control.services import has_permission as has_scoped_permission
 
 from .models import UsabilityFormResponse, RestrictedAccessJustification, DatasetAccessRequest, AccessRequestVote, SharePermission
 from .serializers import RequestAccessSerializer, DatasetAccessRequestSerializer
@@ -60,7 +61,8 @@ def _download_url_response(request, dataset, is_reviewer=False):
 @permission_classes([IsAuthenticated])
 def download_dataset(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
-    if dataset.visibility == Dataset.Visibility.PRIVATE and dataset.owner_id != request.user.id:
+    scoped_download = has_scoped_permission(request.user, "dataset.download", "dataset", dataset.id)
+    if dataset.visibility == Dataset.Visibility.PRIVATE and dataset.owner_id != request.user.id and not scoped_download:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
 
     if not user_meets_access_requirements(request.user):
@@ -75,8 +77,8 @@ def download_dataset(request, dataset_id):
     permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=request.user).first()
     has_active_share = bool(permission and permission.is_active_grant())
 
-    has_permission = is_free_access or has_active_share
-    if not has_permission:
+    can_download = is_free_access or has_active_share or scoped_download
+    if not can_download:
         return Response({"detail": "You don't have access to this dataset."}, status=403)
 
     return _download_url_response(request, dataset, is_reviewer=is_reviewer)

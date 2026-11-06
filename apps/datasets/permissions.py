@@ -1,5 +1,6 @@
 from rest_framework.permissions import BasePermission
 from .models import Contributor, Dataset, PendingContentUpdate, RevisionRequest
+from apps.access_control.services import has_permission as has_scoped_permission
 
 
 class IsDatasetOwner(BasePermission):
@@ -51,6 +52,9 @@ class IsDatasetOwnerOrContributor(BasePermission):
             return False
 
         if Dataset.objects.filter(id=dataset_id, owner=request.user).exists():
+            return True
+
+        if has_scoped_permission(request.user, "dataset.edit", "dataset", dataset_id):
             return True
 
         contributor = Contributor.objects.filter(dataset_id=dataset_id, user=request.user).first()
