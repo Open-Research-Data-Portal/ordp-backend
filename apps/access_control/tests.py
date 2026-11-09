@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.datasets.models import Dataset
-from apps.accounts.models import ActivityLog
+from apps.accounts.models import ActivityLog, UserRole
 from .models import AccessRequest, AccessRequestPermission, Group, GroupMembership, GroupPermissionGrant, Permission, PermissionAuditLog, UserPermissionGrant
 from .services import effective_permissions, grant_to_user, has_permission, review_request, revoke_user_grant
 
@@ -190,6 +190,40 @@ class PermissionSystemTests(TestCase):
         self.assertEqual(review.status_code, 200)
         self.assertEqual(review.data["status"], "partially_approved")
         self.assertTrue(PermissionAuditLog.objects.filter(action="request.review").exists())
+
+    @patch("apps.access_control.views.notify")
+    def test_access_request_notifies_admin_and_appears_for_review(self, send_notification):
+        UserRole.objects.create(profile=self.manager.profile, role=UserRole.RoleChoice.ADMIN)
+        target = self.users[0]
+        self.datasets[0].status = Dataset.Status.PUBLISHED
+        self.datasets[0].save(update_fields=["status"])
+        self.client.force_authenticate(target)
+        created = self.client.post("/api/access-control/requests/", {
+            "resource_type": "dataset", "resource_id": str(self.datasets[0].id),
+            "permissions": ["dataset.view"], "justification": "I need to inspect this dataset",
+        }, format="json")
+        self.assertEqual(created.status_code, 201)
+        send_notification.assert_called_once()
+        self.assertEqual(send_notification.call_args.args[0], self.manager)
+        self.assertEqual(send_notification.call_args.kwargs["link_path"],
+                         f"/access-management/requests/{created.data['id']}")
+
+        self.client.force_authenticate(self.manager)
+        listed = self.client.get("/api/access-control/requests/?status=pending")
+        self.assertEqual(listed.status_code, 200)
+        self.assertIn(created.data["id"], {row["id"] for row in listed.data})
+
+    @patch("apps.access_control.views.notify")
+    def test_group_membership_request_notifies_admin(self, send_notification):
+        UserRole.objects.create(profile=self.manager.profile, role=UserRole.RoleChoice.ADMIN)
+        self.client.force_authenticate(self.users[0])
+        created = self.client.post("/api/access-control/requests/", {
+            "kind": "group_membership", "group": str(self.groups[0].id),
+            "resource_type": "platform", "justification": "I need to join this research group",
+        }, format="json")
+        self.assertEqual(created.status_code, 201)
+        send_notification.assert_called_once()
+        self.assertIn("group membership", send_notification.call_args.args[2])
 
     def test_matrix_edits_are_scoped_and_audited(self):
         self.client.force_authenticate(self.manager)

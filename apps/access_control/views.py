@@ -374,6 +374,24 @@ def access_requests(request):
         audit(request.user, "request.create", user=request.user,
               resource_type=access_request.resource_type, resource_id=access_request.resource_id,
               metadata={"request_id": str(access_request.id)})
+    admin_users = User.objects.filter(is_active=True).filter(
+        Q(is_superuser=True) | Q(is_staff=True) | Q(profile__roles__role=UserRole.RoleChoice.ADMIN)
+    ).distinct().exclude(pk=request.user.pk)
+    request_label = (
+        "group membership" if access_request.kind == AccessRequest.Kind.GROUP_MEMBERSHIP
+        else "group permissions" if access_request.kind == AccessRequest.Kind.GROUP_PERMISSION
+        else "dataset access"
+    )
+    for admin_user in admin_users:
+        if not has_permission(admin_user, "access_request.review"):
+            continue
+        if access_request.kind == AccessRequest.Kind.GROUP_MEMBERSHIP and not has_permission(admin_user, "group.member.manage"):
+            continue
+        if access_request.kind == AccessRequest.Kind.GROUP_PERMISSION and not has_permission(admin_user, "group.permission.manage"):
+            continue
+        notify(admin_user, Notification.NotificationType.SYSTEM_ANNOUNCEMENT,
+               f"{request.user.email} requested {request_label}. Review the request in Access Management.",
+               link_path=f"/access-management/requests/{access_request.id}")
     return Response(AccessRequestSerializer(access_request).data, status=201)
 
 
