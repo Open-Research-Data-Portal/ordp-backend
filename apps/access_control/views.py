@@ -563,7 +563,10 @@ def user_management_audit(request):
         "id": f"permission-{row.pk}", "action": row.action,
         "actor": row.actor.email if row.actor else "System",
         "target": row.target_user.email if row.target_user else (row.target_group.name if row.target_group else ""),
-        "detail": row.permission.name if row.permission else "",
+        "detail": " · ".join(filter(None, [
+            row.permission.name if row.permission else "",
+            row.metadata.get("status", "").replace("_", " "),
+        ])),
         "timestamp": row.timestamp,
     } for row in permission_rows.order_by("-timestamp")[:500]]
     target_ids = [int(row.target_object) for row in activity_rows.order_by("-timestamp")[:500]

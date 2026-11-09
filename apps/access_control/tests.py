@@ -190,6 +190,13 @@ class PermissionSystemTests(TestCase):
         self.assertEqual(review.status_code, 200)
         self.assertEqual(review.data["status"], "partially_approved")
         self.assertTrue(PermissionAuditLog.objects.filter(action="request.review").exists())
+        self.manager.is_staff = True
+        self.manager.save(update_fields=["is_staff"])
+        audit_events = self.client.get("/api/access-control/audit/user-management/")
+        self.assertEqual(audit_events.status_code, 200)
+        review_event = next(row for row in audit_events.data if row["action"] == "request.review")
+        self.assertEqual(review_event["detail"], "partially approved")
+        self.assertEqual(review_event["target"], self.users[0].email)
 
     @patch("apps.access_control.views.notify")
     def test_access_request_notifies_admin_and_appears_for_review(self, send_notification):
@@ -374,6 +381,12 @@ class PermissionSystemTests(TestCase):
         self.assertTrue(GroupMembership.objects.filter(group=group, user=target).exists())
         self.assertTrue(has_permission(target, "dataset.view", "dataset", self.datasets[0].id))
         self.assertFalse(UserPermissionGrant.objects.filter(user=target, permission_id="dataset.view").exists())
+        self.manager.is_staff = True
+        self.manager.save(update_fields=["is_staff"])
+        events = self.client.get("/api/access-control/audit/user-management/")
+        self.assertEqual(events.status_code, 200)
+        self.assertTrue(any(row["action"] == "request.review" and row["detail"] == "approved"
+                            and row["target"] == target.email for row in events.data))
 
     def test_group_permission_request_approves_only_selected_actions(self):
         requester = self.users[0]
