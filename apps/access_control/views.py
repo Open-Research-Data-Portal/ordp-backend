@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from apps.datasets.models import Dataset
+from apps.accounts.models import ActivityLog, UserRole
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from .models import (
@@ -515,3 +516,47 @@ def audit_history(request):
                       "resource_id": str(row.resource_id) if row.resource_id else None,
                       "action": row.action, "timestamp": row.timestamp,
                       "metadata": row.metadata} for row in qs])
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_management_audit(request):
+    """User and permission changes visible to admins or the affected user."""
+    is_admin = request.user.is_superuser or request.user.is_staff or UserRole.objects.filter(
+        profile__user=request.user, role=UserRole.RoleChoice.ADMIN
+    ).exists()
+    permission_rows = PermissionAuditLog.objects.select_related(
+        "actor", "target_user", "target_group", "permission"
+    )
+    activity_rows = ActivityLog.objects.select_related("user").filter(action__in=[
+        "user_created", "role_granted", "role_revoked", "primary_role_set",
+        "user_deactivated", "user_reactivated", "user_banned",
+        "inactive_user_deleted", "admin_succession",
+    ])
+    if not is_admin:
+        group_ids = GroupMembership.objects.filter(user=request.user).values_list("group_id", flat=True)
+        permission_rows = permission_rows.filter(
+            Q(target_user=request.user) | Q(target_group_id__in=group_ids)
+        )
+        activity_rows = activity_rows.filter(
+            Q(target_object=str(request.user.pk)) | Q(target_object=f"User:{request.user.pk}")
+        )
+    entries = [{
+        "id": f"permission-{row.pk}", "action": row.action,
+        "actor": row.actor.email if row.actor else "System",
+        "target": row.target_user.email if row.target_user else (row.target_group.name if row.target_group else ""),
+        "detail": row.permission.name if row.permission else "",
+        "timestamp": row.timestamp,
+    } for row in permission_rows.order_by("-timestamp")[:500]]
+    target_ids = [int(row.target_object) for row in activity_rows.order_by("-timestamp")[:500]
+                  if row.target_object.isdigit()]
+    user_emails = dict(User.objects.filter(pk__in=target_ids).values_list("pk", "email"))
+    entries.extend({
+        "id": f"activity-{row.pk}", "action": row.action,
+        "actor": row.user.email if row.user else "System",
+        "target": user_emails.get(int(row.target_object), row.target_object)
+        if row.target_object.isdigit() else row.extra.get("email", row.target_object),
+        "detail": row.extra.get("role", ""), "timestamp": row.timestamp,
+    } for row in activity_rows.order_by("-timestamp")[:500])
+    entries.sort(key=lambda row: row["timestamp"], reverse=True)
+    return Response(entries[:500])

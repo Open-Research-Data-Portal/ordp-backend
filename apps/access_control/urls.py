@@ -26,4 +26,5 @@ urlpatterns = [
     path("resources/<str:resource_type>/<uuid:resource_id>/", views.resource_permissions),
     path("resources/<str:resource_type>/<uuid:resource_id>/matrix/", views.update_resource_matrix),
     path("audit/", views.audit_history),
+    path("audit/user-management/", views.user_management_audit),
 ]

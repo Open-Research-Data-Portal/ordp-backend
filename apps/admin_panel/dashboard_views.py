@@ -589,6 +589,9 @@ def admin_set_primary_role(request, user_id):
     user_role.is_primary = True
     user_role.save(update_fields=["is_primary"])
 
+    ActivityLog.log(user=request.user, action="primary_role_set", target_object=str(target_user.id),
+                    ip_address=get_client_ip(request), extra={"role": role})
+
     return Response({
         "status": "primary_role_set",
         "primary_role": role,
@@ -603,6 +606,8 @@ def admin_deactivate_user(request, user_id):
         return Response({"detail": "You can't deactivate your own account."}, status=400)
     target_user.is_active = False
     target_user.save(update_fields=["is_active"])
+    ActivityLog.log(user=request.user, action="user_deactivated", target_object=str(target_user.id),
+                    ip_address=get_client_ip(request))
     return Response({"status": "deactivated"})
 
 
@@ -612,6 +617,8 @@ def admin_reactivate_user(request, user_id):
     target_user = get_object_or_404(User, id=user_id) # type: ignore
     target_user.is_active = True
     target_user.save(update_fields=["is_active"])
+    ActivityLog.log(user=request.user, action="user_reactivated", target_object=str(target_user.id),
+                    ip_address=get_client_ip(request))
     return Response({"status": "reactivated"})
 
 

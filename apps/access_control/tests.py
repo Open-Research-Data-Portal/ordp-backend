@@ -7,6 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.datasets.models import Dataset
+from apps.accounts.models import ActivityLog
 from .models import AccessRequest, AccessRequestPermission, Group, GroupMembership, GroupPermissionGrant, Permission, PermissionAuditLog, UserPermissionGrant
 from .services import effective_permissions, grant_to_user, has_permission, review_request, revoke_user_grant
 
@@ -24,6 +25,25 @@ class PermissionSystemTests(TestCase):
 
     def setUp(self):
         self.client = APIClient()
+
+    def test_user_management_audit_is_scoped_to_affected_user(self):
+        target, other = self.users[:2]
+        PermissionAuditLog.objects.create(actor=self.manager, target_user=target, action="user.grant")
+        PermissionAuditLog.objects.create(actor=self.manager, target_user=other, action="user.revoke")
+        ActivityLog.log(self.manager, "role_granted", str(target.id), extra={"role": "reviewer"})
+        ActivityLog.log(self.manager, "user_deactivated", str(other.id))
+
+        self.client.force_authenticate(target)
+        response = self.client.get("/api/access-control/audit/user-management/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({row["action"] for row in response.data}, {"user.grant", "role_granted"})
+
+        self.manager.is_staff = True
+        self.manager.save(update_fields=["is_staff"])
+        self.client.force_authenticate(self.manager)
+        response = self.client.get("/api/access-control/audit/user-management/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 4)
 
     def test_resource_discovery_limits_private_and_unpublished_datasets(self):
         published = self.datasets[0]
