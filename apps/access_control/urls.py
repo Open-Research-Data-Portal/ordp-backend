@@ -4,14 +4,18 @@ from . import views
 
 urlpatterns = [
     path("me/", views.my_permissions),
+    path("my-resources/", views.my_resources),
     path("catalog/", views.catalog),
     path("overview/", views.overview),
     path("users/", views.users),
     path("users/<int:user_id>/", views.user_detail),
     path("users/<int:user_id>/grants/", views.user_grants),
+    path("users/<int:user_id>/grants/bulk/", views.user_bulk_grants),
     path("user-grants/<uuid:grant_id>/", views.user_grant_detail),
     path("groups/", views.groups),
+    path("group-directory/", views.group_directory),
     path("groups/<uuid:group_id>/", views.group_detail),
+    path("groups/<uuid:group_id>/activity/", views.group_activity),
     path("groups/<uuid:group_id>/members/<int:user_id>/", views.group_member),
     path("groups/<uuid:group_id>/grants/", views.group_grants),
     path("group-grants/<uuid:grant_id>/", views.group_grant_detail),

@@ -64,3 +64,17 @@ class IsDatasetOwnerOrContributor(BasePermission):
 
         self.message = "You don't have direct edit access to this dataset. Submit a revision request instead."
         return False
+
+
+class IsDatasetOwnerOrScopedDelete(BasePermission):
+    message = "Access denied. You don't have permission to delete this dataset."
+
+    def has_permission(self, request, view):
+        dataset_id = view.kwargs.get("dataset_id")
+        if not dataset_id:
+            return False
+        dataset = Dataset.objects.filter(id=dataset_id, is_active=True).first()
+        return bool(dataset and (
+            dataset.is_owned_by(request.user)
+            or has_scoped_permission(request.user, "dataset.delete", "dataset", dataset.id)
+        ))

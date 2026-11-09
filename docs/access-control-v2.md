@@ -4,7 +4,7 @@
 
 This branch introduces a resource-scoped permission engine and management API. It does not delete existing roles, grants, or sharing records. The existing role-based API checks remain in place during migration; `dataset.edit` and `dataset.download` grants are also honored by their existing endpoints. Do not treat this branch as a complete role-free authorization cutover until the remaining legacy endpoints have been mapped and migrated.
 
-The migration creates new tables only. No existing user receives a new permission automatically. The permission catalog is seeded by migration `0002_catalog`; unanswered requests expire after 30 days by default (`ACCESS_REQUEST_EXPIRATION_DAYS`). No production database migration is run by this branch.
+The initial migrations create new tables; migration `0004` adds group request fields. No existing user receives a new permission automatically. The permission catalog is seeded by migration `0002_catalog`; unanswered requests expire after 30 days by default (`ACCESS_REQUEST_EXPIRATION_DAYS`). Migration `0004` was applied to the local Docker database, and the known local Admin superuser was bootstrapped as its first permission manager. No production database migration or bootstrap was run.
 
 ## Deploy sequence
 
@@ -28,11 +28,15 @@ All paths below are under `/api/access-control/` and require authentication.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `me/`, `catalog/` | Current effective permissions; catalog |
+| GET | `my-resources/` | Datasets with current direct or inherited grants |
 | GET | `overview/`, `users/`, `users/<id>/` | Manager overview and user access |
 | POST | `users/<id>/grants/` | Grant direct access |
+| POST | `users/<id>/grants/bulk/` | Atomically grant multiple direct permissions |
 | DELETE | `user-grants/<uuid>/` | Revoke a direct grant |
 | GET, POST | `groups/` | List or create groups |
+| GET | `group-directory/` | Active groups available for membership requests |
 | GET, PATCH, DELETE | `groups/<uuid>/` | Detail, edit, archive |
+| GET | `groups/<uuid>/activity/` | Group access history |
 | POST, DELETE | `groups/<uuid>/members/<user-id>/` | Add or remove member |
 | POST | `groups/<uuid>/grants/` | Grant group access |
 | DELETE | `group-grants/<uuid>/` | Revoke group grant |
@@ -46,7 +50,11 @@ All paths below are under `/api/access-control/` and require authentication.
 
 Grant body: `{ "permission": "dataset.view", "resource_type": "dataset", "resource_id": "<uuid>", "expires_at": null, "reason": "..." }`. Platform grants use `resource_type: "platform"` and `resource_id: null`.
 
+Bulk grant body: `{ "grants": [<grant body>, ...] }`. The request is atomic: if any grant is invalid, duplicated, or not delegable, none are created. The catalog returns `enforced` for permissions already checked by their corresponding API operations; the user permission interface offers only those codes.
+
 Request body: `{ "resource_type": "dataset", "resource_id": "<uuid>", "permissions": ["dataset.view", "dataset.download"], "justification": "..." }`. Only published, active, nonprivate datasets can be requested through this flow.
+
+Group membership request body: `{ "kind": "group_membership", "group": "<uuid>", "justification": "..." }`. Group permission requests use `kind: "group_permission"`, `group`, `resource_type`, `resource_id`, and `permissions`. A reviewer decides membership with `{"decision": "approved"}` or `{"decision": "rejected"}`; group permissions use the per-permission review body above. Group creation also accepts `members` (user IDs) and `grants` (grant bodies) in one atomic request.
 
 Review body: `{ "decisions": [{ "permission": "dataset.view", "decision": "approved", "expires_at": null }, { "permission": "dataset.download", "decision": "rejected", "reason": "..." }], "comment": "..." }`.
 
@@ -56,4 +64,4 @@ Run `python manage.py test apps.access_control apps.sharing apps.datasets.test_e
 
 ## Known migration work
 
-The legacy ORDP role and owner checks still authorize many existing endpoints. A complete role-free cutover requires an endpoint-by-endpoint permission policy and a backfill plan for existing users, contributors, reviewers, and admins. Project and collection scopes are not enabled because there is no corresponding persistent resource model in this branch. Dataset-file scope is reserved in the schema but has no independent file authorization endpoint yet. Group-membership requests and group creation wizard are not included in this checkpoint.
+The legacy ORDP role and owner checks still authorize many existing endpoints. A complete role-free cutover requires an endpoint-by-endpoint permission policy and a backfill plan for existing users, contributors, reviewers, and admins. Project and collection scopes are not enabled because there is no corresponding persistent resource model in this branch. Dataset-file scope is reserved in the schema but has no independent file authorization endpoint yet. Group membership and group permission requests, the group creation wizard, and the shared-dataset page are included in this checkpoint.

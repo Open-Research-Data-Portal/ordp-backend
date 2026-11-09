@@ -84,6 +84,11 @@ class GroupPermissionGrant(Grant):
 
 
 class AccessRequest(models.Model):
+    class Kind(models.TextChoices):
+        PERMISSION = "permission", "User permission"
+        GROUP_MEMBERSHIP = "group_membership", "Group membership"
+        GROUP_PERMISSION = "group_permission", "Group permission"
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         APPROVED = "approved", "Approved"
@@ -94,6 +99,8 @@ class AccessRequest(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="permission_requests")
+    kind = models.CharField(max_length=24, choices=Kind.choices, default=Kind.PERMISSION)
+    group = models.ForeignKey(Group, null=True, blank=True, on_delete=models.PROTECT, related_name="access_requests")
     resource_type = models.CharField(max_length=24, choices=Grant.ResourceType.choices)
     resource_id = models.UUIDField(null=True, blank=True)
     justification = models.TextField()

@@ -31,7 +31,8 @@ from .services.storage import (
     upload_fileobj,
     download_to_file,
 )
-from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor
+from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor, IsDatasetOwnerOrScopedDelete
+from apps.access_control.services import has_permission as has_scoped_permission
 from .models import PendingContentUpdate
 from .services.revisions import route_change, request_revision_permission as create_request
 from .models import Dataset
@@ -887,11 +888,15 @@ def dataset_detail(request, dataset_id):
     is_owner = user.is_authenticated and dataset.owner_id == user.id
     profile = getattr(user, "profile", None) if user.is_authenticated else None
     is_reviewer_or_admin = bool(profile and profile.has_role("reviewer", "admin"))
+    has_scoped_access = any(
+        has_scoped_permission(user, code, "dataset", dataset.id)
+        for code in ("dataset.view", "dataset.edit", "dataset.delete", "dataset.download")
+    )
 
-    if dataset.visibility == Dataset.Visibility.PRIVATE and not is_owner:
+    if dataset.visibility == Dataset.Visibility.PRIVATE and not (is_owner or has_scoped_access):
         return Response({"detail": "Not found."}, status=404)
 
-    if dataset.is_archived and not (is_owner or is_reviewer_or_admin):
+    if dataset.is_archived and not (is_owner or is_reviewer_or_admin or has_scoped_access):
         raise Http404
 
     Dataset.objects.filter(id=dataset.id).update(view_count=django_models.F("view_count") + 1)
@@ -967,16 +972,20 @@ def update_dataset(request, dataset_id):
     title/visibility, which are ownership-level decisions."""
     dataset = get_object_or_404(Dataset, id=dataset_id)
     is_owner = dataset.owner_id == request.user.id
+    has_explicit_edit = has_scoped_permission(request.user, "dataset.edit", "dataset", dataset.id)
 
     changed_fields = []
+    metadata_data = {}
 
-    if is_owner:
+    if is_owner or has_explicit_edit:
+        if not is_owner and "visibility" in request.data:
+            return Response({"detail": "Only the dataset owner can change visibility."}, status=403)
         if "visibility" in request.data and request.data["visibility"] not in Dataset.Visibility.values:
             return Response(
                 {"detail": f"visibility must be one of: {', '.join(Dataset.Visibility.values)}."}, status=400,
             )
 
-        for field in OWNER_EDITABLE_FIELDS:
+        for field in OWNER_EDITABLE_FIELDS if is_owner else ("title",):
             if field in request.data:
                 setattr(dataset, field, request.data[field])
                 changed_fields.append(field)
@@ -1234,7 +1243,7 @@ def my_bookmarks(request):
     return Response(DatasetSerializer(qs, many=True).data)
 
 @api_view(["DELETE"])
-@permission_classes([IsAuthenticated, IsDatasetOwner])
+@permission_classes([IsAuthenticated, IsDatasetOwnerOrScopedDelete])
 def soft_delete_dataset(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     dataset.is_active = False

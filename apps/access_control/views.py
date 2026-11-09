@@ -16,14 +16,18 @@ from .models import (
     AccessRequest, AccessRequestPermission, Group, GroupMembership,
     GroupPermissionGrant, Permission, PermissionAuditLog, UserPermissionGrant,
 )
-from .serializers import AccessRequestSerializer, GrantSerializer, GroupSerializer, RequestCreateSerializer, ReviewSerializer
-from .services import audit, effective_permissions, ensure_can_manage, grant_to_user, has_permission, review_request, revoke_user_grant
+from .serializers import AccessRequestSerializer, BulkGrantSerializer, GrantSerializer, GroupCreateSerializer, GroupSerializer, RequestCreateSerializer, ReviewSerializer
+from .services import ENFORCED_PERMISSION_CODES, audit, effective_permissions, ensure_can_manage, grant_to_group, grant_to_user, has_permission, other_permission_manager_exists, review_request, revoke_user_grant
 
 User = get_user_model()
 
 
 def denied():
-    return Response({"detail": "You do not have permission to perform this action."}, status=403)
+    return Response({"detail": "Access denied. You don't have permission to do this."}, status=403)
+
+
+def live_grants():
+    return Q(revoked_at__isnull=True) & (Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()))
 
 
 def grant_data(grant):
@@ -37,8 +41,9 @@ def grant_data(grant):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def catalog(request):
-    return Response(list(Permission.objects.order_by("resource_type", "name").values(
-        "code", "name", "description", "resource_type", "action")))
+    rows = Permission.objects.order_by("resource_type", "name").values(
+        "code", "name", "description", "resource_type", "action")
+    return Response([{**row, "enforced": row["code"] in ENFORCED_PERMISSION_CODES} for row in rows])
 
 
 @api_view(["GET"])
@@ -48,6 +53,35 @@ def my_permissions(request):
                      "can_view_users": has_permission(request.user, "user.view"),
                      "can_review_requests": has_permission(request.user, "access_request.review"),
                      "can_view_audit": has_permission(request.user, "audit.view")})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_resources(request):
+    """Only resources with a currently effective direct or group grant."""
+    grants = [
+        row for row in effective_permissions(request.user)
+        if row["resource_type"] == "dataset" and row["resource_id"]
+    ]
+    by_dataset = {}
+    for row in grants:
+        entry = by_dataset.setdefault(row["resource_id"], {})
+        entry[row["code"]] = row["sources"]
+    datasets = Dataset.objects.filter(id__in=by_dataset, is_active=True).order_by("title")
+    return Response([
+        {
+            "id": str(dataset.id),
+            "title": dataset.title,
+            "status": dataset.status,
+            "visibility": dataset.visibility,
+            "permissions": sorted(by_dataset[str(dataset.id)]),
+            "permission_details": [
+                {"code": code, "sources": sources}
+                for code, sources in sorted(by_dataset[str(dataset.id)].items())
+            ],
+        }
+        for dataset in datasets
+    ])
 
 
 @api_view(["GET"])
@@ -97,7 +131,7 @@ def users(request):
         rows.append({"id": user.pk, "name": user.profile.full_name if hasattr(user, "profile") else user.username,
                      "email": user.email, "is_active": user.is_active,
                      "groups": list(user.access_memberships.filter(group__archived_at__isnull=True).values("group_id", "group__name")),
-                     "direct_count": user.direct_permission_grants.filter(revoked_at__isnull=True).count()})
+                     "direct_count": user.direct_permission_grants.filter(live_grants()).count()})
     return Response(rows)
 
 
@@ -107,7 +141,7 @@ def user_detail(request, user_id):
     user = get_object_or_404(User, pk=user_id)
     if user.pk != request.user.pk and not has_permission(request.user, "user.view"):
         return denied()
-    direct = UserPermissionGrant.objects.filter(user=user, revoked_at__isnull=True).select_related("permission")
+    direct = UserPermissionGrant.objects.filter(live_grants(), user=user).select_related("permission")
     return Response({"id": user.pk, "name": user.profile.full_name if hasattr(user, "profile") else user.username,
                      "email": user.email, "is_active": user.is_active,
                      "groups": list(user.access_memberships.filter(group__archived_at__isnull=True).values("group_id", "group__name")),
@@ -128,6 +162,23 @@ def user_grants(request, user_id):
     except ValueError as exc:
         return Response({"detail": str(exc)}, status=400)
     return Response(grant_data(grant), status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def user_bulk_grants(request, user_id):
+    user = get_object_or_404(User, pk=user_id)
+    serializer = BulkGrantSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    try:
+        with transaction.atomic():
+            grants = [grant_to_user(request.user, user, **item)
+                      for item in serializer.validated_data["grants"]]
+    except PermissionError:
+        return denied()
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=400)
+    return Response([grant_data(grant) for grant in grants], status=201)
 
 
 @api_view(["DELETE"])
@@ -151,16 +202,45 @@ def groups(request):
             return denied()
         qs = Group.objects.filter(archived_at__isnull=True).annotate(
             member_count=Count("memberships", distinct=True),
-            permission_count=Count("permission_grants", filter=Q(permission_grants__revoked_at__isnull=True), distinct=True),
+            permission_count=Count("permission_grants", filter=(
+                Q(permission_grants__revoked_at__isnull=True)
+                & (Q(permission_grants__expires_at__isnull=True) | Q(permission_grants__expires_at__gt=timezone.now()))
+            ), distinct=True),
         ).order_by("name")
         return Response(GroupSerializer(qs, many=True).data)
     if not has_permission(request.user, "group.create"):
         return denied()
-    serializer = GroupSerializer(data=request.data)
+    serializer = GroupCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    group = serializer.save(created_by=request.user)
-    audit(request.user, "group.create", group=group)
+    values = serializer.validated_data
+    member_ids = values.pop("members", [])
+    grants = values.pop("grants", [])
+    if member_ids and not has_permission(request.user, "group.member.manage"):
+        return denied()
+    try:
+        for grant in grants:
+            ensure_can_manage(request.user, "group.permission.manage", grant["permission"],
+                              grant["resource_type"], grant.get("resource_id"))
+        with transaction.atomic():
+            group = Group.objects.create(created_by=request.user, **values)
+            audit(request.user, "group.create", group=group)
+            for user_id in member_ids:
+                membership = GroupMembership.objects.create(group=group, user_id=user_id, added_by=request.user)
+                audit(request.user, "group.member.add", group=group, user=membership.user)
+            for grant in grants:
+                grant_to_group(request.user, group, **grant)
+    except PermissionError:
+        return denied()
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=400)
     return Response(GroupSerializer(group).data, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def group_directory(request):
+    return Response(list(Group.objects.filter(archived_at__isnull=True).order_by("name").values(
+        "id", "name", "description")[:200]))
 
 
 @api_view(["GET", "PATCH", "DELETE"])
@@ -172,7 +252,7 @@ def group_detail(request, group_id):
             return denied()
         return Response({"group": GroupSerializer(group).data,
                          "members": list(group.memberships.select_related("user").values("user_id", "user__email", "user__username")),
-                         "grants": [grant_data(g) for g in group.permission_grants.filter(revoked_at__isnull=True)]})
+                         "grants": [grant_data(g) for g in group.permission_grants.filter(live_grants())]})
     authority = "group.edit" if request.method == "PATCH" else "group.delete"
     if not has_permission(request.user, authority):
         return denied()
@@ -182,12 +262,32 @@ def group_detail(request, group_id):
         serializer.save()
         audit(request.user, "group.edit", group=group)
         return Response(GroupSerializer(group).data)
-    if group.permission_grants.filter(permission_id="user.permission.grant", revoked_at__isnull=True).exists():
-        return Response({"detail": "Remove permission-manager access safely before archiving this group."}, status=400)
+    if group.permission_grants.filter(live_grants(), permission_id="user.permission.grant").exists() and not other_permission_manager_exists(excluded_group=group):
+        return Response({"detail": "The last permission manager cannot be removed."}, status=400)
     group.archived_at = timezone.now()
     group.save(update_fields=["archived_at"])
     audit(request.user, "group.archive", group=group)
     return Response(status=204)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def group_activity(request, group_id):
+    if not has_permission(request.user, "audit.view"):
+        return denied()
+    group = get_object_or_404(Group, pk=group_id)
+    events = PermissionAuditLog.objects.filter(target_group=group).select_related(
+        "actor", "target_user", "permission").order_by("-timestamp")[:100]
+    return Response([{
+        "id": event.pk,
+        "actor": event.actor.email if event.actor else None,
+        "user": event.target_user.email if event.target_user else None,
+        "action": event.action,
+        "permission": event.permission_id,
+        "resource_type": event.resource_type,
+        "resource_id": str(event.resource_id) if event.resource_id else None,
+        "timestamp": event.timestamp,
+    } for event in events])
 
 
 @api_view(["POST", "DELETE"])
@@ -202,9 +302,13 @@ def group_member(request, group_id, user_id):
         if created:
             audit(request.user, "group.member.add", user=user, group=group)
         return Response({"id": membership.pk, "created": created}, status=201 if created else 200)
-    if group.permission_grants.filter(permission_id="user.permission.grant", revoked_at__isnull=True).exists() and has_permission(user, "user.permission.grant"):
-        return Response({"detail": "Remove permission-manager access safely before removing this member."}, status=400)
-    GroupMembership.objects.filter(group=group, user=user).delete()
+    membership = GroupMembership.objects.filter(group=group, user=user).first()
+    if (membership and user.is_active
+            and group.permission_grants.filter(live_grants(), permission_id="user.permission.grant").exists()
+            and not other_permission_manager_exists(excluded_member=membership)):
+        return Response({"detail": "The last permission manager cannot be removed."}, status=400)
+    if membership:
+        membership.delete()
     audit(request.user, "group.member.remove", user=user, group=group)
     return Response(status=204)
 
@@ -215,25 +319,12 @@ def group_grants(request, group_id):
     group = get_object_or_404(Group, pk=group_id, archived_at__isnull=True)
     serializer = GrantSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
-    value = serializer.validated_data
     try:
-        ensure_can_manage(request.user, "group.permission.manage", value["permission"], value["resource_type"], value.get("resource_id"))
+        grant = grant_to_group(request.user, group, **serializer.validated_data)
     except PermissionError:
         return denied()
-    if value.get("expires_at") and value["expires_at"] <= timezone.now():
-        return Response({"detail": "Expiration must be in the future."}, status=400)
-    with transaction.atomic():
-        GroupPermissionGrant.objects.filter(group=group, permission=value["permission"],
-            resource_type=value["resource_type"], resource_id=value.get("resource_id"),
-            revoked_at__isnull=True, expires_at__lte=timezone.now()).update(revoked_at=timezone.now())
-        if group.permission_grants.filter(permission=value["permission"], resource_type=value["resource_type"], resource_id=value.get("resource_id"), revoked_at__isnull=True).exists():
-            return Response({"detail": "An active group grant already exists."}, status=400)
-        grant = GroupPermissionGrant.objects.create(group=group, permission=value["permission"],
-            resource_type=value["resource_type"], resource_id=value.get("resource_id"),
-            granted_by=request.user, expires_at=value.get("expires_at"))
-        audit(request.user, "group.grant", group=group, permission=grant.permission,
-              resource_type=grant.resource_type, resource_id=grant.resource_id,
-              metadata={"reason": value.get("reason", ""), "grant_id": str(grant.id)})
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=400)
     return Response(grant_data(grant), status=201)
 
 
@@ -245,8 +336,8 @@ def group_grant_detail(request, grant_id):
         return denied()
     if grant.revoked_at:
         return Response({"detail": "This grant has already been revoked."}, status=400)
-    if grant.permission_id == "user.permission.grant":
-        return Response({"detail": "Permission-manager access must be transferred before revoking this group grant."}, status=400)
+    if grant.permission_id == "user.permission.grant" and not other_permission_manager_exists(excluded_group_grant=grant):
+        return Response({"detail": "The last permission manager cannot be removed."}, status=400)
     grant.revoked_at = timezone.now()
     grant.save(update_fields=["revoked_at"])
     audit(request.user, "group.revoke", group=grant.group, permission=grant.permission,
@@ -260,22 +351,24 @@ def group_grant_detail(request, grant_id):
 def access_requests(request):
     if request.method == "GET":
         AccessRequest.objects.filter(status="pending", expires_at__lte=timezone.now()).update(status="expired")
-        qs = AccessRequest.objects.select_related("requester__profile").prefetch_related("items__permission").order_by("-created_at")
+        qs = AccessRequest.objects.select_related("requester__profile", "group").prefetch_related("items__permission").order_by("-created_at")
         if not has_permission(request.user, "access_request.review"):
             qs = qs.filter(requester=request.user)
         if request.query_params.get("status"):
             qs = qs.filter(status=request.query_params["status"])
         return Response(AccessRequestSerializer(qs[:100], many=True).data)
-    serializer = RequestCreateSerializer(data=request.data)
+    serializer = RequestCreateSerializer(data=request.data, context={"request": request})
     serializer.is_valid(raise_exception=True)
     value = serializer.validated_data
+    if value["kind"] == AccessRequest.Kind.GROUP_PERMISSION and not has_permission(request.user, "group.permission.manage"):
+        return denied()
     with transaction.atomic():
         access_request = AccessRequest.objects.create(
             requester=request.user, resource_type=value["resource_type"], resource_id=value.get("resource_id"),
-            justification=value["justification"])
+            justification=value["justification"], kind=value["kind"], group=value.get("group"))
         AccessRequestPermission.objects.bulk_create([
             AccessRequestPermission(request=access_request, permission_id=code)
-            for code in value["permissions"]
+            for code in value.get("permissions", [])
         ])
         audit(request.user, "request.create", user=request.user,
               resource_type=access_request.resource_type, resource_id=access_request.resource_id,
@@ -287,7 +380,7 @@ def access_requests(request):
 @permission_classes([IsAuthenticated])
 def access_request_detail(request, request_id):
     AccessRequest.objects.filter(pk=request_id, status="pending", expires_at__lte=timezone.now()).update(status="expired")
-    obj = get_object_or_404(AccessRequest.objects.select_related("requester__profile").prefetch_related("items__permission"), pk=request_id)
+    obj = get_object_or_404(AccessRequest.objects.select_related("requester__profile", "group").prefetch_related("items__permission"), pk=request_id)
     if obj.requester_id != request.user.pk and not has_permission(request.user, "access_request.review"):
         return denied()
     if request.method == "GET":
@@ -306,14 +399,15 @@ def access_request_detail(request, request_id):
 @permission_classes([IsAuthenticated])
 def access_request_review(request, request_id):
     AccessRequest.objects.filter(pk=request_id, status="pending", expires_at__lte=timezone.now()).update(status="expired")
-    obj = get_object_or_404(AccessRequest.objects.select_related("requester__profile").prefetch_related("items__permission"), pk=request_id)
+    obj = get_object_or_404(AccessRequest.objects.select_related("requester__profile", "group").prefetch_related("items__permission"), pk=request_id)
     serializer = ReviewSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     decisions = {row["permission"].code: {"decision": row["decision"],
                  "reason": row.get("reason", ""), "expires_at": row.get("expires_at")}
-                 for row in serializer.validated_data["decisions"]}
+                 for row in serializer.validated_data.get("decisions", [])}
     try:
-        obj = review_request(request.user, obj, decisions, serializer.validated_data.get("comment", ""))
+        obj = review_request(request.user, obj, decisions, serializer.validated_data.get("comment", ""),
+                             serializer.validated_data.get("decision"))
     except PermissionError:
         return denied()
     except ValueError as exc:

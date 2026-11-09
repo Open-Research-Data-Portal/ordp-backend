@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import AccessRequest, Group, Permission
+from .models import AccessRequest, Group, GroupMembership, Permission
 
 
 class ScopeSerializer(serializers.Serializer):
@@ -28,6 +28,16 @@ class GrantSerializer(ScopeSerializer):
         return attrs
 
 
+class BulkGrantSerializer(serializers.Serializer):
+    grants = GrantSerializer(many=True, allow_empty=False)
+
+    def validate_grants(self, value):
+        keys = [(g["permission"].pk, g["resource_type"], g.get("resource_id")) for g in value]
+        if len(keys) != len(set(keys)):
+            raise serializers.ValidationError("Select each permission once for a resource.")
+        return value
+
+
 class GroupSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
     permission_count = serializers.IntegerField(read_only=True)
@@ -38,12 +48,56 @@ class GroupSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at", "archived_at"]
 
 
+class GroupCreateSerializer(GroupSerializer):
+    members = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False)
+    grants = GrantSerializer(many=True, required=False)
+
+    class Meta(GroupSerializer.Meta):
+        fields = GroupSerializer.Meta.fields + ["members", "grants"]
+
+    def validate_members(self, value):
+        from django.contrib.auth import get_user_model
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Select each member once.")
+        User = get_user_model()
+        if User.objects.filter(pk__in=value, is_active=True).count() != len(value):
+            raise serializers.ValidationError("Select active users only.")
+        return value
+
+    def validate_grants(self, value):
+        keys = [(g["permission"].pk, g["resource_type"], g.get("resource_id")) for g in value]
+        if len(keys) != len(set(keys)):
+            raise serializers.ValidationError("Select each permission and resource once.")
+        return value
+
+
 class RequestCreateSerializer(ScopeSerializer):
-    permissions = serializers.ListField(child=serializers.CharField(), allow_empty=False)
+    kind = serializers.ChoiceField(choices=AccessRequest.Kind.choices, default=AccessRequest.Kind.PERMISSION)
+    group = serializers.PrimaryKeyRelatedField(queryset=Group.objects.filter(archived_at__isnull=True), required=False, allow_null=True)
+    permissions = serializers.ListField(child=serializers.CharField(), required=False)
     justification = serializers.CharField(min_length=10, max_length=4000)
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        kind = attrs["kind"]
+        group = attrs.get("group")
+        codes = attrs.get("permissions", [])
+        if kind == AccessRequest.Kind.GROUP_MEMBERSHIP:
+            if not group or attrs["resource_type"] != "platform" or attrs.get("resource_id") or codes:
+                raise serializers.ValidationError("Select a group without resource permissions.")
+            user = self.context["request"].user
+            if GroupMembership.objects.filter(group=group, user=user).exists():
+                raise serializers.ValidationError("You are already a member of this group.")
+            return attrs
+        if kind == AccessRequest.Kind.GROUP_PERMISSION and not group:
+            raise serializers.ValidationError("Select the group that needs these permissions.")
+        if kind == AccessRequest.Kind.PERMISSION and group:
+            raise serializers.ValidationError("Individual permission requests cannot target a group.")
+        if not codes:
+            raise serializers.ValidationError("Select at least one permission.")
+        from .services import ENFORCED_PERMISSION_CODES
+        if any(code not in ENFORCED_PERMISSION_CODES for code in codes):
+            raise serializers.ValidationError("One or more permissions are not enforced by an endpoint yet.")
         if attrs["resource_type"] == "dataset":
             from apps.datasets.models import Dataset
             dataset = Dataset.objects.get(pk=attrs["resource_id"])
@@ -51,7 +105,6 @@ class RequestCreateSerializer(ScopeSerializer):
                 raise serializers.ValidationError("This dataset is not available for access requests.")
         if attrs["resource_type"] == "dataset_file":
             raise serializers.ValidationError("Request access to the dataset that contains this file.")
-        codes = attrs["permissions"]
         if len(set(codes)) != len(codes):
             raise serializers.ValidationError("Select each permission once.")
         found = Permission.objects.filter(code__in=codes, resource_type=attrs["resource_type"])
@@ -68,7 +121,8 @@ class DecisionSerializer(serializers.Serializer):
 
 
 class ReviewSerializer(serializers.Serializer):
-    decisions = DecisionSerializer(many=True, allow_empty=False)
+    decisions = DecisionSerializer(many=True, required=False)
+    decision = serializers.ChoiceField(choices=["approved", "rejected"], required=False)
     comment = serializers.CharField(max_length=2000, required=False, allow_blank=True)
 
     def validate_decisions(self, value):
@@ -81,11 +135,12 @@ class ReviewSerializer(serializers.Serializer):
 class AccessRequestSerializer(serializers.ModelSerializer):
     requester_name = serializers.CharField(source="requester.profile.full_name", read_only=True)
     requester_email = serializers.EmailField(source="requester.email", read_only=True)
+    group_name = serializers.CharField(source="group.name", read_only=True)
     items = serializers.SerializerMethodField()
 
     class Meta:
         model = AccessRequest
-        fields = ["id", "requester", "requester_name", "requester_email", "resource_type", "resource_id", "justification", "status", "created_at", "expires_at", "reviewed_at", "review_comment", "items"]
+        fields = ["id", "requester", "requester_name", "requester_email", "kind", "group", "group_name", "resource_type", "resource_id", "justification", "status", "created_at", "expires_at", "reviewed_at", "review_comment", "items"]
 
     def get_items(self, obj):
         return [{"permission": item.permission_id, "name": item.permission.name,

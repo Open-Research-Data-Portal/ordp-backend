@@ -109,6 +109,48 @@ class PermissionSystemTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertFalse(UserPermissionGrant.objects.filter(user=self.users[1], permission_id="dataset.view").exists())
 
+    def test_bulk_user_grants_are_atomic_and_scoped(self):
+        target = self.users[0]
+        self.client.force_authenticate(self.manager)
+        url = f"/api/access-control/users/{target.id}/grants/bulk/"
+        rows = [
+            {"permission": "dataset.view", "resource_type": "dataset", "resource_id": str(self.datasets[0].id)},
+            {"permission": "dataset.edit", "resource_type": "dataset", "resource_id": str(self.datasets[0].id)},
+        ]
+        response = self.client.post(url, {"grants": rows}, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data), 2)
+        self.assertTrue(has_permission(target, "dataset.view", "dataset", self.datasets[0].id))
+        self.assertTrue(has_permission(target, "dataset.edit", "dataset", self.datasets[0].id))
+        self.assertFalse(has_permission(target, "dataset.edit", "dataset", self.datasets[1].id))
+
+        invalid = self.client.post(url, {"grants": [
+            {"permission": "dataset.delete", "resource_type": "dataset", "resource_id": str(self.datasets[0].id)},
+            rows[0],
+        ]}, format="json")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertFalse(has_permission(target, "dataset.delete", "dataset", self.datasets[0].id))
+
+        unsupported = self.client.post(url, {"grants": [{
+            "permission": "dataset.approve", "resource_type": "dataset",
+            "resource_id": str(self.datasets[0].id),
+        }]}, format="json")
+        self.assertEqual(unsupported.status_code, 400)
+        self.assertFalse(has_permission(target, "dataset.approve", "dataset", self.datasets[0].id))
+
+        self.client.force_authenticate(self.users[1])
+        denied = self.client.post(url, {"grants": [rows[0]]}, format="json")
+        self.assertEqual(denied.status_code, 403)
+
+    def test_catalog_marks_only_endpoint_enforced_permissions_as_grantable(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.get("/api/access-control/catalog/")
+        self.assertEqual(response.status_code, 200)
+        by_code = {row["code"]: row for row in response.data}
+        self.assertTrue(by_code["dataset.edit"]["enforced"])
+        self.assertTrue(by_code["user.view"]["enforced"])
+        self.assertFalse(by_code["dataset.approve"]["enforced"])
+
     def test_api_request_review_and_audit(self):
         self.datasets[0].status = Dataset.Status.PUBLISHED
         self.datasets[0].save(update_fields=["status"])
@@ -197,3 +239,190 @@ class PermissionSystemTests(TestCase):
             allowed = self.client.get(f"/api/sharing/{dataset.id}/download/")
         self.assertEqual(allowed.status_code, 404)
         self.assertEqual(allowed.data["detail"], "This dataset has no published file yet.")
+
+    def test_scoped_view_edit_and_delete_reach_dataset_endpoints(self):
+        dataset = self.datasets[0]
+        dataset.visibility = Dataset.Visibility.PRIVATE
+        dataset.status = Dataset.Status.PUBLISHED
+        dataset.save(update_fields=["visibility", "status"])
+        target = self.users[0]
+        self.client.force_authenticate(target)
+        detail_url = f"/api/datasets/{dataset.id}/"
+        self.assertEqual(self.client.get(detail_url).status_code, 404)
+
+        grant_to_user(self.manager, target, Permission.objects.get(pk="dataset.view"), "dataset", dataset.id)
+        self.assertEqual(self.client.get(detail_url).status_code, 200)
+        resources = self.client.get("/api/access-control/my-resources/")
+        self.assertEqual(resources.status_code, 200)
+        self.assertEqual(resources.data[0]["permissions"], ["dataset.view"])
+        self.assertEqual(str(resources.data[0]["id"]), str(dataset.id))
+        self.assertEqual(self.client.get(f"/api/datasets/{self.datasets[1].id}/").status_code, 200)
+        self.assertEqual(self.client.delete(f"/api/datasets/{dataset.id}/delete/").status_code, 403)
+
+        grant_to_user(self.manager, target, Permission.objects.get(pk="dataset.edit"), "dataset", dataset.id)
+        edited = self.client.patch(f"/api/datasets/{dataset.id}/update/", {"title": "Granted title"}, format="json")
+        self.assertEqual(edited.status_code, 200)
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.title, "Granted title")
+        self.assertEqual(self.client.patch(f"/api/datasets/{dataset.id}/update/", {"visibility": "public"}, format="json").status_code, 403)
+        self.assertEqual(self.client.patch(f"/api/datasets/{self.datasets[1].id}/update/", {"title": "Wrong dataset"}, format="json").status_code, 403)
+
+        grant_to_user(self.manager, target, Permission.objects.get(pk="dataset.delete"), "dataset", dataset.id)
+        self.assertEqual(self.client.delete(f"/api/datasets/{self.datasets[1].id}/delete/").status_code, 403)
+        self.assertEqual(self.client.delete(f"/api/datasets/{dataset.id}/delete/").status_code, 204)
+        self.assertEqual(self.client.get("/api/access-control/my-resources/").data, [])
+
+    def test_group_grant_updates_my_resources_after_membership_removed(self):
+        target = self.users[0]
+        group = self.groups[0]
+        GroupMembership.objects.create(group=group, user=target)
+        GroupPermissionGrant.objects.create(
+            group=group, permission_id="dataset.view", resource_type="dataset",
+            resource_id=self.datasets[0].id, granted_by=self.manager,
+        )
+        self.client.force_authenticate(target)
+        self.assertEqual(len(self.client.get("/api/access-control/my-resources/").data), 1)
+        GroupMembership.objects.filter(group=group, user=target).delete()
+        self.assertEqual(self.client.get("/api/access-control/my-resources/").data, [])
+
+    def test_group_membership_request_requires_separate_reviewer_and_grants_inheritance(self):
+        group = self.groups[0]
+        GroupPermissionGrant.objects.create(
+            group=group, permission_id="dataset.view", resource_type="dataset",
+            resource_id=self.datasets[0].id, granted_by=self.manager,
+        )
+        target = self.users[0]
+        self.client.force_authenticate(target)
+        directory = self.client.get("/api/access-control/group-directory/")
+        self.assertEqual(directory.status_code, 200)
+        self.assertIn(group.id, {row["id"] for row in directory.data})
+        response = self.client.post("/api/access-control/requests/", {
+            "kind": "group_membership", "group": str(group.id),
+            "resource_type": "platform", "justification": "Join the research team",
+        }, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["kind"], "group_membership")
+        self.assertFalse(has_permission(target, "dataset.view", "dataset", self.datasets[0].id))
+
+        UserPermissionGrant.objects.create(user=target, permission_id="access_request.review",
+            resource_type="platform", granted_by=self.manager)
+        denied = self.client.post(f"/api/access-control/requests/{response.data['id']}/review/", {
+            "decision": "approved",
+        }, format="json")
+        self.assertEqual(denied.status_code, 403)
+        self.assertFalse(GroupMembership.objects.filter(group=group, user=target).exists())
+
+        self.client.force_authenticate(self.manager)
+        reviewed = self.client.post(f"/api/access-control/requests/{response.data['id']}/review/", {
+            "decision": "approved", "comment": "Welcome",
+        }, format="json")
+        self.assertEqual(reviewed.status_code, 200)
+        self.assertTrue(GroupMembership.objects.filter(group=group, user=target).exists())
+        self.assertTrue(has_permission(target, "dataset.view", "dataset", self.datasets[0].id))
+        self.assertFalse(UserPermissionGrant.objects.filter(user=target, permission_id="dataset.view").exists())
+
+    def test_group_permission_request_approves_only_selected_actions(self):
+        requester = self.users[0]
+        group = self.groups[0]
+        GroupMembership.objects.create(group=group, user=requester)
+        UserPermissionGrant.objects.create(user=requester, permission_id="group.permission.manage",
+            resource_type="platform", granted_by=self.manager)
+        self.datasets[0].status = Dataset.Status.PUBLISHED
+        self.datasets[0].save(update_fields=["status"])
+        self.client.force_authenticate(self.users[1])
+        denied = self.client.post("/api/access-control/requests/", {
+            "kind": "group_permission", "group": str(group.id),
+            "resource_type": "dataset", "resource_id": str(self.datasets[0].id),
+            "permissions": ["dataset.view"], "justification": "Need access for our research group",
+        }, format="json")
+        self.assertEqual(denied.status_code, 403)
+
+        self.client.force_authenticate(requester)
+        response = self.client.post("/api/access-control/requests/", {
+            "kind": "group_permission", "group": str(group.id),
+            "resource_type": "dataset", "resource_id": str(self.datasets[0].id),
+            "permissions": ["dataset.view", "dataset.edit"],
+            "justification": "Need shared access for our research team",
+        }, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.client.force_authenticate(self.manager)
+        reviewed = self.client.post(f"/api/access-control/requests/{response.data['id']}/review/", {
+            "decisions": [
+                {"permission": "dataset.view", "decision": "approved"},
+                {"permission": "dataset.edit", "decision": "rejected", "reason": "Not needed"},
+            ],
+        }, format="json")
+        self.assertEqual(reviewed.status_code, 200)
+        self.assertEqual(reviewed.data["status"], "partially_approved")
+        self.assertTrue(has_permission(requester, "dataset.view", "dataset", self.datasets[0].id))
+        self.assertFalse(has_permission(requester, "dataset.edit", "dataset", self.datasets[0].id))
+        self.assertFalse(UserPermissionGrant.objects.filter(user=requester, permission_id="dataset.view").exists())
+
+    def test_group_creation_adds_multiple_members_and_scoped_grants_atomically(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post("/api/access-control/groups/", {
+            "name": "Research Team V2", "description": "Shared dataset access",
+            "members": [self.users[0].id, self.users[1].id],
+            "grants": [{"permission": "dataset.view", "resource_type": "dataset",
+                        "resource_id": str(self.datasets[0].id)}],
+        }, format="json")
+        self.assertEqual(response.status_code, 201)
+        group = Group.objects.get(pk=response.data["id"])
+        self.assertEqual(group.members.count(), 2)
+        for user in self.users[:2]:
+            self.assertTrue(has_permission(user, "dataset.view", "dataset", self.datasets[0].id))
+            self.assertFalse(has_permission(user, "dataset.view", "dataset", self.datasets[1].id))
+
+        invalid = self.client.post("/api/access-control/groups/", {
+            "name": "Invalid Team", "members": [self.users[0].id],
+            "grants": [{"permission": "dataset.view", "resource_type": "dataset",
+                        "resource_id": str(self.groups[0].id)}],
+        }, format="json")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertFalse(Group.objects.filter(name="Invalid Team").exists())
+
+    def test_group_creation_cannot_add_members_without_explicit_authority(self):
+        creator = self.users[0]
+        UserPermissionGrant.objects.create(user=creator, permission_id="group.create",
+            resource_type="platform", granted_by=self.manager)
+        self.client.force_authenticate(creator)
+        denied = self.client.post("/api/access-control/groups/", {
+            "name": "Unauthorized Team", "members": [self.users[1].id],
+        }, format="json")
+        self.assertEqual(denied.status_code, 403)
+        self.assertFalse(Group.objects.filter(name="Unauthorized Team").exists())
+
+    def test_last_permission_manager_is_protected_when_group_access_changes(self):
+        group = self.groups[0]
+        target = self.users[0]
+        membership = GroupMembership.objects.create(group=group, user=target)
+        group_grant = GroupPermissionGrant.objects.create(
+            group=group, permission_id="user.permission.grant", resource_type="platform",
+            granted_by=self.manager,
+        )
+        direct = UserPermissionGrant.objects.get(user=self.manager, permission_id="user.permission.grant")
+        direct.revoked_at = timezone.now()
+        direct.save(update_fields=["revoked_at"])
+        UserPermissionGrant.objects.create(
+            user=self.manager, permission_id="group.delete", resource_type="platform",
+            granted_by=self.manager,
+        )
+        self.client.force_authenticate(self.manager)
+
+        grant_url = f"/api/access-control/group-grants/{group_grant.id}/"
+        member_url = f"/api/access-control/groups/{group.id}/members/{target.id}/"
+        group_url = f"/api/access-control/groups/{group.id}/"
+        for method, url in ((self.client.delete, grant_url), (self.client.delete, member_url),
+                            (self.client.delete, group_url)):
+            response = method(url)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("last permission manager", response.data["detail"])
+        self.assertTrue(has_permission(target, "user.permission.grant"))
+
+        UserPermissionGrant.objects.create(
+            user=self.users[1], permission_id="user.permission.grant",
+            resource_type="platform", granted_by=self.manager,
+        )
+        self.assertEqual(self.client.delete(grant_url).status_code, 204)
+        self.assertFalse(has_permission(target, "user.permission.grant"))
+        self.assertTrue(GroupMembership.objects.filter(pk=membership.pk).exists())
