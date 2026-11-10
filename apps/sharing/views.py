@@ -224,7 +224,7 @@ def share_with_user(request, dataset_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsReviewerOnly])
+@permission_classes([IsReviewerOrAdmin])
 def access_request_queue(request):
     qs = DatasetAccessRequest.objects.filter(
         status=DatasetAccessRequest.Status.PENDING,
@@ -234,7 +234,7 @@ def access_request_queue(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsReviewerOnly])
+@permission_classes([IsReviewerOrAdmin])
 def vote_on_access_request(request, request_id):
     access_request = get_object_or_404(DatasetAccessRequest, id=request_id)
     if access_request.status != DatasetAccessRequest.Status.PENDING:

@@ -16,12 +16,14 @@ class RequestAccessSerializer(serializers.Serializer):
 
 
 class DatasetAccessRequestSerializer(serializers.ModelSerializer):
+    dataset_title = serializers.CharField(source="dataset.title", read_only=True)
+    requester_email = serializers.EmailField(read_only=True)
     approve_votes = serializers.SerializerMethodField()
     reject_votes = serializers.SerializerMethodField()
 
     class Meta:
         model = DatasetAccessRequest
-        fields = ["id", "dataset", "requester", "shared_by", "purpose_type", "status",
+        fields = ["id", "dataset", "dataset_title", "requester", "requester_email", "shared_by", "purpose_type", "status",
                   "owner_decision", "requested_duration_days", "approve_votes", "reject_votes",
                   "created_at", "resolved_at"]
 
