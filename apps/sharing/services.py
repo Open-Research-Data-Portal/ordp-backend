@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.utils import timezone
 
+from apps.access_control.services import _system_grant_user, has_permission
 from apps.datasets.models import Dataset, Contributor
 from apps.datasets.models import generate_invitation_token
 from apps.notifications.services import notify
@@ -30,8 +31,8 @@ def user_meets_access_requirements(user):
 
 
 def user_can_freely_download(user, dataset):
-    """Owner, contributors, and admins only. Reviewers get no bypass here —
-    they go through the same request flow as any other outside user."""
+    """Owner, contributors, and platform managers only. Reviewers get no
+    bypass here — they go through the same request flow as any other outside user."""
     if not user or not user.is_authenticated:
         return False
 
@@ -41,8 +42,7 @@ def user_can_freely_download(user, dataset):
     if dataset.owner_id == user.id:
         return True
 
-    profile = getattr(user, "profile", None)
-    if profile and profile.has_role("admin"):
+    if has_permission(user, "user.manage"):
         return True
 
     return Contributor.objects.filter(dataset=dataset, user=user).exists()
@@ -50,18 +50,22 @@ def user_can_freely_download(user, dataset):
 
 def user_can_access_dataset(user, dataset):
     """Broader check used for version-history / metadata reads / share-eligibility.
-    Only counts an ACTIVE (non-expired, non-revoked) SharePermission."""
+    Prefers free access and V2 dataset.view / dataset.download grants."""
     if dataset.visibility == Dataset.Visibility.PRIVATE:
-        return bool(user and user.is_authenticated and dataset.owner_id == user.id)
+        return bool(user and user.is_authenticated and (
+            dataset.owner_id == user.id
+            or has_permission(user, "dataset.view", "dataset", dataset.id)
+            or has_permission(user, "dataset.download", "dataset", dataset.id)
+        ))
 
-    profile = getattr(user, "profile", None)
-    is_admin = bool(profile and profile.has_role("admin")) and dataset.visibility == Dataset.Visibility.PUBLIC
-    if user_can_freely_download(user, dataset) or is_admin:
+    if user_can_freely_download(user, dataset):
         return True
     if not user or not user.is_authenticated:
         return False
-    permission = SharePermission.objects.filter(dataset=dataset, shared_with_user=user).first()
-    return bool(permission and permission.is_active_grant())
+    return (
+        has_permission(user, "dataset.view", "dataset", dataset.id)
+        or has_permission(user, "dataset.download", "dataset", dataset.id)
+    )
 
 
 def resolve_access_request_votes(access_request: DatasetAccessRequest):
@@ -201,10 +205,11 @@ def claim_share_access(token, user, purpose=None):
     expires_at = None
     if access_request.requested_duration_days:
         expires_at = timezone.now() + timedelta(days=access_request.requested_duration_days)
-    SharePermission.objects.update_or_create(
-        dataset=access_request.dataset, shared_with_user=user,
-        defaults={"access_type": "download", "status": SharePermission.Status.ACTIVE, "expires_at": expires_at},
-    )
+    for code in ("dataset.view", "dataset.download"):
+        _system_grant_user(
+            user, code, "dataset", access_request.dataset_id,
+            expires_at=expires_at, actor=access_request.shared_by,
+        )
 
     update_fields = ["claim_token", "claim_token_expires_at"]
     if not access_request.requester_id:
