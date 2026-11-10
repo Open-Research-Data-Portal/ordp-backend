@@ -5,8 +5,8 @@ from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.utils import timezone
 
+from apps.access_control.services import _system_grant_user
 from ..models import Contributor, Dataset, DatasetInvitation, PermissionLevel
-from apps.sharing.models import SharePermission
 
 User = get_user_model()
 INVITATION_EXPIRY_DAYS = 14
@@ -94,9 +94,13 @@ def accept_invitation(token, user):
             "order": invitation.dataset.contributors.count() + 1,
         },
     )
-    SharePermission.objects.get_or_create(
-        dataset=invitation.dataset, shared_with_user=user, defaults={"access_type": "download"},
-    )
+    grant_codes = ["dataset.view", "dataset.download"]
+    if invitation.permission == PermissionLevel.EDIT:
+        grant_codes.append("dataset.edit")
+    for code in grant_codes:
+        _system_grant_user(
+            user, code, "dataset", invitation.dataset_id, actor=invitation.invited_by,
+        )
     invitation.status = DatasetInvitation.Status.ACCEPTED
     invitation.accepted_at = timezone.now()
     invitation.save(update_fields=["status", "accepted_at"])
