@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
 from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly, IsReviewerOnly
+from apps.access_control.services import has_permission
 from apps.datasets.models import Dataset, PendingContentUpdate
 from apps.datasets.serializers import PendingContentUpdateSerializer
 from apps.metadata.models import FallbackThumbnail
@@ -38,15 +39,15 @@ def _resolve_thumbnail_suggestions(dataset):
 @api_view(["GET"])
 @permission_classes([IsReviewerOrAdmin])
 def moderation_queue(request):
-    profile = getattr(request.user, "profile", None)
+    from apps.access_control.services import has_permission
 
-    if profile and profile.has_role("admin"):
-        # Admins can see all active datasets regardless of status.
+    if has_permission(request.user, "user.manage"):
+        # Managers can see all active datasets regardless of status.
         qs = Dataset.objects.filter(
             is_active=True,
         ).distinct()
     else:
-        # Reviewers only see pending datasets assigned to them.
+        # Approvers only see pending datasets assigned to them.
         qs = Dataset.objects.filter(
             status=Dataset.Status.PENDING,
             is_active=True,
@@ -128,7 +129,12 @@ def moderate_dataset(request, dataset_id):
         reviewer=request.user,
     ).exists()
 
-    if not assigned:
+    can_approve = has_permission(request.user, "dataset.approve")
+    can_publish = (
+        decision == ModerationDecision.Decision.APPROVED
+        and has_permission(request.user, "dataset.publish")
+    )
+    if not assigned and not can_approve and not can_publish:
         return Response(
             {"detail": "You are not assigned to review this dataset."},
             status=403,
