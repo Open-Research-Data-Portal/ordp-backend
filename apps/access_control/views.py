@@ -546,12 +546,13 @@ def user_management_audit(request):
     permission_rows = PermissionAuditLog.objects.select_related(
         "actor", "target_user", "target_group", "permission"
     )
-    activity_rows = ActivityLog.objects.select_related("user").filter(action__in=[
-        "user_created", "role_granted", "role_revoked", "primary_role_set",
-        "user_deactivated", "user_reactivated", "user_banned",
-        "inactive_user_deleted", "admin_succession",
-    ])
+    activity_rows = ActivityLog.objects.select_related("user")
     if not is_admin:
+        activity_rows = activity_rows.filter(action__in=[
+            "user_created", "role_granted", "role_revoked", "primary_role_set",
+            "user_deactivated", "user_reactivated", "user_banned",
+            "inactive_user_deleted", "admin_succession",
+        ])
         group_ids = GroupMembership.objects.filter(user=request.user).values_list("group_id", flat=True)
         permission_rows = permission_rows.filter(
             Q(target_user=request.user) | Q(target_group_id__in=group_ids)
