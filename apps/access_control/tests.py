@@ -174,7 +174,7 @@ class PermissionSystemTests(TestCase):
         by_code = {row["code"]: row for row in response.data}
         self.assertTrue(by_code["dataset.edit"]["enforced"])
         self.assertTrue(by_code["user.view"]["enforced"])
-        self.assertFalse(by_code["dataset.approve"]["enforced"])
+        self.assertTrue(by_code["dataset.approve"]["enforced"])
 
     def test_api_request_review_and_audit(self):
         self.datasets[0].status = Dataset.Status.PUBLISHED
@@ -556,11 +556,18 @@ class PermissionSystemTests(TestCase):
 
     def test_legacy_share_review_endpoints_are_gone(self):
         self.client.force_authenticate(self.manager)
-        for path in (
-            "/api/sharing/access-requests/queue/",
-        ):
-            response = self.client.get(path)
-            self.assertEqual(response.status_code, 410)
+        self.assertEqual(self.client.get("/api/sharing/access-requests/queue/").status_code, 410)
+        fake_id = "00000000-0000-0000-0000-000000000001"
+        self.assertEqual(
+            self.client.post(f"/api/sharing/access-requests/{fake_id}/vote/", {"vote": "approve"}).status_code,
+            410,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/sharing/access-requests/{fake_id}/owner-decision/", {"decision": "approve"}
+            ).status_code,
+            410,
+        )
 
     def test_admin_permission_class_uses_user_manage_not_role(self):
         from apps.accounts.permissions import IsAdminOnly
