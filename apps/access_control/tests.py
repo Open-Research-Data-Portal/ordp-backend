@@ -20,7 +20,14 @@ class PermissionSystemTests(TestCase):
         cls.users = [User.objects.create_user(username=f"member_v2_{i}", email=f"member{i}@aastu.edu.et", password="test") for i in range(15)]
         cls.datasets = [Dataset.objects.create(title=f"Dataset {i}", owner=cls.manager) for i in range(5)]
         cls.groups = [Group.objects.create(name=f"Group {i}", created_by=cls.manager) for i in range(3)]
-        for code in ["user.view", "user.manage", "user.permission.grant", "user.permission.revoke", "access_request.review", "group.create", "group.member.manage", "group.permission.manage"]:
+        for code in [
+            "user.view", "user.manage", "user.permission.grant", "user.permission.revoke",
+            "access_request.create", "access_request.view", "access_request.review",
+            "access_request.approve", "access_request.reject",
+            "group.create", "group.member.manage", "group.permission.manage",
+            "audit.view", "audit.export", "dataset.create", "dataset.approve", "dataset.publish",
+            "project.create", "collection.create",
+        ]:
             UserPermissionGrant.objects.create(user=cls.manager, permission_id=code, resource_type="platform", granted_by=cls.manager)
 
     def setUp(self):
@@ -38,8 +45,6 @@ class PermissionSystemTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual({row["action"] for row in response.data}, {"user.grant", "role_granted"})
 
-        self.manager.is_staff = True
-        self.manager.save(update_fields=["is_staff"])
         self.client.force_authenticate(self.manager)
         response = self.client.get("/api/access-control/audit/user-management/")
         self.assertEqual(response.status_code, 200)
@@ -493,3 +498,79 @@ class PermissionSystemTests(TestCase):
         self.assertEqual(self.client.delete(grant_url).status_code, 204)
         self.assertFalse(has_permission(target, "user.permission.grant"))
         self.assertTrue(GroupMembership.objects.filter(pk=membership.pk).exists())
+
+    def test_new_catalog_codes_are_marked_enforced(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.get("/api/access-control/catalog/")
+        self.assertEqual(response.status_code, 200)
+        by_code = {row["code"]: row["enforced"] for row in response.data}
+        for code in (
+            "dataset.create", "dataset.upload", "dataset.metadata.edit", "dataset.version.view",
+            "dataset.version.create", "dataset.version.restore", "dataset.approve", "dataset.publish",
+            "user.manage", "access_request.approve", "audit.export", "project.view", "collection.view",
+            "dataset_file.download",
+        ):
+            self.assertTrue(by_code.get(code), code)
+
+    def test_dataset_create_grant_allows_upload_permission_class(self):
+        from unittest.mock import patch
+
+        from apps.accounts.models import UserProfile
+        from apps.accounts.permissions import CanUploadDatasets
+        from rest_framework.test import APIRequestFactory
+
+        target = self.users[0]
+        profile, _ = UserProfile.objects.get_or_create(user=target)
+        profile.can_upload_datasets = False
+        profile.save(update_fields=["can_upload_datasets"])
+        factory = APIRequestFactory()
+        request = factory.get("/")
+        request.user = target
+        with patch.object(UserProfile, "is_profile_complete", return_value=True):
+            self.assertFalse(CanUploadDatasets().has_permission(request, None))
+            UserPermissionGrant.objects.create(
+                user=target, permission_id="dataset.create", resource_type="platform", granted_by=self.manager,
+            )
+            self.assertTrue(CanUploadDatasets().has_permission(request, None))
+
+    def test_project_view_inherits_to_linked_dataset_view(self):
+        from apps.datasets.models import ResearchProject
+
+        target = self.users[0]
+        project = ResearchProject.objects.create(name="Vision Lab", created_by=self.manager)
+        project.datasets.add(self.datasets[0])
+        UserPermissionGrant.objects.create(
+            user=target, permission_id="project.view", resource_type="project",
+            resource_id=project.id, granted_by=self.manager,
+        )
+        self.assertTrue(has_permission(target, "dataset.view", "dataset", self.datasets[0].id))
+        self.assertFalse(has_permission(target, "dataset.edit", "dataset", self.datasets[0].id))
+        self.assertFalse(has_permission(target, "dataset.view", "dataset", self.datasets[1].id))
+
+    def test_audit_export_requires_export_permission(self):
+        self.client.force_authenticate(self.users[0])
+        self.assertEqual(self.client.get("/api/access-control/audit/export/").status_code, 403)
+        self.client.force_authenticate(self.manager)
+        response = self.client.get("/api/access-control/audit/export/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_legacy_share_review_endpoints_are_gone(self):
+        self.client.force_authenticate(self.manager)
+        for path in (
+            "/api/sharing/access-requests/queue/",
+        ):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 410)
+
+    def test_admin_permission_class_uses_user_manage_not_role(self):
+        from apps.accounts.permissions import IsAdminOnly
+        from rest_framework.test import APIRequestFactory
+
+        factory = APIRequestFactory()
+        request = factory.get("/")
+        request.user = self.users[0]
+        self.assertFalse(IsAdminOnly().has_permission(request, None))
+        UserPermissionGrant.objects.create(
+            user=self.users[0], permission_id="user.manage", resource_type="platform", granted_by=self.manager,
+        )
+        self.assertTrue(IsAdminOnly().has_permission(request, None))

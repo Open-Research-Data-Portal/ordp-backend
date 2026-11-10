@@ -2,24 +2,42 @@
 
 ## Status and rollout
 
-This branch introduces a resource-scoped permission engine and management API. It does not delete existing roles, grants, or sharing records. The existing role-based API checks remain in place during migration; `dataset.edit` and `dataset.download` grants are also honored by their existing endpoints. Do not treat this branch as a complete role-free authorization cutover until the remaining legacy endpoints have been mapped and migrated.
+This branch provides a resource-scoped permission engine and management API. Authorization for protected APIs uses `has_permission` (and resource ownership where the product requires it). Legacy `UserRole` rows may still exist as profile metadata after `backfill_roles_to_grants`, but role classes (`IsAdminOnly`, `IsReviewerOrAdmin`, `IsReviewerOnly`) now resolve to V2 platform permission codes.
 
-The initial migrations create new tables; migration `0004` adds group request fields. No existing user receives a new permission automatically. The permission catalog is seeded by migration `0002_catalog`; unanswered requests expire after 30 days by default (`ACCESS_REQUEST_EXPIRATION_DAYS`). Migration `0004` was applied to the local Docker database, and the known local Admin superuser was bootstrapped as its first permission manager. No production database migration or bootstrap was run.
+Legacy share entitlements are migrated into `UserPermissionGrant` (`dataset.view` + `dataset.download`). The old share review queue/vote/owner-decision endpoints return **410** and point clients at `/api/access-control/requests/`. Claim-access tokens remain supported and write V2 grants on claim.
+
+Frontend management UI is a separate milestone.
 
 ## Deploy sequence
 
 1. Back up the database and deploy the backend branch.
-2. Run `python manage.py migrate` against the intended environment.
-3. As a trusted operator, run `python manage.py bootstrap_permission_manager --email <existing-superuser-email>` once. The command requires an active existing superuser and refuses to run when a direct permission manager exists.
-4. Verify `/api/access-control/me/`, catalog, and manager overview with the intended accounts.
-5. Deploy the frontend branch and verify a direct grant, group inheritance, a partial request decision, and revocation on a test dataset.
-6. Map remaining role and owner checks to explicit permission codes before disabling legacy authorization. Preserve owner and public access behavior in the migration policy.
+2. Run `python manage.py migrate`.
+3. Bootstrap once if needed: `python manage.py bootstrap_permission_manager --email <superuser-email>`.
+4. Backfill shares: `python manage.py migrate_share_permissions_to_grants`.
+5. Backfill roles/flags: `python manage.py backfill_roles_to_grants`.
+6. Optionally drain pending legacy share requests: `python manage.py drain_legacy_access_requests` (or `--approve-pending`).
+7. Verify `/api/access-control/me/`, catalog, overview, download, and request review.
+8. Deploy frontend when the V2 access-management UI is ready.
 
 ## Permission evaluation
 
-`has_permission(user, code, resource_type, resource_id)` is deny-by-default for the new system. Active direct grants and active grants inherited from any unarchived group are additive. Revoked and expired grants do not count. Platform grants use no resource ID; dataset grants match one exact dataset UUID. There is no implicit project inheritance or user-level deny override. `effective_permissions` includes direct and group sources and expiry dates.
+`has_permission(user, code, resource_type, resource_id)` is deny-by-default. Active direct grants and grants inherited from unarchived groups are additive. Revoked and expired grants do not count.
 
-Only an actor with `user.permission.grant` or `group.permission.manage` may issue grants. Unless they also have `user.manage`, the actor may delegate only permissions they hold for the same resource. Request reviewers cannot review their own requests. Approval writes grants and audit records in one transaction; rejected items create no grants. High-impact confirmation is shown in the frontend.
+Additional rules:
+
+- Platform-scoped catalog codes (e.g. `dataset.create`, `dataset.approve`) are evaluated on `resource_type=platform`.
+- `project.view` on a project may grant `dataset.view` on linked datasets (View only; edit/delete/download do not inherit).
+- `dataset_file.view` / `dataset_file.download` also succeed when the user holds the matching dataset view/download grant for the file’s parent dataset.
+
+## Enforced catalog (grantable)
+
+Dataset: `view`, `edit`, `delete`, `download`, `upload`, `metadata.edit`, `version.view`, `version.create`, `version.restore`, `approve` (platform), `publish` (platform), `create` (platform).
+
+User/group: `user.view`, `user.manage`, `user.permission.grant`, `user.permission.revoke`, `group.create|edit|delete|member.manage|permission.manage`.
+
+Access/audit: `access_request.create|view|review|approve|reject`, `audit.view`, `audit.export`.
+
+Project/collection/file: `project.*`, `collection.*`, `dataset_file.view`, `dataset_file.download`.
 
 ## API
 
@@ -27,41 +45,31 @@ All paths below are under `/api/access-control/` and require authentication.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `me/`, `catalog/` | Current effective permissions; catalog |
-| GET | `my-resources/` | Datasets with current direct or inherited grants |
-| GET | `overview/`, `users/`, `users/<id>/` | Manager overview and user access |
-| POST | `users/<id>/grants/` | Grant direct access |
-| POST | `users/<id>/grants/bulk/` | Atomically grant multiple direct permissions |
-| DELETE | `user-grants/<uuid>/` | Revoke a direct grant |
-| GET, POST | `groups/` | List or create groups |
-| GET | `group-directory/` | Active groups available for membership requests |
-| GET, PATCH, DELETE | `groups/<uuid>/` | Detail, edit, archive |
-| GET | `groups/<uuid>/activity/` | Group access history |
-| POST, DELETE | `groups/<uuid>/members/<user-id>/` | Add or remove member |
-| POST | `groups/<uuid>/grants/` | Grant group access |
-| DELETE | `group-grants/<uuid>/` | Revoke group grant |
-| GET, POST | `requests/` | List or submit access requests |
-| GET | `resources/` | Discover active datasets; ordinary users see published, nonprivate datasets |
-| GET, DELETE | `requests/<uuid>/` | View or cancel own pending request |
-| POST | `requests/<uuid>/review/` | Decide every requested permission independently |
-| GET | `resources/dataset/<uuid>/` | Active grants on one dataset |
-| POST | `resources/dataset/<uuid>/matrix/` | Apply matrix changes atomically |
-| GET | `audit/` | Recent permission changes |
+| GET | `me/`, `catalog/` | Effective permissions; catalog with `enforced` |
+| GET | `my-resources/` | Datasets with current grants |
+| GET | `overview/`, `users/`, `users/<id>/` | Manager overview |
+| POST | `users/<id>/grants/`, `users/<id>/grants/bulk/` | Direct grants |
+| DELETE | `user-grants/<uuid>/` | Revoke direct grant |
+| GET, POST | `groups/`, `group-directory/` | Groups |
+| GET, PATCH, DELETE | `groups/<uuid>/` | Detail / edit / archive |
+| GET, POST | `requests/` | List or create access requests |
+| POST | `requests/<uuid>/review/` | Partial approval decisions |
+| GET | `resources/`, `resources/dataset/<uuid>/`, matrix | Discovery and matrix |
+| GET | `audit/`, `audit/export/`, `audit/user-management/` | Audit |
+| GET, POST | `projects/`, `collections/` | Minimal project/collection resources |
 
-Grant body: `{ "permission": "dataset.view", "resource_type": "dataset", "resource_id": "<uuid>", "expires_at": null, "reason": "..." }`. Platform grants use `resource_type: "platform"` and `resource_id: null`.
+Sharing download remains at `/api/sharing/<uuid>/download/` (V2 grants + owner/contributor free access). Claim: `/api/sharing/claim-access/<token>/` writes V2 grants.
 
-Bulk grant body: `{ "grants": [<grant body>, ...] }`. The request is atomic: if any grant is invalid, duplicated, or not delegable, none are created. The catalog returns `enforced` for permissions already checked by their corresponding API operations; the user permission interface offers only those codes.
-
-Request body: `{ "resource_type": "dataset", "resource_id": "<uuid>", "permissions": ["dataset.view", "dataset.download"], "justification": "..." }`. Only published, active, nonprivate datasets can be requested through this flow.
-
-Group membership request body: `{ "kind": "group_membership", "group": "<uuid>", "justification": "..." }`. Group permission requests use `kind: "group_permission"`, `group`, `resource_type`, `resource_id`, and `permissions`. A reviewer decides membership with `{"decision": "approved"}` or `{"decision": "rejected"}`; group permissions use the per-permission review body above. Group creation also accepts `members` (user IDs) and `grants` (grant bodies) in one atomic request.
-
-Review body: `{ "decisions": [{ "permission": "dataset.view", "decision": "approved", "expires_at": null }, { "permission": "dataset.download", "decision": "rejected", "reason": "..." }], "comment": "..." }`.
+Retired (410): `/api/sharing/access-requests/queue/`, `.../vote/`, `.../owner-decision/`.
 
 ## Tests
 
-Run `python manage.py test apps.access_control apps.sharing apps.datasets.test_editing --settings=config.settings.test_access_control`. This uses an in-memory SQLite database for local verification. Verify migrations and constraints again against PostgreSQL in staging before production deployment.
+```bash
+python manage.py test apps.access_control apps.sharing apps.datasets.test_editing --settings=config.settings.test_access_control
+```
 
-## Known migration work
+## Known out of scope
 
-The legacy ORDP role and owner checks still authorize many existing endpoints. A complete role-free cutover requires an endpoint-by-endpoint permission policy and a backfill plan for existing users, contributors, reviewers, and admins. Project and collection scopes are not enabled because there is no corresponding persistent resource model in this branch. Dataset-file scope is reserved in the schema but has no independent file authorization endpoint yet. Group membership and group permission requests, the group creation wizard, and the shared-dataset page are included in this checkpoint.
+- Frontend §8 management UI
+- Hard group delete (archive only)
+- Legacy share owner + reviewer quorum (replaced by V2 request review)
