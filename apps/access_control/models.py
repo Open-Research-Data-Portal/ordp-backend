@@ -46,6 +46,10 @@ class Grant(models.Model):
         PLATFORM = "platform", "Platform"
         DATASET = "dataset", "Dataset"
         DATASET_FILE = "dataset_file", "Dataset file"
+        PROJECT = "project", "Project"
+        COLLECTION = "collection", "Collection"
+
+    SCOPED_RESOURCE_TYPES = ("dataset", "dataset_file", "project", "collection")
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     permission = models.ForeignKey(Permission, on_delete=models.PROTECT)
@@ -58,7 +62,13 @@ class Grant(models.Model):
 
     class Meta:
         abstract = True
-        constraints = [models.CheckConstraint(condition=(Q(resource_type="platform", resource_id__isnull=True) | Q(resource_type__in=["dataset", "dataset_file"], resource_id__isnull=False)), name="%(class)s_valid_scope")]
+        constraints = [models.CheckConstraint(
+            condition=(
+                Q(resource_type="platform", resource_id__isnull=True)
+                | Q(resource_type__in=["dataset", "dataset_file", "project", "collection"], resource_id__isnull=False)
+            ),
+            name="%(class)s_valid_scope",
+        )]
 
 
 class UserPermissionGrant(Grant):

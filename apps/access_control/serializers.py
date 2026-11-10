@@ -4,7 +4,9 @@ from .models import AccessRequest, Group, GroupMembership, Permission
 
 
 class ScopeSerializer(serializers.Serializer):
-    resource_type = serializers.ChoiceField(choices=["platform", "dataset", "dataset_file"])
+    resource_type = serializers.ChoiceField(
+        choices=["platform", "dataset", "dataset_file", "project", "collection"],
+    )
     resource_id = serializers.UUIDField(required=False, allow_null=True)
 
     def validate(self, attrs):
@@ -104,7 +106,11 @@ class RequestCreateSerializer(ScopeSerializer):
             if not dataset.is_active or dataset.visibility == Dataset.Visibility.PRIVATE or dataset.status != Dataset.Status.PUBLISHED:
                 raise serializers.ValidationError("This dataset is not available for access requests.")
         if attrs["resource_type"] == "dataset_file":
-            raise serializers.ValidationError("Request access to the dataset that contains this file.")
+            from apps.datasets.models import DatasetFile
+            file_obj = DatasetFile.objects.select_related("dataset").get(pk=attrs["resource_id"])
+            dataset = file_obj.dataset
+            if not dataset.is_active or dataset.visibility == Dataset.Visibility.PRIVATE or dataset.status != Dataset.Status.PUBLISHED:
+                raise serializers.ValidationError("This file is not available for access requests.")
         if len(set(codes)) != len(codes):
             raise serializers.ValidationError("Select each permission once.")
         found = Permission.objects.filter(code__in=codes, resource_type=attrs["resource_type"])

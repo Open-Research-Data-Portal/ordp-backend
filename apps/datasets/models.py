@@ -373,3 +373,39 @@ class UploadSession(models.Model):
 
     def __str__(self):
         return self.id
+
+class ResearchProject(models.Model):
+    """Minimal project resource for V2 scoped permissions."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="created_research_projects",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    datasets = models.ManyToManyField(Dataset, blank=True, related_name="research_projects")
+    members = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name="research_projects",
+    )
+
+    def __str__(self):
+        return self.name
+
+
+class DatasetCollection(models.Model):
+    """Minimal collection resource for V2 scoped permissions."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="created_dataset_collections",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    datasets = models.ManyToManyField(Dataset, blank=True, related_name="collections")
+
+    def __str__(self):
+        return self.name

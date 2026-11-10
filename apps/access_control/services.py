@@ -2,7 +2,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.datasets.models import Dataset, DatasetFile
+from apps.datasets.models import Dataset, DatasetCollection, DatasetFile, ResearchProject
 from .models import (
     AccessRequest, AccessRequestPermission, Group, GroupMembership,
     GroupPermissionGrant, Permission, PermissionAuditLog, UserPermissionGrant,
@@ -11,25 +11,62 @@ from .models import (
 
 ENFORCED_PERMISSION_CODES = {
     "dataset.view", "dataset.edit", "dataset.delete", "dataset.download",
-    "user.view", "user.permission.grant", "user.permission.revoke",
+    "dataset.upload", "dataset.metadata.edit", "dataset.version.view",
+    "dataset.version.create", "dataset.version.restore", "dataset.approve",
+    "dataset.publish", "dataset.create",
+    "user.view", "user.manage", "user.permission.grant", "user.permission.revoke",
     "group.create", "group.edit", "group.delete", "group.member.manage",
-    "group.permission.manage", "access_request.review", "audit.view",
+    "group.permission.manage",
+    "access_request.create", "access_request.view", "access_request.review",
+    "access_request.approve", "access_request.reject",
+    "audit.view", "audit.export",
+    "project.view", "project.create", "project.edit", "project.delete",
+    "project.member.add", "project.member.remove",
+    "collection.view", "collection.create", "collection.edit", "collection.delete",
+    "dataset_file.view", "dataset_file.download",
 }
+
+# Platform codes granted to legacy admins during backfill.
+ADMIN_PLATFORM_CODES = (
+    "user.manage", "user.view", "user.permission.grant", "user.permission.revoke",
+    "group.create", "group.edit", "group.delete", "group.member.manage", "group.permission.manage",
+    "access_request.create", "access_request.view", "access_request.review",
+    "access_request.approve", "access_request.reject",
+    "audit.view", "audit.export",
+    "dataset.create", "dataset.approve", "dataset.publish",
+    "project.create", "project.view", "project.edit", "project.delete",
+    "project.member.add", "project.member.remove",
+    "collection.create", "collection.view", "collection.edit", "collection.delete",
+)
+
+REVIEWER_PLATFORM_CODES = (
+    "access_request.view", "access_request.review", "access_request.approve", "access_request.reject",
+    "dataset.approve", "dataset.publish",
+)
 
 
 def validate_scope(resource_type, resource_id):
     if resource_type == "platform" and resource_id is None:
         return
-    model = {"dataset": Dataset, "dataset_file": DatasetFile}.get(resource_type)
+    model = {
+        "dataset": Dataset,
+        "dataset_file": DatasetFile,
+        "project": ResearchProject,
+        "collection": DatasetCollection,
+    }.get(resource_type)
     if not model or not resource_id or not model.objects.filter(pk=resource_id).exists():
         raise ValueError("Select an existing resource with a valid scope.")
+
+
+def _active_q():
+    now = timezone.now()
+    return Q(revoked_at__isnull=True) & (Q(expires_at__isnull=True) | Q(expires_at__gt=now))
 
 
 def active_grants(user, permission_code=None, resource_type=None, resource_id=None):
     if not user or not user.is_authenticated or not user.is_active:
         return [], []
-    now = timezone.now()
-    active = Q(revoked_at__isnull=True) & (Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+    active = _active_q()
     direct = UserPermissionGrant.objects.filter(active, user=user)
     inherited = GroupPermissionGrant.objects.filter(
         active, group__archived_at__isnull=True,
@@ -47,8 +84,7 @@ def active_grants(user, permission_code=None, resource_type=None, resource_id=No
 def other_permission_manager_exists(*, excluded_direct=None, excluded_group_grant=None,
                                     excluded_group=None, excluded_member=None):
     """Check whether a live manager will remain after one access change."""
-    now = timezone.now()
-    live = Q(revoked_at__isnull=True) & (Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+    live = _active_q()
     direct = UserPermissionGrant.objects.filter(
         live, permission_id="user.permission.grant", resource_type="platform", user__is_active=True,
     )
@@ -73,9 +109,37 @@ def other_permission_manager_exists(*, excluded_direct=None, excluded_group_gran
     return inherited.exists()
 
 
-def has_permission(user, action, resource_type="platform", resource_id=None):
+def _has_exact_permission(user, action, resource_type="platform", resource_id=None):
     direct, inherited = active_grants(user, action, resource_type, resource_id)
     return direct.exists() or inherited.exists()
+
+
+def has_permission(user, action, resource_type="platform", resource_id=None):
+    """Deny-by-default evaluation with optional project.view → dataset inheritance."""
+    if _has_exact_permission(user, action, resource_type, resource_id):
+        return True
+    # Platform grant of the same action also covers platform-scoped admin ops.
+    if resource_type != "platform" and _has_exact_permission(user, action, "platform", None):
+        # Only for codes whose catalog resource_type is platform (e.g. dataset.create).
+        permission = Permission.objects.filter(pk=action).first()
+        if permission and permission.resource_type == "platform":
+            return True
+    # Explicit inheritance: project.view may grant dataset.view on linked datasets.
+    if action == "dataset.view" and resource_type == "dataset" and resource_id:
+        project_ids = ResearchProject.objects.filter(
+            archived_at__isnull=True, datasets__pk=resource_id,
+        ).values_list("pk", flat=True)
+        for project_id in project_ids:
+            if _has_exact_permission(user, "project.view", "project", project_id):
+                return True
+    # dataset_file.view/download inherit from matching dataset grant when file belongs to dataset.
+    if resource_type == "dataset_file" and resource_id and action in ("dataset_file.view", "dataset_file.download"):
+        file_obj = DatasetFile.objects.filter(pk=resource_id).select_related("dataset").first()
+        if file_obj:
+            dataset_action = "dataset.view" if action.endswith("view") else "dataset.download"
+            if _has_exact_permission(user, dataset_action, "dataset", file_obj.dataset_id):
+                return True
+    return False
 
 
 def effective_permissions(user, resource_type=None, resource_id=None):
@@ -98,7 +162,10 @@ def effective_permissions(user, resource_type=None, resource_id=None):
             "resource_id": str(grant.resource_id) if grant.resource_id else None,
             "sources": [],
         })
-        row["sources"].append({"type": "group", "id": str(grant.id), "group_id": str(grant.group_id), "group_name": grant.group.name, "expires_at": grant.expires_at})
+        row["sources"].append({
+            "type": "group", "id": str(grant.id), "group_id": str(grant.group_id),
+            "group_name": grant.group.name, "expires_at": grant.expires_at,
+        })
     return list(entries.values())
 
 
@@ -116,6 +183,17 @@ def ensure_can_manage(actor, authority, permission=None, resource_type=None, res
     if permission and not has_permission(actor, "user.manage"):
         if not has_permission(actor, permission.code, resource_type, resource_id):
             raise PermissionError("You cannot delegate a permission you do not hold.")
+
+
+def _system_grant_user(user, permission_code, resource_type="platform", resource_id=None, expires_at=None, actor=None):
+    """Idempotent grant used by backfill/claim (skips ENFORCED/delegation checks)."""
+    permission = Permission.objects.get(pk=permission_code)
+    grant, created = UserPermissionGrant.objects.get_or_create(
+        user=user, permission=permission, resource_type=resource_type,
+        resource_id=resource_id, revoked_at=None,
+        defaults={"granted_by": actor, "expires_at": expires_at},
+    )
+    return grant, created
 
 
 @transaction.atomic
@@ -187,9 +265,19 @@ def revoke_user_grant(actor, grant, reason=""):
           metadata={"reason": reason, "grant_id": str(grant.id)})
 
 
+def can_review_access_requests(user):
+    return (
+        has_permission(user, "access_request.review")
+        or has_permission(user, "access_request.approve")
+        or has_permission(user, "access_request.reject")
+        or has_permission(user, "user.manage")
+    )
+
+
 @transaction.atomic
 def review_request(actor, access_request, decisions, comment="", membership_decision=None):
-    ensure_can_manage(actor, "access_request.review")
+    if not can_review_access_requests(actor):
+        raise PermissionError("You do not have permission to manage this access.")
     if actor.pk == access_request.requester_id:
         raise PermissionError("You cannot review your own request.")
     if access_request.status != AccessRequest.Status.PENDING:
@@ -232,6 +320,8 @@ def review_request(actor, access_request, decisions, comment="", membership_deci
             raise ValueError("Each decision must be approved or rejected.")
         expiration = result.get("expires_at")
         if decision == "approved":
+            if not has_permission(actor, "access_request.approve") and not has_permission(actor, "access_request.review") and not has_permission(actor, "user.manage"):
+                raise PermissionError("You cannot approve access requests.")
             if code not in ENFORCED_PERMISSION_CODES:
                 raise ValueError("This permission is not enforced by an endpoint yet.")
             is_group = access_request.kind == AccessRequest.Kind.GROUP_PERMISSION
@@ -272,6 +362,9 @@ def review_request(actor, access_request, decisions, comment="", membership_deci
                               access_request.resource_type, access_request.resource_id,
                               expiration, comment)
             approved += 1
+        else:
+            if not has_permission(actor, "access_request.reject") and not has_permission(actor, "access_request.review") and not has_permission(actor, "user.manage"):
+                raise PermissionError("You cannot reject access requests.")
         item.decision = decision
         item.decision_reason = result.get("reason", "")
         item.approved_expiration = expiration if decision == "approved" else None
