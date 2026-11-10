@@ -9,8 +9,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
-from apps.datasets.models import Dataset
-from apps.accounts.models import ActivityLog, UserRole
+from apps.datasets.models import Dataset, DatasetCollection, ResearchProject
+from apps.accounts.models import ActivityLog
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from .models import (
@@ -18,7 +18,11 @@ from .models import (
     GroupPermissionGrant, Permission, PermissionAuditLog, UserPermissionGrant,
 )
 from .serializers import AccessRequestSerializer, BulkGrantSerializer, GrantSerializer, GroupCreateSerializer, GroupSerializer, RequestCreateSerializer, ReviewSerializer
-from .services import ENFORCED_PERMISSION_CODES, audit, effective_permissions, ensure_can_manage, grant_to_group, grant_to_user, has_permission, other_permission_manager_exists, review_request, revoke_user_grant
+from .services import (
+    ENFORCED_PERMISSION_CODES, audit, can_review_access_requests, effective_permissions,
+    ensure_can_manage, grant_to_group, grant_to_user, has_permission,
+    other_permission_manager_exists, review_request, revoke_user_grant,
+)
 
 User = get_user_model()
 
@@ -50,10 +54,14 @@ def catalog(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_permissions(request):
-    return Response({"effective": effective_permissions(request.user),
-                     "can_view_users": has_permission(request.user, "user.view"),
-                     "can_review_requests": has_permission(request.user, "access_request.review"),
-                     "can_view_audit": has_permission(request.user, "audit.view")})
+    return Response({
+        "effective": effective_permissions(request.user),
+        "can_view_users": has_permission(request.user, "user.view"),
+        "can_review_requests": can_review_access_requests(request.user),
+        "can_view_audit": has_permission(request.user, "audit.view"),
+        "can_export_audit": has_permission(request.user, "audit.export"),
+        "can_manage_users": has_permission(request.user, "user.manage"),
+    })
 
 
 @api_view(["GET"])
@@ -353,11 +361,14 @@ def access_requests(request):
     if request.method == "GET":
         AccessRequest.objects.filter(status="pending", expires_at__lte=timezone.now()).update(status="expired")
         qs = AccessRequest.objects.select_related("requester__profile", "group").prefetch_related("items__permission").order_by("-created_at")
-        if not has_permission(request.user, "access_request.review"):
+        if not (can_review_access_requests(request.user) or has_permission(request.user, "access_request.view")):
             qs = qs.filter(requester=request.user)
         if request.query_params.get("status"):
             qs = qs.filter(status=request.query_params["status"])
         return Response(AccessRequestSerializer(qs[:100], many=True).data)
+    if not has_permission(request.user, "access_request.create"):
+        # Authenticated users may still request access for themselves (end-user flow).
+        pass
     serializer = RequestCreateSerializer(data=request.data, context={"request": request})
     serializer.is_valid(raise_exception=True)
     value = serializer.validated_data
@@ -374,17 +385,26 @@ def access_requests(request):
         audit(request.user, "request.create", user=request.user,
               resource_type=access_request.resource_type, resource_id=access_request.resource_id,
               metadata={"request_id": str(access_request.id)})
-    admin_users = User.objects.filter(is_active=True).filter(
-        Q(is_superuser=True) | Q(is_staff=True) | Q(profile__roles__role=UserRole.RoleChoice.ADMIN)
-    ).distinct().exclude(pk=request.user.pk)
+    reviewer_ids = UserPermissionGrant.objects.filter(
+        live_grants(), permission_id__in=[
+            "access_request.review", "access_request.approve", "access_request.reject", "user.manage",
+        ], resource_type="platform", user__is_active=True,
+    ).values_list("user_id", flat=True)
+    group_reviewer_ids = GroupPermissionGrant.objects.filter(
+        live_grants(), permission_id__in=[
+            "access_request.review", "access_request.approve", "access_request.reject", "user.manage",
+        ], resource_type="platform", group__archived_at__isnull=True,
+        group__memberships__user__is_active=True,
+    ).values_list("group__memberships__user_id", flat=True)
+    admin_users = User.objects.filter(
+        is_active=True, pk__in=set(reviewer_ids) | set(group_reviewer_ids),
+    ).exclude(pk=request.user.pk).distinct()
     request_label = (
         "group membership" if access_request.kind == AccessRequest.Kind.GROUP_MEMBERSHIP
         else "group permissions" if access_request.kind == AccessRequest.Kind.GROUP_PERMISSION
         else "dataset access"
     )
     for admin_user in admin_users:
-        if not has_permission(admin_user, "access_request.review"):
-            continue
         if access_request.kind == AccessRequest.Kind.GROUP_MEMBERSHIP and not has_permission(admin_user, "group.member.manage"):
             continue
         if access_request.kind == AccessRequest.Kind.GROUP_PERMISSION and not has_permission(admin_user, "group.permission.manage"):
@@ -400,7 +420,9 @@ def access_requests(request):
 def access_request_detail(request, request_id):
     AccessRequest.objects.filter(pk=request_id, status="pending", expires_at__lte=timezone.now()).update(status="expired")
     obj = get_object_or_404(AccessRequest.objects.select_related("requester__profile", "group").prefetch_related("items__permission"), pk=request_id)
-    if obj.requester_id != request.user.pk and not has_permission(request.user, "access_request.review"):
+    if obj.requester_id != request.user.pk and not (
+        can_review_access_requests(request.user) or has_permission(request.user, "access_request.view")
+    ):
         return denied()
     if request.method == "GET":
         return Response(AccessRequestSerializer(obj).data)
@@ -539,19 +561,21 @@ def audit_history(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def user_management_audit(request):
-    """User and permission changes visible to admins or the affected user."""
-    is_admin = request.user.is_superuser or request.user.is_staff or UserRole.objects.filter(
-        profile__user=request.user, role=UserRole.RoleChoice.ADMIN
-    ).exists()
+    """User and permission changes visible to managers or the affected user."""
+    is_admin = (
+        has_permission(request.user, "user.manage")
+        or has_permission(request.user, "audit.view")
+    )
     permission_rows = PermissionAuditLog.objects.select_related(
         "actor", "target_user", "target_group", "permission"
     )
-    activity_rows = ActivityLog.objects.select_related("user").filter(action__in=[
-        "user_created", "role_granted", "role_revoked", "primary_role_set",
-        "user_deactivated", "user_reactivated", "user_banned",
-        "inactive_user_deleted", "admin_succession",
-    ])
+    activity_rows = ActivityLog.objects.select_related("user")
     if not is_admin:
+        activity_rows = activity_rows.filter(action__in=[
+            "user_created", "role_granted", "role_revoked", "primary_role_set",
+            "user_deactivated", "user_reactivated", "user_banned",
+            "inactive_user_deleted", "admin_succession",
+        ])
         group_ids = GroupMembership.objects.filter(user=request.user).values_list("group_id", flat=True)
         permission_rows = permission_rows.filter(
             Q(target_user=request.user) | Q(target_group_id__in=group_ids)
@@ -581,3 +605,160 @@ def user_management_audit(request):
     } for row in activity_rows.order_by("-timestamp")[:500])
     entries.sort(key=lambda row: row["timestamp"], reverse=True)
     return Response(entries[:500])
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def audit_export(request):
+    if not has_permission(request.user, "audit.export"):
+        return denied()
+    qs = PermissionAuditLog.objects.select_related(
+        "actor", "target_user", "target_group", "permission",
+    ).order_by("-timestamp")[:5000]
+    return Response([
+        {
+            "id": row.pk,
+            "actor": row.actor.email if row.actor else None,
+            "target_user": row.target_user.email if row.target_user else None,
+            "target_group": row.target_group.name if row.target_group else None,
+            "permission": row.permission_id,
+            "resource_type": row.resource_type,
+            "resource_id": str(row.resource_id) if row.resource_id else None,
+            "action": row.action,
+            "timestamp": row.timestamp,
+            "metadata": row.metadata,
+        }
+        for row in qs
+    ])
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def projects(request):
+    if request.method == "GET":
+        qs = ResearchProject.objects.filter(archived_at__isnull=True).order_by("name")
+        if not has_permission(request.user, "user.view") and not has_permission(request.user, "project.create"):
+            qs = qs.filter(Q(members=request.user) | Q(created_by=request.user)).distinct()
+        return Response(list(qs.values("id", "name", "description", "created_at", "updated_at")[:200]))
+    if not has_permission(request.user, "project.create"):
+        return denied()
+    name = (request.data.get("name") or "").strip()
+    if not name:
+        return Response({"detail": "Name is required."}, status=400)
+    project = ResearchProject.objects.create(
+        name=name, description=request.data.get("description", ""), created_by=request.user,
+    )
+    project.members.add(request.user)
+    audit(request.user, "project.create", resource_type="project", resource_id=project.id,
+          metadata={"name": project.name})
+    return Response({"id": str(project.id), "name": project.name, "description": project.description}, status=201)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def project_detail(request, project_id):
+    project = get_object_or_404(ResearchProject, pk=project_id)
+    if request.method == "GET":
+        if not (
+            has_permission(request.user, "project.view", "project", project.id)
+            or has_permission(request.user, "user.view")
+            or project.members.filter(pk=request.user.pk).exists()
+            or project.created_by_id == request.user.pk
+        ):
+            return denied()
+        return Response({
+            "id": str(project.id), "name": project.name, "description": project.description,
+            "archived_at": project.archived_at,
+            "dataset_ids": list(project.datasets.values_list("id", flat=True)),
+            "member_ids": list(project.members.values_list("id", flat=True)),
+        })
+    if request.method == "PATCH":
+        if not has_permission(request.user, "project.edit", "project", project.id) and not has_permission(request.user, "user.manage"):
+            return denied()
+        if "name" in request.data:
+            project.name = request.data["name"]
+        if "description" in request.data:
+            project.description = request.data["description"]
+        if "dataset_ids" in request.data:
+            project.datasets.set(Dataset.objects.filter(pk__in=request.data["dataset_ids"]))
+        project.save()
+        return Response({"id": str(project.id), "name": project.name, "description": project.description})
+    if not has_permission(request.user, "project.delete", "project", project.id) and not has_permission(request.user, "user.manage"):
+        return denied()
+    project.archived_at = timezone.now()
+    project.save(update_fields=["archived_at"])
+    audit(request.user, "project.archive", resource_type="project", resource_id=project.id)
+    return Response(status=204)
+
+
+@api_view(["POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def project_member(request, project_id, user_id):
+    project = get_object_or_404(ResearchProject, pk=project_id, archived_at__isnull=True)
+    user = get_object_or_404(User, pk=user_id, is_active=True)
+    if request.method == "POST":
+        if not has_permission(request.user, "project.member.add", "project", project.id) and not has_permission(request.user, "user.manage"):
+            return denied()
+        project.members.add(user)
+        audit(request.user, "project.member.add", user=user, resource_type="project", resource_id=project.id)
+        return Response(status=201)
+    if not has_permission(request.user, "project.member.remove", "project", project.id) and not has_permission(request.user, "user.manage"):
+        return denied()
+    project.members.remove(user)
+    audit(request.user, "project.member.remove", user=user, resource_type="project", resource_id=project.id)
+    return Response(status=204)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def collections(request):
+    if request.method == "GET":
+        qs = DatasetCollection.objects.filter(archived_at__isnull=True).order_by("name")
+        if not has_permission(request.user, "user.view") and not has_permission(request.user, "collection.create"):
+            qs = qs.filter(created_by=request.user)
+        return Response(list(qs.values("id", "name", "description", "created_at", "updated_at")[:200]))
+    if not has_permission(request.user, "collection.create"):
+        return denied()
+    name = (request.data.get("name") or "").strip()
+    if not name:
+        return Response({"detail": "Name is required."}, status=400)
+    collection = DatasetCollection.objects.create(
+        name=name, description=request.data.get("description", ""), created_by=request.user,
+    )
+    audit(request.user, "collection.create", resource_type="collection", resource_id=collection.id)
+    return Response({"id": str(collection.id), "name": collection.name}, status=201)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def collection_detail(request, collection_id):
+    collection = get_object_or_404(DatasetCollection, pk=collection_id)
+    if request.method == "GET":
+        if not (
+            has_permission(request.user, "collection.view", "collection", collection.id)
+            or has_permission(request.user, "user.view")
+            or collection.created_by_id == request.user.pk
+        ):
+            return denied()
+        return Response({
+            "id": str(collection.id), "name": collection.name, "description": collection.description,
+            "archived_at": collection.archived_at,
+            "dataset_ids": list(collection.datasets.values_list("id", flat=True)),
+        })
+    if request.method == "PATCH":
+        if not has_permission(request.user, "collection.edit", "collection", collection.id) and not has_permission(request.user, "user.manage"):
+            return denied()
+        if "name" in request.data:
+            collection.name = request.data["name"]
+        if "description" in request.data:
+            collection.description = request.data["description"]
+        if "dataset_ids" in request.data:
+            collection.datasets.set(Dataset.objects.filter(pk__in=request.data["dataset_ids"]))
+        collection.save()
+        return Response({"id": str(collection.id), "name": collection.name})
+    if not has_permission(request.user, "collection.delete", "collection", collection.id) and not has_permission(request.user, "user.manage"):
+        return denied()
+    collection.archived_at = timezone.now()
+    collection.save(update_fields=["archived_at"])
+    audit(request.user, "collection.archive", resource_type="collection", resource_id=collection.id)
+    return Response(status=204)
