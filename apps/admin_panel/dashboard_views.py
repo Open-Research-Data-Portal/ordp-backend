@@ -1562,3 +1562,54 @@ def dataset_archive_history(request, dataset_id):
 
     events.sort(key=lambda e: e["created_at"], reverse=True)
     return Response(events)
+
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAdminOnly])
+def admin_licensing_settings(request):
+    from apps.admin_panel.models import SystemSetting
+    from apps.datasets.licensing import (
+        get_supported_licenses,
+        get_system_default_license,
+        LICENSE_CATALOG,
+    )
+
+    if request.method == "POST":
+        default_license = request.data.get("default_license")
+        if not default_license or default_license not in LICENSE_CATALOG:
+            return Response(
+                {"detail": f"Invalid default license. Must be one of: {', '.join(LICENSE_CATALOG.keys())}"},
+                status=400,
+            )
+
+        setting, _ = SystemSetting.objects.get_or_create(
+            key="default_dataset_license",
+            defaults={"description": "System-wide default dataset licensing option"},
+        )
+        setting.value = default_license
+        setting.updated_by = request.user
+        setting.save()
+
+        ActivityLog.log(
+            user=request.user,
+            action="admin_updated_default_license",
+            target_object=f"License:{default_license}",
+            ip_address=get_client_ip(request),
+            extra={"default_license": default_license},
+        )
+
+        return Response({
+            "message": "Default license updated successfully.",
+            "default_license": setting.value,
+            "supported_licenses": get_supported_licenses(),
+            "updated_at": setting.updated_at,
+        }, status=200)
+
+    # GET
+    setting = SystemSetting.objects.filter(key="default_dataset_license").first()
+    return Response({
+        "default_license": get_system_default_license(),
+        "supported_licenses": get_supported_licenses(),
+        "updated_at": setting.updated_at if setting else None,
+    }, status=200)

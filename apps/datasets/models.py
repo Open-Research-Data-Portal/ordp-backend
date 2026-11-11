@@ -84,6 +84,9 @@ class Dataset(models.Model):
     )
     is_archived = models.BooleanField(default=False)
     archived_at = models.DateTimeField(null=True, blank=True)
+    license = models.CharField(max_length=64, default="CC-BY-4.0", blank=True)
+    license_rights_confirmed = models.BooleanField(default=False)
+    license_custom_terms = models.TextField(blank=True)
 
     def __str__(self):
         return self.title

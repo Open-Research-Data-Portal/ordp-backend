@@ -20,7 +20,7 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .services.assignment import assign_reviewers
 
@@ -118,11 +118,19 @@ def init_upload(request):
     serializer = InitUploadSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
+    from apps.datasets.licensing import get_system_default_license
+    dataset_license = serializer.validated_data.get("license") or get_system_default_license()
+    license_confirmed = serializer.validated_data.get("license_rights_confirmed", False)
+    license_custom_terms = serializer.validated_data.get("license_custom_terms", "")
+
     dataset = Dataset.objects.create(
-    title=serializer.validated_data["title"],
-    owner=request.user,
-    visibility=serializer.validated_data.get("visibility"),
-)
+        title=serializer.validated_data["title"],
+        owner=request.user,
+        visibility=serializer.validated_data.get("visibility"),
+        license=dataset_license,
+        license_rights_confirmed=license_confirmed,
+        license_custom_terms=license_custom_terms,
+    )
 
     upload_session_id = uuid.uuid4().hex
 
@@ -751,11 +759,26 @@ def accept_terms_and_submit(request, dataset_id):
     if not serializer.validated_data["terms_accepted"]:
         return Response({"detail": "You must accept the Terms & Conditions to submit a dataset."}, status=400)
 
+    if serializer.validated_data.get("license"):
+        dataset.license = serializer.validated_data["license"]
+    if serializer.validated_data.get("license_rights_confirmed") is not None:
+        dataset.license_rights_confirmed = serializer.validated_data["license_rights_confirmed"]
+    if serializer.validated_data.get("license_custom_terms") is not None:
+        dataset.license_custom_terms = serializer.validated_data["license_custom_terms"]
+
+    from apps.datasets.licensing import get_system_default_license, LICENSE_CATALOG
+    if not dataset.license:
+        dataset.license = get_system_default_license()
+    if dataset.license not in LICENSE_CATALOG:
+        return Response({"detail": f"Invalid license '{dataset.license}'. Please choose an approved license."}, status=400)
+    if not dataset.license_rights_confirmed:
+        return Response({"detail": "You must confirm that you hold the legal rights or authorization to apply this license."}, status=400)
+
     dataset.terms_accepted = True
     dataset.terms_accepted_at = timezone.now()
     dataset.terms_version = settings.CURRENT_TERMS_VERSION
     dataset.status = Dataset.Status.PENDING
-    dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status"])
+    dataset.save(update_fields=["terms_accepted", "terms_accepted_at", "terms_version", "status", "license", "license_rights_confirmed", "license_custom_terms"])
 
     assign_reviewers(dataset)
 
@@ -958,6 +981,9 @@ def _build_proposed_metadata(dataset, request_data):
 OWNER_EDITABLE_FIELDS = (
     "title",
     "visibility",
+    "license",
+    "license_rights_confirmed",
+    "license_custom_terms",
 )
 SHARED_EDITABLE_METADATA_FIELDS = (
     "description",
@@ -1385,3 +1411,14 @@ def archived_datasets(request):
         .order_by("-archived_at")
     )
     return Response(DatasetSerializer(qs, many=True).data)
+
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def licensing_options(request):
+    from apps.datasets.licensing import get_supported_licenses, get_system_default_license
+    return Response({
+        "supported_licenses": get_supported_licenses(),
+        "default_license": get_system_default_license(),
+    }, status=200)

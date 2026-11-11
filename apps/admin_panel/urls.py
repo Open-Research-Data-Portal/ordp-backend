@@ -90,5 +90,6 @@ urlpatterns = [
     path("dashboard/admin/audit-log/peak-hours/", dashboard_views.audit_peak_hours, name="admin-audit-log-peak-hours"),
     path("dashboard/admin/audit-log/most-accessed-datasets/", dashboard_views.audit_most_accessed_datasets, name="admin-audit-log-most-accessed-datasets"),
     path("dashboard/admin/audit-log/flagged/", dashboard_views.audit_flagged_activity, name="admin-audit-log-flagged"),
+    path("settings/licensing/", dashboard_views.admin_licensing_settings, name="admin-licensing-settings"),
 ]
    
