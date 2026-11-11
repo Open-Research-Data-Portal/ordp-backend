@@ -8,7 +8,7 @@ from django.http import Http404
 
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
-from .models import Bookmark, Contributor, DatasetWatcher, UploadSession
+from .models import Bookmark, Contributor, DatasetVersion, DatasetWatcher, UploadSession
 from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
@@ -31,10 +31,10 @@ from .services.storage import (
     upload_fileobj,
     download_to_file,
 )
-from .permissions import IsDatasetOwner, IsDatasetOwnerOrContributor, IsDatasetOwnerOrScopedDelete
+from .permissions import IsDatasetOwner, IsDatasetOwnerOrScopedDelete
 from apps.access_control.services import has_permission as has_scoped_permission
 from .models import PendingContentUpdate
-from .services.revisions import route_change, request_revision_permission as create_request
+from .services.revisions import bump_version_and_notify, route_change, request_revision_permission as create_request
 from .models import Dataset
 
 
@@ -68,8 +68,7 @@ def _profile_file_url(request, file_field):
 def _can_view_dataset_reviewers(user, dataset):
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    profile = getattr(user, "profile", None)
-    return dataset.is_owned_by(user) or (profile and profile.has_role("admin"))
+    return dataset.is_owned_by(user) or has_scoped_permission(user, "user.manage")
 
 
 def _reviewer_contact_payload(request, reviewer, decided_at=None):
@@ -150,7 +149,7 @@ def init_upload(request):
     )
 
 @api_view(["POST"])
-@permission_classes([CanUploadDatasets])
+@permission_classes([IsAuthenticated])
 def init_existing_draft_upload(request, dataset_id):
     """
     Resume an existing editable dataset upload.
@@ -159,12 +158,14 @@ def init_existing_draft_upload(request, dataset_id):
     Otherwise, creates a new upload session.
     """
 
-    dataset = get_object_or_404(
-        Dataset,
-        id=dataset_id,
-        owner=request.user,
-        is_active=True,
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    can_upload = (
+        dataset.owner_id == request.user.id
+        or has_scoped_permission(request.user, "dataset.upload", "dataset", dataset.id)
+        or CanUploadDatasets().has_permission(request, None)
     )
+    if not can_upload:
+        return Response({"detail": "You don't have permission to upload to this dataset."}, status=403)
 
     # Only editable datasets can start/resume an upload.
     if dataset.status not in (
@@ -886,8 +887,11 @@ def dataset_detail(request, dataset_id):
 
     user = request.user
     is_owner = user.is_authenticated and dataset.owner_id == user.id
-    profile = getattr(user, "profile", None) if user.is_authenticated else None
-    is_reviewer_or_admin = bool(profile and profile.has_role("reviewer", "admin"))
+    is_reviewer_or_admin = user.is_authenticated and (
+        has_scoped_permission(user, "user.manage")
+        or has_scoped_permission(user, "dataset.approve")
+        or has_scoped_permission(user, "access_request.review")
+    )
     has_scoped_access = any(
         has_scoped_permission(user, code, "dataset", dataset.id)
         for code in ("dataset.view", "dataset.edit", "dataset.delete", "dataset.download")
@@ -909,12 +913,88 @@ def dataset_detail(request, dataset_id):
         )
     return Response(DatasetSerializer(dataset).data)
 
+def _can_view_dataset_versions(user, dataset):
+    if dataset.is_owned_by(user):
+        return True
+    if has_scoped_permission(user, "dataset.view", "dataset", dataset.id):
+        return True
+    if has_scoped_permission(user, "dataset.version.view", "dataset", dataset.id):
+        return True
+    if (
+        dataset.status == Dataset.Status.PUBLISHED
+        and dataset.visibility in (Dataset.Visibility.PUBLIC, Dataset.Visibility.RESTRICTED)
+    ):
+        return True
+    return False
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def dataset_versions(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if not _can_view_dataset_versions(request.user, dataset):
+        return Response({"detail": "You don't have permission to view versions for this dataset."}, status=403)
     versions = dataset.versions.select_related("changed_by", "changed_by__profile")
     return Response(DatasetVersionSerializer(versions, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def download_dataset_file(request, dataset_id, file_id):
+    """File-scoped download: dataset_file.download, parent dataset.download, or owner."""
+    from .models import DatasetFile
+
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    dataset_file = get_object_or_404(DatasetFile, id=file_id, dataset=dataset)
+    allowed = (
+        dataset.is_owned_by(request.user)
+        or has_scoped_permission(request.user, "dataset_file.download", "dataset_file", dataset_file.id)
+        or has_scoped_permission(request.user, "dataset.download", "dataset", dataset.id)
+        or has_scoped_permission(request.user, "user.manage")
+    )
+    if not allowed:
+        return Response({"detail": "You don't have permission to download this file."}, status=403)
+    return Response({"download_url": presigned_download_url(dataset_file.file_key)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def restore_dataset_version(request, dataset_id, version_id):
+    """Restore a previous DatasetVersion by copying its file_key as a new current version."""
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    version = get_object_or_404(DatasetVersion, id=version_id, dataset=dataset)
+
+    can_restore = (
+        dataset.is_owned_by(request.user)
+        or has_scoped_permission(request.user, "dataset.version.restore", "dataset", dataset.id)
+        or has_scoped_permission(request.user, "dataset.edit", "dataset", dataset.id)
+    )
+    if not can_restore:
+        return Response({"detail": "You don't have permission to restore versions for this dataset."}, status=403)
+
+    from .models import DatasetFile
+
+    DatasetFile.objects.filter(dataset=dataset).update(file_key=version.file_key)
+    bump_version_and_notify(dataset, changed_by=request.user)
+    restored = DatasetVersion.objects.create(
+        dataset=dataset,
+        version_number=dataset.version,
+        file_key=version.file_key,
+        source=DatasetVersion.Source.OWNER_EDIT,
+        changed_by=request.user,
+        change_summary={
+            "restored_from_version": version.version_number,
+            "restored_from_id": str(version.id),
+        },
+    )
+    log_activity(
+        user=request.user,
+        action="dataset_version_restored",
+        target_object=f"Dataset:{dataset.id}",
+        ip_address=get_client_ip(request),
+        extra={"restored_from_version": version.version_number, "new_version": restored.version_number},
+    )
+    return Response(DatasetVersionSerializer(restored).data, status=201)
 
 def _download_to_tmp(file_key):
     local_path = f"/tmp/{uuid_lib.uuid4().hex}"
@@ -965,19 +1045,50 @@ SHARED_EDITABLE_METADATA_FIELDS = (
 
 
 @api_view(["PATCH"])
-@permission_classes([IsAuthenticated, IsDatasetOwnerOrContributor])
+@permission_classes([IsAuthenticated])
 def update_dataset(request, dataset_id):
-    """Owner can change anything, including title/visibility. A linked
-    researcher-contributor can only change descriptive metadata — not
-    title/visibility, which are ownership-level decisions."""
+    """Owner / dataset.edit can change title/visibility. Contributors with
+    edit rights, dataset.edit, or dataset.metadata.edit can change descriptive
+    metadata. Content uploads also accept dataset.upload / dataset.version.create."""
     dataset = get_object_or_404(Dataset, id=dataset_id)
-    is_owner = dataset.owner_id == request.user.id
+    is_owner = dataset.is_owned_by(request.user)
     has_explicit_edit = has_scoped_permission(request.user, "dataset.edit", "dataset", dataset.id)
+    has_metadata_edit = has_scoped_permission(request.user, "dataset.metadata.edit", "dataset", dataset.id)
+    contributor = Contributor.objects.filter(dataset=dataset, user=request.user).first()
+    contributor_can_edit = bool(contributor and contributor.can_edit())
+    can_edit_core = is_owner or has_explicit_edit
+    can_edit_metadata = can_edit_core or has_metadata_edit or contributor_can_edit
+    can_upload_content = (
+        can_edit_core
+        or contributor_can_edit
+        or has_scoped_permission(request.user, "dataset.upload", "dataset", dataset.id)
+        or has_scoped_permission(request.user, "dataset.version.create", "dataset", dataset.id)
+        or CanUploadDatasets().has_permission(request, None)
+    )
+
+    wants_core = any(field in request.data for field in OWNER_EDITABLE_FIELDS)
+    wants_metadata = (
+        any(field in request.data for field in SHARED_EDITABLE_METADATA_FIELDS)
+        or "category_id" in request.data
+        or "language_ids" in request.data
+        or "characteristic_ids" in request.data
+    )
+    wants_upload = "upload_session_id" in request.data
+
+    if wants_core and not can_edit_core:
+        return Response({"detail": "You don't have permission to change title or visibility."}, status=403)
+    if wants_metadata and not can_edit_metadata:
+        return Response({"detail": "You don't have permission to edit this dataset's metadata."}, status=403)
+    if wants_upload and not can_upload_content:
+        return Response({"detail": "You don't have permission to upload content for this dataset."}, status=403)
+    if not (wants_core or wants_metadata or wants_upload):
+        if not (can_edit_core or can_edit_metadata or can_upload_content):
+            return Response({"detail": "You don't have permission to update this dataset."}, status=403)
 
     changed_fields = []
     metadata_data = {}
 
-    if is_owner or has_explicit_edit:
+    if can_edit_core and wants_core:
         if not is_owner and "visibility" in request.data:
             return Response({"detail": "Only the dataset owner can change visibility."}, status=403)
         if "visibility" in request.data and request.data["visibility"] not in Dataset.Visibility.values:
@@ -992,7 +1103,7 @@ def update_dataset(request, dataset_id):
 
         dataset.save()
 
-    if hasattr(dataset, "metadata"):
+    if can_edit_metadata and hasattr(dataset, "metadata"):
         metadata = dataset.metadata
 
         metadata_data = {
@@ -1025,7 +1136,7 @@ def update_dataset(request, dataset_id):
 
         changed_fields.extend(metadata_data.keys())
 
-    if "language_ids" in request.data:
+    if can_edit_metadata and "language_ids" in request.data:
         from apps.metadata.models import Language
 
         if hasattr(dataset, "metadata"):
@@ -1038,7 +1149,7 @@ def update_dataset(request, dataset_id):
             changed_fields.append("languages")
 
 
-    if "characteristic_ids" in request.data:
+    if can_edit_metadata and "characteristic_ids" in request.data:
         from apps.metadata.models import DatasetCharacteristic
 
         if hasattr(dataset, "metadata"):
@@ -1058,7 +1169,7 @@ def update_dataset(request, dataset_id):
             extra={"fields_changed": changed_fields},
         )
 
-    if "upload_session_id" in request.data:
+    if wants_upload:
         current_file = dataset.files.latest("uploaded_at")
         try:
             new_dataset_file = finalize_upload(
@@ -1134,7 +1245,7 @@ def request_revision_permission(request, dataset_id):
 
 
 @api_view(["POST"])
-@permission_classes([CanUploadDatasets])
+@permission_classes([IsAuthenticated])
 def propose_revision(request, dataset_id):
     """Phase 2: actually submitting the change, only allowed once Phase 1
     (RevisionRequest) has been approved for this user+dataset, and the
@@ -1142,6 +1253,15 @@ def propose_revision(request, dataset_id):
     from .services.revisions import has_revision_permission, consume_revision_permission
 
     dataset = get_object_or_404(Dataset, id=dataset_id)
+
+    can_propose = (
+        dataset.is_owned_by(request.user)
+        or CanUploadDatasets().has_permission(request, None)
+        or has_scoped_permission(request.user, "dataset.upload", "dataset", dataset.id)
+        or has_scoped_permission(request.user, "dataset.version.create", "dataset", dataset.id)
+    )
+    if not can_propose:
+        return Response({"detail": "You don't have permission to propose a revision for this dataset."}, status=403)
 
     if not request.user.profile.is_profile_complete():
         return Response({"detail": "Please complete your profile before proposing a change."}, status=403)
@@ -1195,8 +1315,10 @@ def toggle_watch(request, dataset_id):
 @permission_classes([IsAuthenticated])
 def content_update_comparison(request, update_id):
     update = get_object_or_404(PendingContentUpdate.objects.select_related("dataset", "submitted_by"), id=update_id)
-    profile = getattr(request.user, "profile", None)
-    is_reviewer = bool(profile and profile.has_role("reviewer", "admin"))
+    is_reviewer = (
+        has_scoped_permission(request.user, "dataset.approve")
+        or has_scoped_permission(request.user, "user.manage")
+    )
     if not (update.dataset.is_owned_by(request.user) or is_reviewer):
         return Response({"detail": "You don't have permission to view this."}, status=403)
 

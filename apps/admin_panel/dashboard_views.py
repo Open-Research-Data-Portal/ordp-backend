@@ -215,10 +215,10 @@ def reviewer_overview(request):
     ).exclude(id__in=voted_archive_ids).count()
 
 
-    profile = getattr(user, "profile", None)
+    from apps.access_control.services import has_permission
     unarchive_requests_pending = (
         DatasetUnarchiveRequest.objects.filter(status=DatasetUnarchiveRequest.Status.PENDING).count()
-        if profile and profile.has_role("admin") else 0
+        if has_permission(user, "user.manage") else 0
     )
     return Response({
         "assigned_datasets_pending": assigned_pending,

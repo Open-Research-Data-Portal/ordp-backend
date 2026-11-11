@@ -22,6 +22,16 @@ urlpatterns = [
     path("<uuid:dataset_id>/propose-revision/", views.propose_revision, name="propose-revision"),
     path("revision-requests/<uuid:request_id>/decide/", views.decide_revision_request, name="revision-request-decide"),
     path("<uuid:dataset_id>/versions/", views.dataset_versions, name="dataset-versions"),
+    path(
+        "<uuid:dataset_id>/files/<uuid:file_id>/download/",
+        views.download_dataset_file,
+        name="dataset-file-download",
+    ),
+    path(
+        "<uuid:dataset_id>/versions/<uuid:version_id>/restore/",
+        views.restore_dataset_version,
+        name="dataset-version-restore",
+    ),
     path("<uuid:dataset_id>/thumbnail/", views.upload_thumbnail, name="upload-thumbnail"), 
     path( 
     "<uuid:dataset_id>/thumbnail/url/", 
