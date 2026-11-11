@@ -1,9 +1,13 @@
+import uuid
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework import status
 
 from apps.metadata.models import Category, Metadata
-from apps.datasets.models import Dataset
+from apps.datasets.models import Dataset, DatasetFile, StoredObject
 from apps.datasets.factories import make_user
 from apps.notifications.models import Notification
 from .models import DatasetReviewerAssignment
@@ -60,6 +64,30 @@ class ModerationTests(APITestCase):
 
         self.dataset.assigned_reviewer = self.reviewers[0]
         self.dataset.save(update_fields=['assigned_reviewer'])
+
+        stored_object = StoredObject.objects.create(
+            dataset=self.dataset,
+            storage_key=f"objects/{self.dataset.id}/{uuid.uuid4()}/moderation.csv",
+            original_filename="moderation.csv",
+            file_type="csv",
+            file_size=4,
+            checksum_sha256="a" * 64,
+            verified_at=timezone.now(),
+        )
+        DatasetFile.objects.create(
+            dataset=self.dataset,
+            file_key=stored_object.storage_key,
+            original_filename=stored_object.original_filename,
+            file_type="csv",
+            file_size=4,
+            checksum="a" * 64,
+            stored_object=stored_object,
+        )
+        verifier = patch(
+            "apps.datasets.services.publication.verify_stored_object_in_storage"
+        )
+        self.verify_storage = verifier.start()
+        self.addCleanup(verifier.stop)
 
     def test_researcher_cannot_access_moderation_queue(self):
         self.client.force_authenticate(self.researcher)

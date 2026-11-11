@@ -1233,6 +1233,11 @@ def vote_on_content_update(request, update_id):
     update = get_object_or_404(PendingContentUpdate, id=update_id)
     if update.status != PendingContentUpdate.Status.PENDING:
         return Response({"detail": "This update has already been resolved."}, status=400)
+    if update.dataset.published_release_id:
+        return Response(
+            {"detail": "V2 datasets must be changed through the immutable proposal workflow."},
+            status=409,
+        )
     vote_value = request.data.get("vote")
     if vote_value not in ("approve", "reject"):
         return Response({"detail": "vote must be 'approve' or 'reject'."}, status=400)

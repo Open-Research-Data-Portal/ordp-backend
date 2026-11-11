@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 from pathlib import Path
 from decouple import config
 import os
+import sys
+
 from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -96,8 +98,8 @@ DATABASES = {
         "HOST": config("POSTGRES_HOST", default="db"),
         "PORT": config("POSTGRES_PORT", default="5432"),
         "OPTIONS": {
-    "sslmode": config("POSTGRES_SSLMODE", default="prefer"),
-},
+            "sslmode": config("POSTGRES_SSLMODE", default="prefer"),
+        },
     }
 }
 
