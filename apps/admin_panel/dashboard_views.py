@@ -357,7 +357,14 @@ def admin_create_user(request):
     profile.full_name = full_name
     profile.save(update_fields=["full_name"])
 
-    UserRole.objects.create(profile=profile, role=role, is_primary=True)
+    # New users already receive the baseline public role from the account
+    # creation signal. Reuse it when requested instead of inserting a
+    # duplicate row; otherwise add the selected role as the primary role.
+    UserRole.objects.get_or_create(
+        profile=profile,
+        role=role,
+        defaults={"is_primary": True},
+    )
 
     ActivityLog.log(
         user=request.user, action="user_created",
