@@ -57,6 +57,8 @@ class DatasetFileSerializer(serializers.ModelSerializer):
         fields = ["id", "file_type", "file_size", "checksum", "uploaded_at", "columns", "preview_rows"]
 
     def get_preview_rows(self, obj):
+        if self.context.get("list_mode"):
+            return None
         file_type = (obj.file_type or "").lower()
         if file_type not in (CSV_FILE_TYPES | JSON_FILE_TYPES):
             return None
@@ -153,6 +155,12 @@ class DatasetSerializer(serializers.ModelSerializer):
             return MetadataSerializer(obj.metadata).data
         return None
     def get_data_preview(self, obj):
+        # Dataset listings can contain many records. Reading each tabular file
+        # from object storage here makes search/dashboard responses slow and
+        # can exhaust a web worker. Detail views opt into the real preview.
+        if not self.context.get("include_data_preview", True):
+            return {"kind": "deferred", "available": False,
+                    "reason": "Open the dataset to load its preview."}
         files = list(obj.files.all())
         if not files:
             return {"kind": "none", "available": False, "reason": "No files uploaded yet."}
@@ -181,18 +189,29 @@ class DatasetSerializer(serializers.ModelSerializer):
         return timezone.now() + timedelta(hours=1)
 
     def get_views_delta_pct(self, obj):
+        if self.context.get("list_mode"):
+            return 0
         return _delta_pct(obj.id, ["dataset_view"])
 
     def get_downloads_delta_pct(self, obj):
+        if self.context.get("list_mode"):
+            return 0
         return _delta_pct(obj.id, RECEIVED_DOWNLOAD_ACTIONS)
 
     def get_views_series(self, obj):
+        if self.context.get("list_mode"):
+            return []
         return _daily_activity_series(obj.id, ["dataset_view"])
 
     def get_downloads_series(self, obj):
+        if self.context.get("list_mode"):
+            return []
         return _daily_activity_series(obj.id, RECEIVED_DOWNLOAD_ACTIONS)
     def get_archive_status(self, obj):
         from apps.admin_panel.models import DatasetArchiveRequest, DatasetUnarchiveRequest
+
+        if self.context.get("list_mode"):
+            return "archived" if obj.is_archived else "none"
 
         if obj.is_archived:
             if DatasetUnarchiveRequest.objects.filter(dataset=obj, status="pending").exists():
@@ -203,6 +222,34 @@ class DatasetSerializer(serializers.ModelSerializer):
             return "archive_pending"
 
         return "none"
+
+
+class DatasetListSerializer(serializers.ModelSerializer):
+    """Small payload for browse/search cards.
+
+    Detail endpoints use DatasetSerializer. Keeping file previews, nested
+    metadata, analytics, and contributor records out of list responses avoids
+    one storage read/query chain per dataset.
+    """
+    owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
+    category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
+    description = serializers.CharField(source="metadata.description", read_only=True, default=None)
+    thumbnail_url = serializers.SerializerMethodField()
+    file_count = serializers.IntegerField(source="files.count", read_only=True)
+
+    class Meta:
+        model = Dataset
+        fields = [
+            "id", "title", "owner", "owner_name", "visibility", "status",
+            "is_active", "is_archived", "version", "thumbnail_key", "thumbnail_url",
+            "view_count", "download_count", "category", "description", "file_count",
+            "created_at", "updated_at",
+        ]
+
+    def get_thumbnail_url(self, obj):
+        if not obj.thumbnail_key:
+            return None
+        return presigned_download_url(obj.thumbnail_key, expires_seconds=3600)
 
 class InitUploadSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)

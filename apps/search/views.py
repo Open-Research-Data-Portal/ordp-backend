@@ -1,7 +1,7 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from apps.datasets.serializers import DatasetSerializer
+from apps.datasets.serializers import DatasetListSerializer
 from .services import build_dataset_search_queryset, build_discovery_feed, FILE_SIZE_MAP, InvalidFilterError
 from rest_framework.pagination import PageNumberPagination
 
@@ -67,7 +67,7 @@ def list_datasets(request):
     except InvalidFilterError as exc:
         return Response({"detail": str(exc)}, status=400)
 
-    return Response(DatasetSerializer(qs, many=True).data)
+    return Response(DatasetListSerializer(qs, many=True).data)
 
 
 @api_view(["GET"])

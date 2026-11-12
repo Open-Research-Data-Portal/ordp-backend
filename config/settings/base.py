@@ -99,6 +99,9 @@ DATABASES = {
         "OPTIONS": {
     "sslmode": config("POSTGRES_SSLMODE", default="prefer"),
 },
+        # Keep the Neon connection warm between requests. This avoids opening
+        # a new remote TLS connection for every login/dashboard API call.
+        "CONN_MAX_AGE": config("POSTGRES_CONN_MAX_AGE", default=60, cast=int),
     }
 }
 
