@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from apps.datasets.models import Dataset, DatasetCollection, ResearchProject
-from apps.accounts.models import ActivityLog
+from apps.accounts.models import ActivityLog, UserRole
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
 from .models import (
@@ -563,7 +563,12 @@ def audit_history(request):
 def user_management_audit(request):
     """User and permission changes visible to managers or the affected user."""
     is_admin = (
-        has_permission(request.user, "user.manage")
+        request.user.is_superuser
+        or request.user.is_staff
+        or UserRole.objects.filter(
+            profile__user=request.user, role=UserRole.RoleChoice.ADMIN
+        ).exists()
+        or has_permission(request.user, "user.manage")
         or has_permission(request.user, "audit.view")
     )
     permission_rows = PermissionAuditLog.objects.select_related(
