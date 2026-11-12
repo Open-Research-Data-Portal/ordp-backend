@@ -3,6 +3,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.datasets.models import Dataset, DatasetCollection, DatasetFile, ResearchProject
+from apps.accounts.models import UserRole
 from .models import (
     AccessRequest, AccessRequestPermission, Group, GroupMembership,
     GroupPermissionGrant, Permission, PermissionAuditLog, UserPermissionGrant,
@@ -116,6 +117,18 @@ def _has_exact_permission(user, action, resource_type="platform", resource_id=No
 
 def has_permission(user, action, resource_type="platform", resource_id=None):
     """Deny-by-default evaluation with optional project.view → dataset inheritance."""
+    # Admin roles are platform administrators even when legacy permission
+    # backfill has not created the corresponding direct grants yet.
+    if (
+        user
+        and user.is_authenticated
+        and user.is_active
+        and UserRole.objects.filter(
+            profile__user=user, role=UserRole.RoleChoice.ADMIN
+        ).exists()
+        and action in ADMIN_PLATFORM_CODES
+    ):
+        return True
     if _has_exact_permission(user, action, resource_type, resource_id):
         return True
     # Platform grant of the same action also covers platform-scoped admin ops.
