@@ -1,6 +1,7 @@
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.permissions import BasePermission
 
+from apps.accounts.models import UserRole
 from apps.access_control.services import has_permission
 
 
@@ -73,6 +74,17 @@ class IsAdminOnly(HasPlatformPermission):
     """V2 cutover: platform user managers replace legacy admin role gates."""
     code = "user.manage"
     message = "Admin permission required."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser or request.user.is_staff:
+            return True
+        if UserRole.objects.filter(
+            profile__user=request.user, role=UserRole.RoleChoice.ADMIN
+        ).exists():
+            return True
+        return super().has_permission(request, view)
 
 
 class IsReviewerOrAdmin(HasAnyPlatformPermission):
