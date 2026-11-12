@@ -5,7 +5,14 @@ from rest_framework import serializers
 from django.db.models import Count
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.storage import presigned_download_url
-from .models import Dataset, DatasetFile, Contributor, PendingContentUpdate, DatasetVersion
+from .models import (
+    Dataset,
+    DatasetFile,
+    Contributor,
+    PendingContentUpdate,
+    DatasetVersion,
+    ResourceIdentifier,
+)
 
 from apps.datasets.services.preview import CSV_FILE_TYPES, JSON_FILE_TYPES, preview_tabular_file
 
@@ -69,27 +76,42 @@ class ContributorSerializer(serializers.ModelSerializer):
         fields = ["id", "user", "name", "contributor_type", "order"]
 
 
+class ResourceIdentifierSerializer(serializers.ModelSerializer):
+    official_doi_link = serializers.ReadOnlyField()
+    release_version = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ResourceIdentifier
+        fields = [
+            "id",
+            "scheme",
+            "role",
+            "identifier_value",
+            "provider",
+            "lifecycle_status",
+            "registration_status",
+            "landing_page_url",
+            "official_doi_link",
+            "release_version",
+            "registered_at",
+        ]
+        read_only_fields = fields
+
+    def get_release_version(self, obj):
+        return obj.release.version if obj.release_id else None
+
+
 class DatasetSerializer(serializers.ModelSerializer):
     files = DatasetFileSerializer(many=True, read_only=True)
-    contributors = ContributorSerializer(many=True, read_only=True)
+    contributors = serializers.SerializerMethodField()
     thumbnail_url = serializers.SerializerMethodField()
     thumbnail_url_expires_at = serializers.SerializerMethodField()
-    category = serializers.CharField(source="metadata.category.name", read_only=True, default=None)
-    description = serializers.CharField(source="metadata.description", read_only=True, default=None)
-    languages = serializers.SlugRelatedField(
-    source="metadata.languages",
-    slug_field="name",
-    many=True,
-    read_only=True,
-)
-
-    characteristics = serializers.SlugRelatedField(
-    source="metadata.characteristics",
-    slug_field="name",
-    many=True,
-    read_only=True,
-)
-    owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
+    category = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    languages = serializers.SerializerMethodField()
+    characteristics = serializers.SerializerMethodField()
+    version = serializers.SerializerMethodField()
+    owner_name = serializers.SerializerMethodField()
     metadata = serializers.SerializerMethodField()
     data_preview = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
@@ -147,7 +169,118 @@ class DatasetSerializer(serializers.ModelSerializer):
             "archived_at",
         ]
 
+    def _published_metadata_snapshot(self, obj):
+        release = getattr(obj, "published_release", None)
+        if release and release.status == "published":
+            from apps.datasets.services.snapshots import current_published_metadata_snapshot
+            snapshot = current_published_metadata_snapshot(obj)
+            if isinstance(snapshot, dict) and snapshot.get("schema_version") == release.snapshot_schema_version:
+                return snapshot
+        return None
+
+    def get_contributors(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is None:
+            return ContributorSerializer(obj.contributors.all(), many=True).data
+        live_contributors = list(obj.contributors.all())
+        result = []
+        for item in snapshot.get("contributors", []):
+            match = next((
+                contributor for contributor in live_contributors
+                if contributor.order == item.get("order")
+                and (contributor.name or "").strip().casefold() == (item.get("name") or "").strip().casefold()
+                and contributor.contributor_type == item.get("contributor_type")
+            ), None)
+            result.append({
+                "id": str(match.pk) if match else None,
+                "user": match.user_id if match else None,
+                "name": item.get("name", ""),
+                "contributor_type": item.get("contributor_type", "contributor"),
+                "order": item.get("order", 1),
+                "affiliation": item.get("affiliation", ""),
+            })
+        return result
+
+    def get_category(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is not None:
+            return (snapshot.get("category") or {}).get("name")
+        try:
+            return obj.metadata.category.name
+        except Exception:
+            return None
+
+    def get_description(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is not None:
+            return snapshot.get("description", "")
+        try:
+            return obj.metadata.description
+        except Exception:
+            return None
+
+    def get_languages(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is not None:
+            return snapshot.get("languages", [])
+        try:
+            return list(obj.metadata.languages.values_list("name", flat=True))
+        except Exception:
+            return []
+
+    def get_characteristics(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is not None:
+            return snapshot.get("characteristics", [])
+        try:
+            return list(obj.metadata.characteristics.values_list("name", flat=True))
+        except Exception:
+            return []
+
+    def get_version(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is not None:
+            return obj.published_release.version
+        return obj.version
+
+    def get_owner_name(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is not None:
+            return (snapshot.get("creator") or {}).get("name", "")
+        profile = getattr(obj.owner, "profile", None)
+        return getattr(profile, "full_name", "") if profile else ""
+
     def get_metadata(self, obj):
+        snapshot = self._published_metadata_snapshot(obj)
+        if snapshot is not None:
+            category = snapshot.get("category") or {}
+            coverage = snapshot.get("coverage") or {}
+            methodology = snapshot.get("methodology") or {}
+            citation = snapshot.get("citation") or {}
+            resources = snapshot.get("resources") or {}
+            return {
+                "id": None,
+                "description": snapshot.get("description", ""),
+                "category": category.get("id"),
+                "category_name": category.get("name"),
+                "keywords": snapshot.get("keywords", []),
+                "languages": snapshot.get("languages", []),
+                "characteristics": snapshot.get("characteristics", []),
+                "sponsor_or_grant": citation.get("sponsor_or_grant", ""),
+                "doi_citation": citation.get("doi_citation", ""),
+                "collaborators_text": citation.get("collaborators_text", ""),
+                "related_resources": resources.get("related_resources", ""),
+                "geographic_coverage": coverage.get("geographic", ""),
+                "temporal_coverage": coverage.get("temporal", ""),
+                "has_header": methodology.get("has_header"),
+                "has_missing_values": methodology.get("has_missing_values"),
+                "instances_represent": methodology.get("instances_represent", ""),
+                "collection_method": methodology.get("collection_method", ""),
+                "recommended_data_splits": methodology.get("recommended_data_splits", ""),
+                "sensitive_data_disclosure": methodology.get("sensitive_data_disclosure", ""),
+                "data_preprocessing": methodology.get("data_preprocessing", ""),
+                "citation_notes": citation.get("citation_notes", ""),
+            }
         if hasattr(obj, "metadata"):
             from apps.metadata.serializers import MetadataSerializer
             return MetadataSerializer(obj.metadata).data

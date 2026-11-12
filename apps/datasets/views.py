@@ -8,7 +8,7 @@ from django.http import Http404
 
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
-from .models import Bookmark, Contributor, DatasetWatcher, UploadSession
+from .models import Bookmark, Contributor, DatasetWatcher, UploadSession, ResourceIdentifier, MetadataEditAudit
 from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
@@ -16,6 +16,8 @@ from apps.notifications.models import Notification
 from .services.diffing import compute_diff
 from .serializers import PrepareUploadSerializer
 from django.db import models as django_models
+from django.db.models import Q
+from django.db import transaction
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -46,6 +48,7 @@ from .serializers import (
     InitUploadSerializer,
     TermsAcceptanceSerializer,
     DatasetVersionSerializer,
+    ResourceIdentifierSerializer,
 )
 
 from apps.metadata.serializers import MetadataSerializer
@@ -550,10 +553,12 @@ def get_thumbnail_url(request, dataset_id):
         is_active=True,
     )
 
-    if (
-        dataset.visibility == Dataset.Visibility.PRIVATE
-        and not can_access_private_dataset(request.user, dataset)
-    ):
+    if dataset.visibility == Dataset.Visibility.PRIVATE:
+        has_access = can_access_private_dataset(request.user, dataset)
+    else:
+        from apps.sharing.services import user_can_access_dataset
+        has_access = user_can_access_dataset(request.user, dataset)
+    if not has_access:
         return Response({"detail": "Not found."}, status=404)
 
     if not dataset.thumbnail_key:
@@ -618,6 +623,11 @@ def complete_upload(request, upload_session_id):
         return Response(
             {"detail": "This upload session has already been completed."},
             status=400,
+        )
+    if session.proposal_id:
+        return Response(
+            {"detail": "This upload session belongs to a V2 proposal; use the proposal upload completion endpoint."},
+            status=409,
         )
 
     dataset_id = request.data.get("dataset_id")
@@ -917,15 +927,46 @@ def dataset_detail(request, dataset_id):
         )
     return Response(DatasetSerializer(dataset).data)
 
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def dataset_identifiers(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if dataset.visibility == Dataset.Visibility.PRIVATE:
+        has_access = can_access_private_dataset(request.user, dataset)
+    else:
+        from apps.sharing.services import user_can_access_dataset
+        has_access = user_can_access_dataset(request.user, dataset)
+    if not has_access:
+        return Response({"detail": "Not found."}, status=404)
+    identifiers = (
+        ResourceIdentifier.objects.filter(
+            Q(dataset=dataset)
+            | Q(release__dataset=dataset)
+        )
+        .select_related("release")
+        .order_by("role", "created_at")
+    )
+    return Response(ResourceIdentifierSerializer(identifiers, many=True).data)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def dataset_versions(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
-    if (
-        dataset.visibility == Dataset.Visibility.PRIVATE
-        and not can_access_private_dataset(request.user, dataset)
-    ):
+    if dataset.visibility == Dataset.Visibility.PRIVATE:
+        has_access = can_access_private_dataset(request.user, dataset)
+    else:
+        from apps.sharing.services import user_can_access_dataset
+        has_access = user_can_access_dataset(request.user, dataset)
+    if not has_access:
         return Response({"detail": "Not found."}, status=404)
+    if dataset.releases.exists():
+        from .v2_views import _release_payload
+        releases = dataset.releases.filter(
+            status__in=["published", "withdrawn"]
+        ).order_by("-major", "-minor", "-patch")
+        return Response([_release_payload(release, include_snapshot=False) for release in releases])
     versions = dataset.versions.select_related("changed_by", "changed_by__profile")
     return Response(DatasetVersionSerializer(versions, many=True).data)
 
@@ -977,68 +1018,65 @@ SHARED_EDITABLE_METADATA_FIELDS = (
 )
 
 
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated, IsDatasetOwnerOrContributor])
-def update_dataset(request, dataset_id):
-    """Owner can change anything, including title/visibility. A linked
-    researcher-contributor can only change descriptive metadata — not
-    title/visibility, which are ownership-level decisions."""
-    dataset = get_object_or_404(Dataset, id=dataset_id)
-    is_owner = dataset.owner_id == request.user.id
-
+def _update_dataset_metadata_locked(request, dataset_id):
     changed_fields = []
+    with transaction.atomic():
+        dataset = Dataset.objects.select_for_update().get(pk=dataset_id)
+        is_owner = dataset.owner_id == request.user.id
+        before_snapshot = None
+        if dataset.published_release_id:
+            from copy import deepcopy
+            from .services.snapshots import current_published_metadata_snapshot
+            before_snapshot = deepcopy(current_published_metadata_snapshot(dataset))
 
-    if is_owner:
-        if "visibility" in request.data and request.data["visibility"] not in Dataset.Visibility.values:
-            return Response(
-                {"detail": f"visibility must be one of: {', '.join(Dataset.Visibility.values)}."}, status=400,
+        if is_owner:
+            for field in OWNER_EDITABLE_FIELDS:
+                if field in request.data:
+                    setattr(dataset, field, request.data[field])
+                    changed_fields.append(field)
+
+            dataset.save()
+
+        from apps.metadata.models import Metadata
+
+        metadata = Metadata.objects.filter(dataset=dataset).first()
+        metadata_data = {}
+        if metadata:
+            metadata = type(metadata).objects.select_for_update().get(pk=metadata.pk)
+            metadata_data = {
+                field: request.data[field]
+                for field in SHARED_EDITABLE_METADATA_FIELDS
+                if field in request.data
+            }
+
+            if "category_id" in request.data:
+                from apps.metadata.models import Category
+
+                category_id = request.data["category_id"]
+
+                category = get_object_or_404(
+                    Category,
+                    id=category_id,
+                    status=Category.Status.APPROVED,
+                )
+
+                metadata_data["category"] = category
+
+        if metadata_data:
+            metadata_serializer = MetadataSerializer(
+                metadata,
+                data=metadata_data,
+                partial=True,
             )
+            metadata_serializer.is_valid(raise_exception=True)
+            metadata_serializer.save()
 
-        for field in OWNER_EDITABLE_FIELDS:
-            if field in request.data:
-                setattr(dataset, field, request.data[field])
-                changed_fields.append(field)
+            changed_fields.extend(metadata_data.keys())
 
-        dataset.save()
+        if "language_ids" in request.data and metadata:
+            from apps.metadata.models import Language
 
-    if hasattr(dataset, "metadata"):
-        metadata = dataset.metadata
-
-        metadata_data = {
-            field: request.data[field]
-            for field in SHARED_EDITABLE_METADATA_FIELDS
-            if field in request.data
-        }
-
-        if "category_id" in request.data:
-            from apps.metadata.models import Category
-
-            category_id = request.data["category_id"]
-
-            category = get_object_or_404(
-                Category,
-                id=category_id,
-                status=Category.Status.APPROVED,
-            )
-
-            metadata_data["category"] = category
-
-    if metadata_data:
-        metadata_serializer = MetadataSerializer(
-            metadata,
-            data=metadata_data,
-            partial=True,
-        )
-        metadata_serializer.is_valid(raise_exception=True)
-        metadata_serializer.save()
-
-        changed_fields.extend(metadata_data.keys())
-
-    if "language_ids" in request.data:
-        from apps.metadata.models import Language
-
-        if hasattr(dataset, "metadata"):
-            dataset.metadata.languages.set(
+            metadata.languages.set(
                 Language.objects.filter(
                     id__in=request.data["language_ids"],
                     status=Language.Status.APPROVED,
@@ -1046,26 +1084,94 @@ def update_dataset(request, dataset_id):
             )
             changed_fields.append("languages")
 
+        if "characteristic_ids" in request.data and metadata:
+            from apps.metadata.models import DatasetCharacteristic
 
-    if "characteristic_ids" in request.data:
-        from apps.metadata.models import DatasetCharacteristic
-
-        if hasattr(dataset, "metadata"):
-            dataset.metadata.characteristics.set(
+            metadata.characteristics.set(
                 DatasetCharacteristic.objects.filter(
                     id__in=request.data["characteristic_ids"],
                     status=DatasetCharacteristic.Status.APPROVED,
                 )
             )
-
             changed_fields.append("characteristics")
 
-    if changed_fields:
-        log_activity(
-            user=request.user, action="dataset_metadata_updated",
-            target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request),
-            extra={"fields_changed": changed_fields},
+        if changed_fields and before_snapshot is not None:
+            from copy import deepcopy
+            from .services.snapshots import generate_metadata_snapshot
+            live_snapshot = generate_metadata_snapshot(dataset)
+            after_snapshot = deepcopy(before_snapshot)
+            direct_correction_paths = {
+                "description": ("description",),
+                "sponsor_or_grant": ("citation", "sponsor_or_grant"),
+                "related_resources": ("resources", "related_resources"),
+                "has_header": ("methodology", "has_header"),
+                "has_missing_values": ("methodology", "has_missing_values"),
+                "recommended_data_splits": ("methodology", "recommended_data_splits"),
+                "sensitive_data_disclosure": ("methodology", "sensitive_data_disclosure"),
+                "citation_notes": ("citation", "citation_notes"),
+            }
+            for field in changed_fields:
+                path = direct_correction_paths.get(field)
+                if not path:
+                    continue
+                source = live_snapshot
+                target = after_snapshot
+                for part in path[:-1]:
+                    source = source.get(part, {})
+                    target = target.setdefault(part, {})
+                target[path[-1]] = source.get(path[-1])
+            audited_fields = sorted(set(changed_fields).intersection(direct_correction_paths))
+            if before_snapshot != after_snapshot and audited_fields:
+                MetadataEditAudit.objects.create(
+                    dataset=dataset,
+                    actor=request.user,
+                    changed_fields=audited_fields,
+                    before_snapshot=before_snapshot,
+                    after_snapshot=after_snapshot,
+                )
+
+        if changed_fields:
+            log_activity(
+                user=request.user, action="dataset_metadata_updated",
+                target_object=f"Dataset:{dataset.id}", ip_address=get_client_ip(request),
+                extra={"fields_changed": changed_fields},
+            )
+    return dataset, changed_fields
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated, IsDatasetOwnerOrContributor])
+def update_dataset(request, dataset_id):
+    """Update operational fields and audited corrections without bypassing V2 releases."""
+    existing_dataset = get_object_or_404(Dataset, pk=dataset_id, is_active=True)
+    if existing_dataset.published_release_id:
+        semantic_fields = {
+            "title", "category_id", "geographic_coverage", "temporal_coverage",
+            "instances_represent", "collection_method", "data_preprocessing",
+            "language_ids", "characteristic_ids", "upload_session_id",
+        }
+        blocked = sorted(semantic_fields.intersection(request.data.keys()))
+        if blocked:
+            return Response(
+                {
+                    "detail": (
+                        "Published V2 content cannot be changed through the direct update endpoint. "
+                        "Create a dataset proposal and publish a new immutable release instead."
+                    ),
+                    "proposal_required_fields": blocked,
+                },
+                status=409,
+            )
+    if (
+        "visibility" in request.data
+        and request.data["visibility"] not in Dataset.Visibility.values
+        and Dataset.objects.filter(pk=dataset_id, owner=request.user).exists()
+    ):
+        return Response(
+            {"detail": f"visibility must be one of: {', '.join(Dataset.Visibility.values)}."},
+            status=400,
         )
+    dataset, changed_fields = _update_dataset_metadata_locked(request, dataset_id)
 
     if "upload_session_id" in request.data:
         current_file = dataset.files.latest("uploaded_at")
@@ -1151,6 +1257,17 @@ def propose_revision(request, dataset_id):
     from .services.revisions import has_revision_permission, consume_revision_permission
 
     dataset = get_object_or_404(Dataset, id=dataset_id)
+    if dataset.published_release_id:
+        return Response(
+            {
+                "detail": (
+                    "This dataset uses V2 releases. Submit the change through the V2 proposal API "
+                    "so the published manifest remains immutable."
+                ),
+                "proposal_endpoint": f"/api/datasets/{dataset.id}/proposals/",
+            },
+            status=409,
+        )
 
     if not request.user.profile.is_profile_complete():
         return Response({"detail": "Please complete your profile before proposing a change."}, status=403)
@@ -1270,12 +1387,20 @@ def soft_delete_dataset(request, dataset_id):
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def update_contributor_type(request, dataset_id, contributor_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id)
+    dataset = get_object_or_404(Dataset.objects.select_for_update(), id=dataset_id)
+    if dataset.published_release_id:
+        return Response(
+            {"detail": "Contributor attribution changes for V2 datasets must be included in a release proposal."},
+            status=409,
+        )
     if dataset.owner_id != request.user.id:
         return Response({"detail": "Only the original dataset owner can change contributor roles."}, status=403)
 
-    contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
+    contributor = get_object_or_404(
+        Contributor.objects.select_for_update(), id=contributor_id, dataset=dataset
+    )
 
     update_fields = []
 
@@ -1309,12 +1434,20 @@ def update_contributor_type(request, dataset_id, contributor_id):
 
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def remove_contributor(request, dataset_id, contributor_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id)
+    dataset = get_object_or_404(Dataset.objects.select_for_update(), id=dataset_id)
+    if dataset.published_release_id:
+        return Response(
+            {"detail": "Contributor attribution changes for V2 datasets must be included in a release proposal."},
+            status=409,
+        )
     if dataset.owner_id != request.user.id:
         return Response({"detail": "Only the original dataset owner can remove contributors."}, status=403)
 
-    contributor = get_object_or_404(Contributor, id=contributor_id, dataset=dataset)
+    contributor = get_object_or_404(
+        Contributor.objects.select_for_update(), id=contributor_id, dataset=dataset
+    )
     contributor.delete()
     return Response(status=204)
 

@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
+from django.db import transaction
 from django.utils import timezone
 
 from ..models import Contributor, Dataset, DatasetInvitation, PermissionLevel
@@ -67,37 +68,42 @@ def accept_invitation(token, user):
     except DatasetInvitation.DoesNotExist:
         raise ValueError("This invitation link is invalid.")
 
-    if invitation.notified_at is None:
-        raise ValueError("This invitation hasn't been activated yet.")
-    if invitation.status == DatasetInvitation.Status.ACCEPTED:
-        raise ValueError("This invitation has already been accepted.")
-    if invitation.status == DatasetInvitation.Status.REVOKED:
-        raise ValueError("This invitation has been revoked.")
-    if invitation.dataset.status != Dataset.Status.PUBLISHED:
-        raise ValueError("This invitation will be available after the dataset is published.")
-    if invitation.expires_at <= timezone.now():
-        invitation.status = DatasetInvitation.Status.EXPIRED
-        invitation.save(update_fields=["status"])
-        raise ValueError("This invitation link has expired.")
-    if user.email.lower() != invitation.invited_email.lower():
-        raise ValueError("This invitation was sent to a different email address.")
+    with transaction.atomic():
+        dataset = Dataset.objects.select_for_update().get(pk=invitation.dataset_id)
+        invitation = DatasetInvitation.objects.select_for_update().get(pk=invitation.pk)
+        invitation.dataset = dataset
 
-    contributor_type = (
-        Contributor.ContributorType.CO_AUTHOR if invitation.role == DatasetInvitation.Role.CO_AUTHOR
-        else Contributor.ContributorType.CONTRIBUTOR
-    )
-    contributor, _ = Contributor.objects.update_or_create(
-        dataset=invitation.dataset, user=user,
-        defaults={
-            "name": user.profile.full_name, "invited_email": "", "contributor_type": contributor_type,
-            "permission": invitation.permission,
-            "order": invitation.dataset.contributors.count() + 1,
-        },
-    )
-    SharePermission.objects.get_or_create(
-        dataset=invitation.dataset, shared_with_user=user, defaults={"access_type": "download"},
-    )
-    invitation.status = DatasetInvitation.Status.ACCEPTED
-    invitation.accepted_at = timezone.now()
-    invitation.save(update_fields=["status", "accepted_at"])
-    return contributor
+        if invitation.notified_at is None:
+            raise ValueError("This invitation hasn't been activated yet.")
+        if invitation.status == DatasetInvitation.Status.ACCEPTED:
+            raise ValueError("This invitation has already been accepted.")
+        if invitation.status == DatasetInvitation.Status.REVOKED:
+            raise ValueError("This invitation has been revoked.")
+        if invitation.dataset.status != Dataset.Status.PUBLISHED:
+            raise ValueError("This invitation will be available after the dataset is published.")
+        if invitation.expires_at <= timezone.now():
+            invitation.status = DatasetInvitation.Status.EXPIRED
+            invitation.save(update_fields=["status"])
+            raise ValueError("This invitation link has expired.")
+        if user.email.lower() != invitation.invited_email.lower():
+            raise ValueError("This invitation was sent to a different email address.")
+
+        contributor_type = (
+            Contributor.ContributorType.CO_AUTHOR if invitation.role == DatasetInvitation.Role.CO_AUTHOR
+            else Contributor.ContributorType.CONTRIBUTOR
+        )
+        contributor, _ = Contributor.objects.update_or_create(
+            dataset=invitation.dataset, user=user,
+            defaults={
+                "name": user.profile.full_name, "invited_email": "", "contributor_type": contributor_type,
+                "permission": invitation.permission,
+                "order": invitation.dataset.contributors.count() + 1,
+            },
+        )
+        SharePermission.objects.get_or_create(
+            dataset=invitation.dataset, shared_with_user=user, defaults={"access_type": "download"},
+        )
+        invitation.status = DatasetInvitation.Status.ACCEPTED
+        invitation.accepted_at = timezone.now()
+        invitation.save(update_fields=["status", "accepted_at"])
+        return contributor

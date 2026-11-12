@@ -1,10 +1,17 @@
+from unittest.mock import patch
+
 from rest_framework.test import APITestCase
 from rest_framework import status
+from django.utils import timezone
 
 from apps.accounts.models import UserProfile
 from apps.datasets.factories import make_user, make_college
-from apps.datasets.models import Dataset, Contributor, PendingContentUpdate, PendingContentUpdateVote
+from apps.datasets.models import (
+    Dataset, DatasetFile, DatasetRelease, DatasetReleaseFile, StoredObject, Contributor,
+    PendingContentUpdate, PendingContentUpdateVote,
+)
 from apps.datasets.services.revisions import resolve_content_update_votes, route_change
+from apps.datasets.services.publication import publish_initial_dataset, withdraw_release
 from apps.notifications.models import Notification
 from .models import SharePermission, DatasetAccessRequest
 
@@ -107,6 +114,145 @@ class FreeDownloadTests(APITestCase):
         self.client.get(f"/api/sharing/{dataset.id}/download/")
         dataset.refresh_from_db()
         self.assertEqual(dataset.download_count, 2)
+
+    def test_release_download_uses_requested_release_manifest_not_current_v1_file(self):
+        owner = make_user("releasefdowner", "releasefdowner@aastu.edu.et")
+        dataset = make_dataset_with_version(owner)
+        old_object = StoredObject.objects.create(
+            dataset=dataset,
+            storage_key=f"objects/{dataset.id}/old.csv",
+            original_filename="old.csv",
+            file_type="csv",
+            file_size=5,
+            checksum_sha256="a" * 64,
+        )
+        new_object = StoredObject.objects.create(
+            dataset=dataset,
+            storage_key=f"objects/{dataset.id}/new.csv",
+            original_filename="new.csv",
+            file_type="csv",
+            file_size=5,
+            checksum_sha256="b" * 64,
+        )
+        legacy_file = DatasetFile.objects.create(
+            dataset=dataset,
+            file_key=new_object.storage_key,
+            original_filename="new.csv",
+            file_type="csv",
+            file_size=5,
+            checksum="b" * 64,
+            stored_object=new_object,
+        )
+        old_release = DatasetRelease.objects.create(
+            dataset=dataset,
+            major=1,
+            minor=0,
+            patch=0,
+            status=DatasetRelease.Status.DRAFT,
+            metadata_snapshot={"schema_version": 1, "title": dataset.title},
+        )
+        current_release = DatasetRelease.objects.create(
+            dataset=dataset,
+            major=1,
+            minor=1,
+            patch=0,
+            status=DatasetRelease.Status.DRAFT,
+            metadata_snapshot={"schema_version": 1, "title": dataset.title},
+            base_release=old_release,
+        )
+        logical_id = legacy_file.id
+        DatasetReleaseFile.objects.create(
+            release=old_release, stored_object=old_object, logical_file_id=logical_id
+        )
+        DatasetReleaseFile.objects.create(
+            release=current_release, stored_object=new_object, logical_file_id=logical_id
+        )
+        old_release.status = DatasetRelease.Status.PUBLISHED
+        old_release.save(update_fields=["status"])
+        current_release.status = DatasetRelease.Status.PUBLISHED
+        current_release.save(update_fields=["status"])
+        dataset.published_release = current_release
+        dataset.save(update_fields=["published_release"])
+        self.client.force_authenticate(owner)
+        with patch(
+            "apps.sharing.views.presigned_download_url",
+            side_effect=lambda key: f"signed:{key}",
+        ):
+            response = self.client.get(
+                f"/api/sharing/{dataset.id}/releases/{old_release.id}/download/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["release"], "1.0.0")
+        self.assertEqual(
+            response.data["files"],
+            [{
+                "logical_file_id": str(logical_id),
+                "filename": "old.csv",
+                "download_url": f"signed:{old_object.storage_key}",
+            }],
+        )
+
+        withdraw_release(
+            current_release, owner, "Later release withdrawn for correction."
+        )
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.published_release_id, old_release.id)
+        self.assertEqual(dataset.current_version.id, old_object.id)
+        previous_response = self.client.get(
+            f"/api/sharing/{dataset.id}/releases/{old_release.id}/download/"
+        )
+        withdrawn_response = self.client.get(
+            f"/api/sharing/{dataset.id}/releases/{current_release.id}/download/"
+        )
+        self.assertEqual(previous_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(withdrawn_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_withdrawn_initial_release_is_unavailable_through_both_download_paths(self):
+        owner = make_user("withdrawn-release-owner", "withdrawn-release-owner@aastu.edu.et")
+        dataset = Dataset.objects.create(
+            title="Withdrawn release",
+            owner=owner,
+            visibility=Dataset.Visibility.RESTRICTED,
+            status=Dataset.Status.PUBLISHED,
+        )
+        stored_object = StoredObject.objects.create(
+            dataset=dataset,
+            storage_key=f"objects/{dataset.id}/withdrawn.csv",
+            original_filename="withdrawn.csv",
+            file_type="csv",
+            file_size=5,
+            checksum_sha256="a" * 64,
+            verified_at=timezone.now(),
+        )
+        legacy_file = DatasetFile.objects.create(
+            dataset=dataset,
+            file_key=stored_object.storage_key,
+            original_filename="withdrawn.csv",
+            file_type="csv",
+            file_size=5,
+            checksum="a" * 64,
+            stored_object=stored_object,
+        )
+        with patch(
+            "apps.datasets.services.publication.verify_stored_object_in_storage"
+        ):
+            release = publish_initial_dataset(dataset, owner)
+        withdraw_release(release, owner, "Initial release withdrawn for correction.")
+        dataset.refresh_from_db()
+        self.assertIsNone(dataset.published_release_id)
+        self.assertIsNone(dataset.current_version)
+        self.assertTrue(DatasetFile.objects.filter(pk=legacy_file.pk).exists())
+
+        self.client.force_authenticate(owner)
+        current_response = self.client.get(
+            f"/api/sharing/{dataset.id}/download/"
+        )
+        release_response = self.client.get(
+            f"/api/sharing/{dataset.id}/releases/{release.id}/download/"
+        )
+        self.assertEqual(current_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(release_response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class ViewCounterTests(APITestCase):

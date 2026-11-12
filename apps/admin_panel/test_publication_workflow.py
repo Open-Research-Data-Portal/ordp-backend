@@ -1,8 +1,10 @@
 from rest_framework.test import APITestCase
 from rest_framework import status
+from unittest.mock import patch
+from django.utils import timezone
 
 from apps.datasets.factories import make_user
-from apps.datasets.models import Dataset
+from apps.datasets.models import Dataset, DatasetFile, StoredObject
 from apps.metadata.models import Category, Metadata, Language
 from .models import DatasetReviewerAssignment
 
@@ -32,6 +34,25 @@ def make_submittable_dataset(owner, title='Workflow DS'):
 
     metadata.languages.add(language)
 
+    stored_object = StoredObject.objects.create(
+        dataset=dataset,
+        storage_key=f"objects/{dataset.id}/workflow-test.csv",
+        original_filename="workflow-test.csv",
+        file_type="csv",
+        file_size=4,
+        checksum_sha256="a" * 64,
+        verified_at=timezone.now(),
+    )
+    DatasetFile.objects.create(
+        dataset=dataset,
+        file_key=stored_object.storage_key,
+        original_filename=stored_object.original_filename,
+        file_type="csv",
+        file_size=4,
+        checksum="a" * 64,
+        stored_object=stored_object,
+    )
+
     return dataset
 
 
@@ -58,6 +79,13 @@ def assign_three_reviewers(dataset, prefix):
 
 
 class ModerationDecisionTests(APITestCase):
+    def setUp(self):
+        patcher = patch(
+            "apps.datasets.services.publication.verify_stored_object_in_storage"
+        )
+        self.verify_storage = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_first_approval_keeps_dataset_pending(self):
         owner = make_user(
             'pwowner',
@@ -133,6 +161,8 @@ class ModerationDecisionTests(APITestCase):
             dataset.moderation_decisions.count(),
             2,
         )
+        self.assertIsNotNone(dataset.published_release_id)
+        self.assertEqual(dataset.published_release.version, "1.0.0")
 
     def test_changes_requested_sets_status_and_requires_reason(self):
         owner = make_user(

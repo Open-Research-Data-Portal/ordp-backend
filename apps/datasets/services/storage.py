@@ -1,8 +1,10 @@
 from datetime import timedelta
+import hashlib
 from urllib.parse import urlparse
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
 
 from functools import lru_cache
@@ -68,4 +70,54 @@ def read_object_range(object_key, max_bytes=131072):
         Range=f"bytes=0-{max_bytes - 1}",
     )
     return response["Body"].read()
+class StorageVerificationError(Exception):
+    """Raised when an uploaded object is missing or its size is wrong."""
 
+
+def verify_object(object_key, expected_size, expected_checksum=None):
+    """Ask B2 (via HEAD, no download) whether the object exists and has the
+    size we expect, and optionally read it back to verify its SHA-256."""
+    try:
+        meta = storage_client().head_object(
+            Bucket=settings.OBJECT_STORAGE_BUCKET,
+            Key=object_key,
+        )
+    except (BotoCoreError, ClientError) as exc:
+        code = (
+            exc.response.get("Error", {}).get("Code", "unknown")
+            if isinstance(exc, ClientError) else "transport"
+        )
+        raise StorageVerificationError(
+            f"Could not verify '{object_key}' in storage (storage error {code})."
+        ) from exc
+
+    actual_size = meta.get("ContentLength")
+    if actual_size != expected_size:
+        raise StorageVerificationError(
+            f"Object '{object_key}' has size {actual_size} in storage, "
+            f"expected {expected_size}."
+        )
+
+    if expected_checksum is not None:
+        try:
+            response = storage_client().get_object(
+                Bucket=settings.OBJECT_STORAGE_BUCKET,
+                Key=object_key,
+            )
+            body = response["Body"]
+            digest = hashlib.sha256()
+            try:
+                for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                    digest.update(chunk)
+            finally:
+                body.close()
+        except (BotoCoreError, ClientError) as exc:
+            raise StorageVerificationError(
+                f"Could not read back '{object_key}' to verify its SHA-256."
+            ) from exc
+
+        if digest.hexdigest() != expected_checksum.strip().lower():
+            raise StorageVerificationError(
+                f"Object '{object_key}' does not match its expected SHA-256 checksum."
+            )
+    return meta

@@ -8,7 +8,9 @@ from rest_framework.response import Response
 
 from apps.accounts.models import ActivityLog
 from apps.accounts.permissions import IsReviewerOrAdmin, IsReviewerOnly
-from apps.datasets.models import Dataset, Contributor, DatasetInvitation, PermissionLevel
+from apps.datasets.models import (
+    Dataset, DatasetRelease, Contributor, DatasetInvitation, PermissionLevel,
+)
 from apps.datasets.permissions import IsDatasetOwner, can_access_private_dataset
 from apps.datasets.services.storage import presigned_download_url
 from apps.datasets.services.invitations import create_invitation, accept_invitation
@@ -83,6 +85,64 @@ def download_dataset(request, dataset_id):
         return Response({"detail": "You don't have access to this dataset."}, status=403)
 
     return _download_url_response(request, dataset, is_reviewer=is_reviewer)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def download_dataset_release(request, dataset_id, release_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    release = get_object_or_404(
+        DatasetRelease,
+        id=release_id,
+        dataset=dataset,
+        status=DatasetRelease.Status.PUBLISHED,
+    )
+    is_private = dataset.visibility == Dataset.Visibility.PRIVATE
+    has_private_access = is_private and can_access_private_dataset(request.user, dataset)
+    private_review_access = has_private_access and dataset.owner_id != request.user.id
+    if is_private and not has_private_access:
+        return Response({"detail": "You don't have access to this dataset."}, status=403)
+
+    if not private_review_access and not user_meets_access_requirements(request.user):
+        return Response(
+            {"detail": "Please complete your profile before downloading datasets."}, status=403,
+        )
+
+    profile = getattr(request.user, "profile", None)
+    is_reviewer = bool(profile and profile.has_role("reviewer"))
+    is_free_access = user_can_freely_download(request.user, dataset)
+    permission = SharePermission.objects.filter(
+        dataset=dataset, shared_with_user=request.user
+    ).first()
+    has_active_share = bool(permission and permission.is_active_grant())
+    if not (
+        private_review_access
+        or is_free_access
+        or has_active_share
+    ):
+        return Response({"detail": "You don't have access to this dataset."}, status=403)
+
+    files = [
+        {
+            "logical_file_id": str(entry.logical_file_id),
+            "filename": entry.stored_object.original_filename,
+            "download_url": presigned_download_url(entry.stored_object.storage_key),
+        }
+        for entry in release.files.select_related("stored_object").order_by("display_order", "id")
+    ]
+    if not files:
+        return Response({"detail": "This release has no published files."}, status=404)
+
+    ActivityLog.objects.create(
+        user=request.user,
+        action=_download_action_for(request.user, dataset, is_reviewer=is_reviewer),
+        target_object=f"DatasetRelease:{release.id}",
+        ip_address=request.META.get("REMOTE_ADDR") or "0.0.0.0",
+    )
+    Dataset.objects.filter(id=dataset.id).update(
+        download_count=django_models.F("download_count") + 1
+    )
+    return Response({"release": release.version, "files": files})
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])

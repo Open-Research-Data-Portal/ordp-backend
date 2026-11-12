@@ -1,3 +1,4 @@
+import hashlib
 from io import BytesIO
 from tempfile import NamedTemporaryFile
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,8 @@ from apps.datasets.services.storage import (
     push_to_storage,
     storage_client,
     upload_fileobj,
+    verify_object,
+    StorageVerificationError,
 )
 
 
@@ -166,3 +169,29 @@ class DownloadToFileTests(SimpleTestCase):
             )
 
         self.assertEqual(result, temp_file.name)
+
+
+class VerifyObjectChecksumTests(SimpleTestCase):
+    @patch("apps.datasets.services.storage.storage_client")
+    def test_readback_checksum_matches(self, mock_storage_client):
+        body = MagicMock()
+        body.iter_chunks.return_value = [b"abc", b"123"]
+        client = mock_storage_client.return_value
+        client.head_object.return_value = {"ContentLength": 6}
+        client.get_object.return_value = {"Body": body}
+
+        result = verify_object("objects/key", 6, hashlib.sha256(b"abc123").hexdigest())
+
+        self.assertEqual(result, {"ContentLength": 6})
+        body.close.assert_called_once_with()
+
+    @patch("apps.datasets.services.storage.storage_client")
+    def test_readback_checksum_mismatch_fails_verification(self, mock_storage_client):
+        body = MagicMock()
+        body.iter_chunks.return_value = [b"tampered"]
+        client = mock_storage_client.return_value
+        client.head_object.return_value = {"ContentLength": 8}
+        client.get_object.return_value = {"Body": body}
+
+        with self.assertRaises(StorageVerificationError):
+            verify_object("objects/key", 8, hashlib.sha256(b"expected").hexdigest())
