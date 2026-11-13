@@ -911,7 +911,7 @@ def dataset_detail(request, dataset_id):
             user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
             ip_address=request.META.get("REMOTE_ADDR", "unknown"),
         )
-    return Response(DatasetSerializer(dataset).data)
+    return Response(DatasetSerializer(dataset, context={"request": request}).data)
 
 def _can_view_dataset_versions(user, dataset):
     if dataset.is_owned_by(user):
@@ -955,6 +955,42 @@ def download_dataset_file(request, dataset_id, file_id):
     if not allowed:
         return Response({"detail": "You don't have permission to download this file."}, status=403)
     return Response({"download_url": presigned_download_url(dataset_file.file_key)})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def view_dataset_file(request, dataset_id, file_id):
+    """Open one file through the dedicated dataset_file.view permission."""
+    from .models import DatasetFile
+    from .services.preview import preview_tabular_file, CSV_FILE_TYPES, JSON_FILE_TYPES
+
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    dataset_file = get_object_or_404(DatasetFile, id=file_id, dataset=dataset)
+    allowed = (
+        dataset.is_owned_by(request.user)
+        or has_scoped_permission(request.user, "dataset_file.view", "dataset_file", dataset_file.id)
+        or has_scoped_permission(request.user, "user.manage")
+        or (
+            dataset.visibility == Dataset.Visibility.PUBLIC
+            and dataset.status == Dataset.Status.PUBLISHED
+        )
+    )
+    if not allowed:
+        return Response({"detail": "You don't have permission to view this file."}, status=403)
+
+    file_type = (dataset_file.file_type or "").lower()
+    response = {
+        "id": str(dataset_file.id),
+        "filename": dataset_file.original_filename,
+        "file_type": dataset_file.file_type,
+        "file_size": dataset_file.file_size,
+        "preview": None,
+    }
+    if file_type in (CSV_FILE_TYPES | JSON_FILE_TYPES):
+        response["preview"] = preview_tabular_file(dataset_file)
+    elif file_type in {"jpg", "jpeg", "png", "gif", "webp", "svg"}:
+        response["file_url"] = presigned_download_url(dataset_file.file_key)
+    return Response(response)
 
 
 @api_view(["POST"])

@@ -28,6 +28,11 @@ urlpatterns = [
         name="dataset-file-download",
     ),
     path(
+        "<uuid:dataset_id>/files/<uuid:file_id>/view/",
+        views.view_dataset_file,
+        name="dataset-file-view",
+    ),
+    path(
         "<uuid:dataset_id>/versions/<uuid:version_id>/restore/",
         views.restore_dataset_version,
         name="dataset-version-restore",

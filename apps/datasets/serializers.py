@@ -59,6 +59,21 @@ class DatasetFileSerializer(serializers.ModelSerializer):
     def get_preview_rows(self, obj):
         if self.context.get("list_mode"):
             return None
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+        from apps.access_control.services import has_permission
+        allowed = (
+            obj.dataset.owner_id == request.user.id
+            or has_permission(request.user, "dataset_file.view", "dataset_file", obj.id)
+            or has_permission(request.user, "user.manage")
+            or (
+                obj.dataset.visibility == obj.dataset.Visibility.PUBLIC
+                and obj.dataset.status == obj.dataset.Status.PUBLISHED
+            )
+        )
+        if not allowed:
+            return None
         file_type = (obj.file_type or "").lower()
         if file_type not in (CSV_FILE_TYPES | JSON_FILE_TYPES):
             return None

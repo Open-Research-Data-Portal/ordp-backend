@@ -64,7 +64,10 @@ class CanUploadDatasets(BasePermission):
         if not profile.is_profile_complete():
             self.message = "Complete your profile before uploading datasets."
             return False
-        if profile.can_upload_datasets or has_permission(request.user, "dataset.create"):
+        # Upload authority is now represented by the scoped permission system.
+        # The profile flag is retained for historical data and is migrated by
+        # access_control.0006; it must not grant access on its own anymore.
+        if has_permission(request.user, "dataset.create"):
             return True
         self.message = "You do not currently have permission to upload datasets."
         return False
