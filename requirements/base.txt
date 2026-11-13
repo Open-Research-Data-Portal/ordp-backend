@@ -16,3 +16,6 @@ pandas>=2.2
 anthropic>=0.34
 reportlab
 gunicorn
+
+
+drf-spectacular
