@@ -1,13 +1,55 @@
 from rest_framework.test import APITestCase
 from rest_framework import status
+from unittest.mock import patch
+from uuid import uuid4
 
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset
 from apps.accounts.models import UserRole
+from apps.accounts.models import PasswordResetToken
 from apps.admin_panel.models import DatasetReviewerAssignment, ModerationDecision
 
 
 class AdminCreateUserMultiRoleTests(APITestCase):
+    @patch("apps.admin_panel.dashboard_views.send_mail")
+    def test_new_user_receives_password_setup_email_and_token(self, send_mail):
+        admin = make_user("mracemailadmin", "mracemailadmin@aastu.edu.et", role="admin")
+        self.client.force_authenticate(admin)
+        email = f"emailrecipient-{uuid4().hex[:8]}@aastu.edu.et"
+
+        resp = self.client.post("/api/admin-panel/users/create/", {
+            "email": email, "full_name": "Email Recipient", "role": "reviewer",
+        })
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        created = PasswordResetToken.objects.get(user__email=email)
+        created_user = created.user
+        self.assertTrue(created_user.has_usable_password() is False)
+        self.assertTrue(created.is_valid())
+        send_mail.assert_called_once()
+        self.assertEqual(send_mail.call_args.kwargs["recipient_list"], [email])
+        self.assertIn(str(created.token), send_mail.call_args.kwargs["message"])
+
+    def test_password_setup_token_completes_account_setup(self):
+        admin = make_user("mracsetupadmin", "mracsetupadmin@aastu.edu.et", role="admin")
+        self.client.force_authenticate(admin)
+        email = f"setuprecipient-{uuid4().hex[:8]}@aastu.edu.et"
+        self.client.post("/api/admin-panel/users/create/", {
+            "email": email, "full_name": "Setup Recipient", "role": "reviewer",
+        })
+        token = PasswordResetToken.objects.get(user__email=email)
+
+        response = self.client.post("/api/accounts/password-reset/confirm/", {
+            "token": str(token.token),
+            "new_password": "StrongSetupPassword123!",
+            "confirm_password": "StrongSetupPassword123!",
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(token.user.check_password("StrongSetupPassword123!"))
+        token.refresh_from_db()
+        self.assertTrue(token.is_used)
+
     def test_new_email_creates_account_with_primary_role(self):
         admin = make_user("mracadmin1", "mracadmin1@aastu.edu.et", role="admin")
         self.client.force_authenticate(admin)

@@ -528,6 +528,9 @@ class PermissionSystemTests(TestCase):
         request.user = target
         with patch.object(UserProfile, "is_profile_complete", return_value=True):
             self.assertFalse(CanUploadDatasets().has_permission(request, None))
+            profile.can_upload_datasets = True
+            profile.save(update_fields=["can_upload_datasets"])
+            self.assertFalse(CanUploadDatasets().has_permission(request, None))
             UserPermissionGrant.objects.create(
                 user=target, permission_id="dataset.create", resource_type="platform", granted_by=self.manager,
             )

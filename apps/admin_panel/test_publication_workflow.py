@@ -5,6 +5,30 @@ from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset
 from apps.metadata.models import Category, Metadata, Language
 from .models import DatasetReviewerAssignment
+from apps.access_control.models import UserPermissionGrant
+
+
+def make_reviewer(username, email):
+    reviewer = make_user(username, email, role="reviewer")
+    for code in ("dataset.approve", "dataset.publish", "access_request.review", "access_request.approve", "access_request.reject"):
+        UserPermissionGrant.objects.get_or_create(
+            user=reviewer,
+            permission_id=code,
+            resource_type="platform",
+            granted_by=reviewer,
+        )
+    return reviewer
+
+
+def make_researcher(username, email):
+    researcher = make_user(username, email, role="researcher")
+    UserPermissionGrant.objects.get_or_create(
+        user=researcher,
+        permission_id="dataset.create",
+        resource_type="platform",
+        granted_by=researcher,
+    )
+    return researcher
 
 
 def make_submittable_dataset(owner, title='Workflow DS'):
@@ -37,10 +61,9 @@ def make_submittable_dataset(owner, title='Workflow DS'):
 
 def assign_three_reviewers(dataset, prefix):
     reviewers = [
-        make_user(
+        make_reviewer(
             f'{prefix}reviewer{i}',
             f'{prefix}reviewer{i}@aastu.edu.et',
-            role='reviewer',
         )
         for i in range(3)
     ]
@@ -263,10 +286,9 @@ class ModerationDecisionTests(APITestCase):
 
 class ResubmissionAfterChangesRequestedTests(APITestCase):
     def test_owner_can_resubmit_after_changes_requested(self):
-        owner = make_user(
+        owner = make_researcher(
             'resowner',
             'resowner@aastu.edu.et',
-            role='researcher',
         )
 
         dataset = make_submittable_dataset(owner)
@@ -338,10 +360,9 @@ class ResubmissionAfterChangesRequestedTests(APITestCase):
         )
 
     def test_cannot_resubmit_a_published_dataset(self):
-        owner = make_user(
+        owner = make_researcher(
             'psowner',
             'psowner@aastu.edu.et',
-            role='researcher',
         )
 
         dataset = make_submittable_dataset(owner)
@@ -362,10 +383,9 @@ class ResubmissionAfterChangesRequestedTests(APITestCase):
         )
 
     def test_cannot_submit_an_already_pending_dataset(self):
-        owner = make_user(
+        owner = make_researcher(
             'apowner',
             'apowner@aastu.edu.et',
-            role='researcher',
         )
 
         dataset = make_submittable_dataset(owner)

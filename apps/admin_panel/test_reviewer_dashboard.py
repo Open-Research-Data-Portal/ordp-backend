@@ -6,6 +6,19 @@ from apps.datasets.models import Dataset
 from .models import DatasetReviewerAssignment, ModerationDecision
 from apps.datasets.factories import make_user as _mu
 from apps.admin_panel.models import DatasetArchiveRequest, ArchiveRequestVote
+from apps.access_control.models import UserPermissionGrant
+
+
+def make_reviewer(username, email):
+    reviewer = make_user(username, email, role="reviewer")
+    for code in ("dataset.approve", "dataset.publish", "access_request.review", "access_request.approve", "access_request.reject"):
+        UserPermissionGrant.objects.get_or_create(
+            user=reviewer,
+            permission_id=code,
+            resource_type="platform",
+            granted_by=reviewer,
+        )
+    return reviewer
 
 
 def make_dataset(owner, title="Test DS", status=Dataset.Status.PENDING, assigned_reviewer=None):
@@ -15,8 +28,8 @@ def make_dataset(owner, title="Test DS", status=Dataset.Status.PENDING, assigned
 class ReviewerOverviewTests(APITestCase):
     def test_counts_only_datasets_assigned_to_this_reviewer(self):
         owner = make_user("rowowner", "rowowner@aastu.edu.et")
-        checker = make_user("rowchecker", "rowchecker@aastu.edu.et", role="reviewer")
-        other_checker = make_user("rowother", "rowother@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rowchecker", "rowchecker@aastu.edu.et")
+        other_checker = make_reviewer("rowother", "rowother@aastu.edu.et")
 
         assigned_to_me = make_dataset(owner, "Assigned To Me")
         assigned_to_other = make_dataset(owner, "Assigned To Other")
@@ -31,7 +44,7 @@ class ReviewerOverviewTests(APITestCase):
 
     def test_assigned_pending_excludes_dataset_already_reviewed_by_me(self):
         owner = make_user("rowdoneowner", "rowdoneowner@aastu.edu.et")
-        checker = make_user("rowdonechecker", "rowdonechecker@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rowdonechecker", "rowdonechecker@aastu.edu.et")
         pending = make_dataset(owner, "Still Pending")
         reviewed = make_dataset(owner, "Already Reviewed")
         DatasetReviewerAssignment.objects.create(dataset=pending, reviewer=checker)
@@ -56,7 +69,7 @@ class ReviewerOverviewTests(APITestCase):
         from apps.sharing.models import DatasetAccessRequest, AccessRequestVote, UsabilityFormResponse, RestrictedAccessJustification
 
         owner = make_user("rowowner2", "rowowner2@aastu.edu.et")
-        checker = make_user("rowchecker2", "rowchecker2@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rowchecker2", "rowchecker2@aastu.edu.et")
         requester = make_user("rowrequester", "rowrequester@aastu.edu.et")
         dataset = make_dataset(owner, "Access DS", status=Dataset.Status.APPROVED)
 
@@ -77,7 +90,7 @@ class ReviewerOverviewTests(APITestCase):
     def test_archive_requests_awaiting_my_vote_excludes_already_voted(self):
         
         owner = make_user("rowarchowner", "rowarchowner@aastu.edu.et")
-        checker = make_user("rowarchchecker", "rowarchchecker@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rowarchchecker", "rowarchchecker@aastu.edu.et")
         dataset = make_dataset(owner, "Archive Overview DS", status=Dataset.Status.APPROVED)
 
         archive_request_voted = DatasetArchiveRequest.objects.create(
@@ -97,7 +110,7 @@ class ReviewerOverviewTests(APITestCase):
 
         owner = make_user("rowuaowner", "rowuaowner@aastu.edu.et")
         admin = make_user("rowuaadmin", "rowuaadmin@aastu.edu.et", role="admin")
-        checker = make_user("rowuachecker", "rowuachecker@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rowuachecker", "rowuachecker@aastu.edu.et")
         requester = make_user("rowuarequester", "rowuarequester@aastu.edu.et")
         dataset = make_dataset(owner, "Unarchive Overview DS", status=Dataset.Status.APPROVED)
         dataset.is_archived = True
@@ -140,8 +153,8 @@ class ReviewerOverviewTests(APITestCase):
 class ReviewerMetricsTests(APITestCase):
     def test_metrics_reflect_only_this_reviewers_decisions(self):
         owner = make_user("rmowner", "rmowner@aastu.edu.et")
-        checker = make_user("rmchecker", "rmchecker@aastu.edu.et", role="reviewer")
-        other_checker = make_user("rmother", "rmother@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rmchecker", "rmchecker@aastu.edu.et")
+        other_checker = make_reviewer("rmother", "rmother@aastu.edu.et")
         ds1 = make_dataset(owner, "RM DS 1")
         ds2 = make_dataset(owner, "RM DS 2")
         ds3 = make_dataset(owner, "RM DS 3")
@@ -161,7 +174,7 @@ class ReviewerMetricsTests(APITestCase):
 
     def test_metrics_include_assigned_pending_from_assignment_table(self):
         owner = make_user("rmpowner", "rmpowner@aastu.edu.et")
-        checker = make_user("rmpchecker", "rmpchecker@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rmpchecker", "rmpchecker@aastu.edu.et")
         pending = make_dataset(owner, "Pending Assignment")
         reviewed = make_dataset(owner, "Reviewed Assignment")
         DatasetReviewerAssignment.objects.create(dataset=pending, reviewer=checker)
@@ -179,7 +192,7 @@ class ReviewerMetricsTests(APITestCase):
 
 class ReviewerGuidelinesTests(APITestCase):
     def test_guidelines_accessible_to_checker(self):
-        checker = make_user("rgchecker", "rgchecker@aastu.edu.et", role="reviewer")
+        checker = make_reviewer("rgchecker", "rgchecker@aastu.edu.et")
         self.client.force_authenticate(checker)
         resp = self.client.get("/api/admin-panel/dashboard/reviewer/guidelines/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
