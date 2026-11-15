@@ -1,3 +1,5 @@
+import uuid
+
 from rest_framework.test import APITestCase
 from rest_framework import status
 
@@ -9,7 +11,7 @@ from .models import Category, Metadata
 
 class DatasetOtherCategoryTests(APITestCase):
 
-    def test_new_category_created_as_pending_and_still_usable(self):
+    def test_new_category_is_approved_and_visible_to_other_users(self):
         researcher = make_user("ocresearcher", "ocresearcher@aastu.edu.et", role="researcher")
         dataset = Dataset.objects.create(title="OC DS", owner=researcher)
 
@@ -19,9 +21,14 @@ class DatasetOtherCategoryTests(APITestCase):
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         category = Category.objects.get(name="Quantum Beekeeping")
-        self.assertEqual(category.status, Category.Status.PENDING)
+        self.assertEqual(category.status, Category.Status.APPROVED)
         dataset.refresh_from_db()
         self.assertEqual(dataset.metadata.category, category)
+
+        other_researcher = make_user("ocother", "ocother@aastu.edu.et", role="researcher")
+        self.client.force_authenticate(other_researcher)
+        visible = self.client.get("/api/metadata/categories/")
+        self.assertIn("Quantum Beekeeping", {item["name"] for item in visible.data})
 
     def test_existing_approved_category_used_via_category_id(self):
         researcher = make_user("ocresearcher2", "ocresearcher2@aastu.edu.et", role="researcher")
@@ -63,7 +70,7 @@ class DatasetOtherCategoryTests(APITestCase):
 
         self.assertEqual(Category.objects.filter(name__iexact="Marine Robotics").count(), 1)
 
-    def test_near_duplicate_is_pending_for_admin_to_decide(self):
+    def test_near_duplicate_can_be_created_and_is_immediately_approved(self):
         researcher = make_user("ocnearresearcher", "ocnearresearcher@aastu.edu.et", role="researcher")
         approved = Category.objects.create(
             name="Climate Science", status=Category.Status.APPROVED
@@ -77,19 +84,41 @@ class DatasetOtherCategoryTests(APITestCase):
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         suggestion = Category.objects.get(name="Climate Sci")
-        self.assertEqual(suggestion.status, Category.Status.PENDING)
+        self.assertEqual(suggestion.status, Category.Status.APPROVED)
         self.assertNotEqual(suggestion, approved)
         dataset.refresh_from_db()
         self.assertEqual(dataset.metadata.category, suggestion)
 
+    def test_reusing_exact_pending_category_promotes_existing_record(self):
+        researcher = make_user("ocpendingreuse", "ocpendingreuse@aastu.edu.et", role="researcher")
+        dataset = Dataset.objects.create(title="Pending Reuse", owner=researcher)
+        category = Category.objects.create(
+            name="Marine Biology", status=Category.Status.PENDING,
+            origin=Category.Origin.DATASET_OTHER,
+        )
+
+        self.client.force_authenticate(researcher)
+        resp = self.client.post(f"/api/metadata/{dataset.id}/attach/", {
+            "description": "test data", "other_category": "marine biology",
+        })
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(Category.objects.filter(name__iexact="Marine Biology").count(), 1)
+        category.refresh_from_db()
+        self.assertEqual(category.status, Category.Status.APPROVED)
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.metadata.category, category)
+
 
 class ProfileOtherInterestTests(APITestCase):
-    def test_add_other_interest_creates_pending_category(self):
+    def test_add_other_interest_creates_approved_category(self):
         researcher = make_user("piresearcher", "piresearcher@aastu.edu.et", role="researcher")
         self.client.force_authenticate(researcher)
         resp = self.client.post("/api/accounts/profile/interests/other/", {"name": "Applied Cryptozoology"})
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(resp.data["pending_review"])
+        self.assertFalse(resp.data["pending_review"])
+        category = Category.objects.get(name="Applied Cryptozoology")
+        self.assertEqual(category.status, Category.Status.APPROVED)
         researcher.profile.refresh_from_db()
         self.assertTrue(researcher.profile.interests.filter(name="Applied Cryptozoology").exists())
 
@@ -103,6 +132,157 @@ class ProfileOtherInterestTests(APITestCase):
         self.assertEqual(Category.objects.filter(name="Public Health").count(), 1)
 
 
+class ResearchInterestOnboardingTests(APITestCase):
+    url = "/api/accounts/profile/complete/"
+    interest_list_url = "/api/metadata/categories/interests/"
+    unavailable_message = (
+        "One or more selected research interests are no longer available. "
+        "Please refresh the list and select valid interests."
+    )
+
+    def setUp(self):
+        self.researcher = make_user(
+            "interestonboarding",
+            "interestonboarding@aastu.edu.et",
+            role="researcher",
+        )
+        self.client.force_authenticate(self.researcher)
+
+    def test_interest_list_returns_approved_categories_only(self):
+        standard = Category.objects.create(
+            name="Approved Standard",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.STANDARD,
+        )
+        interest_other = Category.objects.create(
+            name="Approved Interest Other",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.INTEREST_OTHER,
+        )
+        dataset_other = Category.objects.create(
+            name="Approved Dataset Other",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.DATASET_OTHER,
+        )
+        pending = Category.objects.create(
+            name="Pending Interest",
+            status=Category.Status.PENDING,
+        )
+        rejected = Category.objects.create(
+            name="Rejected Interest",
+            status=Category.Status.REJECTED,
+        )
+
+        response = self.client.get(self.interest_list_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {str(item["id"]) for item in response.data},
+            {str(standard.id), str(interest_other.id), str(dataset_other.id)},
+        )
+        listed_ids = {str(item["id"]) for item in response.data}
+        self.assertNotIn(str(pending.id), listed_ids)
+        self.assertNotIn(str(rejected.id), listed_ids)
+
+    def test_approved_standard_category_can_be_submitted(self):
+        category = Category.objects.create(
+            name="Standard Research",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.STANDARD,
+        )
+
+        response = self.client.patch(
+            self.url,
+            {"interests": [str(category.id)]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(category, self.researcher.profile.interests.all())
+        self.assertTrue(self.researcher.profile.is_profile_complete())
+        self.assertTrue(self.researcher.profile.can_upload_datasets)
+
+    def test_approved_interest_other_category_can_be_submitted(self):
+        category = Category.objects.create(
+            name="Custom Research",
+            status=Category.Status.APPROVED,
+            origin=Category.Origin.INTEREST_OTHER,
+        )
+
+        response = self.client.patch(
+            self.url,
+            {"interests": [str(category.id)]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(category, self.researcher.profile.interests.all())
+
+    def test_pending_and_rejected_categories_cannot_be_submitted(self):
+        for category_status in (Category.Status.PENDING, Category.Status.REJECTED):
+            with self.subTest(category_status=category_status):
+                category = Category.objects.create(
+                    name=f"{category_status.title()} Research",
+                    status=category_status,
+                )
+
+                response = self.client.patch(
+                    self.url,
+                    {"interests": [str(category.id)]},
+                    format="json",
+                )
+
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn(self.unavailable_message, str(response.data["interests"]))
+                self.assertFalse(
+                    self.researcher.profile.interests.filter(id=category.id).exists()
+                )
+
+    def test_stale_category_uuid_returns_actionable_validation_error(self):
+        response = self.client.patch(
+            self.url,
+            {"interests": [str(uuid.uuid4())]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(self.unavailable_message, str(response.data["interests"]))
+
+    def test_invalid_uuid_keeps_uuid_validation_error(self):
+        response = self.client.patch(
+            self.url,
+            {"interests": ["not-a-uuid"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn(self.unavailable_message, str(response.data["interests"]))
+
+    def test_every_listed_interest_is_accepted_by_profile_completion(self):
+        categories = [
+            Category.objects.create(
+                name=f"Listed Interest {origin}",
+                status=Category.Status.APPROVED,
+                origin=origin,
+            )
+            for origin in Category.Origin.values
+        ]
+        listed = self.client.get(self.interest_list_url)
+        listed_ids = [str(item["id"]) for item in listed.data]
+
+        response = self.client.patch(
+            self.url,
+            {"interests": listed_ids},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            set(self.researcher.profile.interests.values_list("id", flat=True)),
+            {category.id for category in categories},
+        )
+
+
 class CategoryVisibilityTests(APITestCase):
     def test_pending_category_hidden_from_dropdown(self):
         researcher = make_user("cvresearcher", "cvresearcher@aastu.edu.et", role="researcher")
@@ -114,6 +294,24 @@ class CategoryVisibilityTests(APITestCase):
         names = {c["name"] for c in resp.data}
         self.assertIn("Approved Cat", names)
         self.assertNotIn("Pending Cat", names)
+
+    def test_user_gets_ranked_suggestions_from_approved_categories_only(self):
+        researcher = make_user("cvsuggest", "cvsuggest@aastu.edu.et", role="researcher")
+        target = Category.objects.create(name="Climate Science", status=Category.Status.APPROVED)
+        Category.objects.create(name="Agriculture", status=Category.Status.APPROVED)
+        Category.objects.create(name="Climate Sci", status=Category.Status.PENDING)
+
+        self.client.force_authenticate(researcher)
+        resp = self.client.get("/api/metadata/categories/suggestions/?q=Climate%20Sci")
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data[0]["id"], str(target.id))
+        self.assertEqual(resp.data[0]["name"], "Climate Science")
+        self.assertNotIn("Climate Sci", {item["name"] for item in resp.data})
+
+    def test_category_suggestions_require_authentication(self):
+        resp = self.client.get("/api/metadata/categories/suggestions/?q=Climate")
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
 class AdminCategoryReviewTests(APITestCase):

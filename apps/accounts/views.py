@@ -13,7 +13,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.tokens import RefreshToken as RefreshTokenObj
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
-from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from django.db import transaction
 from rest_framework.decorators import api_view, permission_classes
 from apps.datasets.models import Contributor
@@ -32,7 +31,17 @@ from .models import (
     CenterOfExcellence,
     UserRole,
 )
-from .serializers import LoginSerializer, LogoutSerializer, ProfileSerializer, RegisterSerializer,PasswordResetRequestSerializer, PasswordResetConfirmSerializer
+from .services import account_was_activated
+from .serializers import (
+    ChangePasswordSerializer,
+    LoginSerializer,
+    LogoutSerializer,
+    ProfileSerializer,
+    RegisterSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetConfirmSerializer,
+)
+from .services import set_password_and_revoke_tokens
 from apps.accounts.permissions import IsAdminOnly
 from .throttles import (
     VerificationEmailRateThrottle,
@@ -130,13 +139,29 @@ class LoginView(APIView):
             return generic_error
 
         if not user.is_active:
-            log_activity(user=user, action="login_failure", target_object=str(user.id), ip_address=ip, extra={"reason": "unverified"})
+            previously_activated = account_was_activated(user)
+            reason = "inactive" if previously_activated else "unverified"
+            log_activity(user=user, action="login_failure", target_object=str(user.id), ip_address=ip, extra={"reason": reason})
+            if previously_activated:
+                return Response(
+                    {"error": {
+                        "code": "ACCOUNT_INACTIVE",
+                        "message": "Your account is inactive. Please contact an administrator to request reactivation.",
+                        "field": None,
+                    }},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             return Response(
                 {"error": {"code": "EMAIL_NOT_VERIFIED", "message": "Please verify your email before logging in.", "field": None}},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         security.reset()
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
+        if hasattr(user, "profile") and not user.profile.email_verified:
+            user.profile.email_verified = True
+            user.profile.save(update_fields=["email_verified"])
         log_activity(user=user, action="login_success", target_object=str(user.id), ip_address=ip)
 
         stay_logged_in = serializer.validated_data.get("stay_logged_in", False)
@@ -402,12 +427,21 @@ class ResendVerificationEmailView(APIView):
                 target_object=str(user.id),
                 ip_address=ip,
             )
-
             return Response(
                 {
                     "detail": "This account has already been verified."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if account_was_activated(user):
+            return Response(
+                {"error": {
+                    "code": "ACCOUNT_INACTIVE",
+                    "message": "This verified account is inactive. Please contact an administrator to request reactivation.",
+                    "field": None,
+                }},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # Invalidate all previous unused verification tokens.
@@ -522,12 +556,32 @@ class VerifyEmailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        user = verification.user
+        if not user.is_active and account_was_activated(user):
+            log_activity(
+                user=user,
+                action="email_verification_failure",
+                target_object=str(user.id),
+                ip_address=ip,
+                extra={"reason": "account_inactive"},
+            )
+            return Response(
+                {"error": {
+                    "code": "ACCOUNT_INACTIVE",
+                    "message": "Your account is inactive. Please contact an administrator to request reactivation.",
+                    "field": None,
+                }},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         verification.is_used = True
         verification.save(update_fields=["is_used"])
 
-        user = verification.user
         user.is_active = True
-        user.save(update_fields=["is_active"])
+        user.last_login = timezone.now()
+        user.save(update_fields=["is_active", "last_login"])
+        user.profile.email_verified = True
+        user.profile.save(update_fields=["email_verified"])
 
         log_activity(
             user=user,
@@ -639,20 +693,42 @@ class PasswordResetConfirmView(APIView):
             )
 
         user = reset_token.user
-        user.set_password(data["new_password"])
-        user.save()
-
-        reset_token.is_used = True
-        reset_token.save(update_fields=["is_used"])
-
-        for token_obj in OutstandingToken.objects.filter(user=user):
-            BlacklistedToken.objects.get_or_create(token=token_obj)
+        with transaction.atomic():
+            set_password_and_revoke_tokens(user, data["new_password"])
+            reset_token.is_used = True
+            reset_token.save(update_fields=["is_used"])
 
         log_activity(user=user, action="password_reset_completed", target_object=str(user.id), ip_address=ip)
         if user.profile.roles.filter(role=UserRole.RoleChoice.REVIEWER).exists():
             retry_pending_assignments()
 
         return Response({"detail": "Password reset successful. Please log in with your new password."}, status=status.HTTP_200_OK)
+
+
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            set_password_and_revoke_tokens(request.user, data["new_password"])
+
+        log_activity(
+            user=request.user,
+            action="password_change_completed",
+            target_object=str(request.user.id),
+            ip_address=get_client_ip(request),
+        )
+        return Response(
+            {"detail": "Password changed successfully. Please log in again."},
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])
