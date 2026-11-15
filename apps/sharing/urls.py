@@ -3,6 +3,11 @@ from . import views
 
 urlpatterns = [
     path("<uuid:dataset_id>/download/", views.download_dataset, name="download-dataset"),
+    path(
+        "<uuid:dataset_id>/releases/<uuid:release_id>/download/",
+        views.download_dataset_release,
+        name="download-dataset-release",
+    ),
     path("<uuid:dataset_id>/request-share/", views.request_share_access, name="request-share-access"),
     path("<uuid:dataset_id>/share-with/", views.share_with_user, name="share-with-user"),
     path("access-requests/queue/", views.access_request_queue, name="access-request-queue"),

@@ -1,9 +1,10 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 import re
 from .models import UserProfile, BlockedCredential
 from django.utils import timezone
+from .services import validate_new_password
 from apps.metadata.models import Category
 
 
@@ -17,6 +18,26 @@ class LogoutSerializer(serializers.Serializer):
 
 
 User = get_user_model()
+
+
+class InterestCategoryField(serializers.PrimaryKeyRelatedField):
+    default_error_messages = {
+        "unavailable": (
+            "One or more selected research interests are no longer available. "
+            "Please refresh the list and select valid interests."
+        ),
+    }
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("pk_field", serializers.UUIDField())
+        super().__init__(queryset=Category.available_for_interests(), **kwargs)
+
+    def to_internal_value(self, data):
+        category_id = self.pk_field.to_internal_value(data)
+        try:
+            return self.get_queryset().get(pk=category_id)
+        except Category.DoesNotExist:
+            self.fail("unavailable")
 
 
 class ProfileSerializer(serializers.ModelSerializer):
@@ -52,9 +73,8 @@ class ProfileSerializer(serializers.ModelSerializer):
 
 class ExtendedProfileSerializer(serializers.ModelSerializer):
 
-    interests = serializers.PrimaryKeyRelatedField(
+    interests = InterestCategoryField(
         many=True,
-        queryset=Category.objects.filter(origin=Category.Origin.STANDARD),
         required=False,
     )
 
@@ -164,11 +184,10 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate_password(self, value):
-        validate_password(value)
-        if BlockedCredential.is_password_blocked(value):
-            raise serializers.ValidationError(
-                "This password can't be used right now. Please choose a different one."
-            )
+        try:
+            validate_new_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
         return value
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -182,11 +201,32 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     def validate(self, data):
         if data["new_password"] != data["confirm_password"]:
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
-        validate_password(data["new_password"])
-        if BlockedCredential.is_password_blocked(data["new_password"]):
+        try:
+            validate_new_password(data["new_password"])
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": exc.messages}) from exc
+        return data
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = self.context["request"].user
+        if not user.check_password(data["current_password"]):
             raise serializers.ValidationError({
-                "new_password": "This password can't be used right now. Please choose a different one."
+                "current_password": "Current password is incorrect."
             })
+        if data["new_password"] != data["confirm_password"]:
+            raise serializers.ValidationError({
+                "confirm_password": "Passwords do not match."
+            })
+        try:
+            validate_new_password(data["new_password"], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": exc.messages}) from exc
         return data
 
 
@@ -214,4 +254,3 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             "bio",
             "additional_link",
         ]
-

@@ -2,6 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 
 from apps.datasets.models import Dataset
 from .models import Keyword, Metadata, Category,Language, DatasetCharacteristic
@@ -12,6 +13,7 @@ from .services import (
     get_or_create_pending,
     get_or_create_approved_term,
     get_or_create_pending,
+    rank_similar_categories,
 )
 
 
@@ -32,21 +34,35 @@ def _metadata_defaults(dataset):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def attach_metadata(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    dataset = get_object_or_404(
+        Dataset.objects.select_for_update(), id=dataset_id, owner=request.user
+    )
+    if dataset.published_release_id:
+        return Response(
+            {
+                "detail": (
+                    "Metadata for a V2-published dataset must be changed through a proposal "
+                    "or an audited correction endpoint."
+                ),
+                "proposal_endpoint": f"/api/datasets/{dataset.id}/proposals/",
+            },
+            status=409,
+        )
 
     category_id = request.data.get("category_id")
     other_category = (request.data.get("other_category") or "").strip()
     if not category_id and not other_category:
         return Response({"detail": "category_id or other_category is required."}, status=400)
+
+    serializer = MetadataSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
     category = (
         get_object_or_404(Category, id=category_id, status=Category.Status.APPROVED)
         if category_id
         else get_or_create_category_from_dataset_other(other_category, request.user)
     )
-
-    serializer = MetadataSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
     validated = dict(serializer.validated_data)
     validated["category"] = category
     keywords = validated.pop("keywords", None)
@@ -81,10 +97,21 @@ def list_categories(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def suggest_categories(request):
+    query = (request.query_params.get("q") or "").strip()
+    if not query:
+        return Response([])
+
+    categories = Category.objects.filter(
+        status=Category.Status.APPROVED
+    ).only("id", "name")
+    return Response(rank_similar_categories(query, categories))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def list_interest_categories(request):
-    qs = Category.objects.filter(
-        status=Category.Status.APPROVED,
-    ).order_by("name")
+    qs = Category.available_for_interests()
     return Response([{"id": c.id, "name": c.name} for c in qs])
 
 
@@ -98,8 +125,17 @@ def list_languages(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def set_dataset_languages(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    dataset = get_object_or_404(
+        Dataset.objects.select_for_update(), id=dataset_id, owner=request.user
+    )
+    if dataset.published_release_id:
+        return Response(
+            {"detail": "Language changes for V2 datasets must be included in a release proposal.",
+             "proposal_endpoint": f"/api/datasets/{dataset.id}/proposals/"},
+            status=409,
+        )
     language_ids = request.data.getlist("language_ids") if hasattr(request.data, "getlist") else request.data.get("language_ids", [])
     other_languages = request.data.getlist("other_languages") if hasattr(request.data, "getlist") else request.data.get("other_languages", [])
 
@@ -129,15 +165,22 @@ def list_characteristics(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def set_dataset_characteristics(request, dataset_id):
     dataset = get_object_or_404(
-        Dataset,
+        Dataset.objects.select_for_update(),
         id=dataset_id,
         owner=request.user,
     )
+    if dataset.published_release_id:
+        return Response(
+            {"detail": "Characteristic changes for V2 datasets must be included in a release proposal.",
+             "proposal_endpoint": f"/api/datasets/{dataset.id}/proposals/"},
+            status=409,
+        )
 
     metadata = get_object_or_404(
-        Metadata,
+        Metadata.objects.select_for_update(),
         dataset=dataset,
     )
 
