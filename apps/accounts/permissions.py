@@ -1,6 +1,7 @@
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.permissions import BasePermission
 
+from apps.accounts.models import UserRole
 from apps.access_control.services import has_permission
 
 
@@ -63,7 +64,10 @@ class CanUploadDatasets(BasePermission):
         if not profile.is_profile_complete():
             self.message = "Complete your profile before uploading datasets."
             return False
-        if profile.can_upload_datasets or has_permission(request.user, "dataset.create"):
+        # Upload authority is now represented by the scoped permission system.
+        # The profile flag is retained for historical data and is migrated by
+        # access_control.0006; it must not grant access on its own anymore.
+        if has_permission(request.user, "dataset.create"):
             return True
         self.message = "You do not currently have permission to upload datasets."
         return False
@@ -73,6 +77,17 @@ class IsAdminOnly(HasPlatformPermission):
     """V2 cutover: platform user managers replace legacy admin role gates."""
     code = "user.manage"
     message = "Admin permission required."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser or request.user.is_staff:
+            return True
+        if UserRole.objects.filter(
+            profile__user=request.user, role=UserRole.RoleChoice.ADMIN
+        ).exists():
+            return True
+        return super().has_permission(request, view)
 
 
 class IsReviewerOrAdmin(HasAnyPlatformPermission):

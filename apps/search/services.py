@@ -217,6 +217,35 @@ def build_dataset_search_queryset(*, query, user=None, category_id=None,
 DISCOVERY_MIN_PERSONALIZED_RESULTS = 5
 
 
+def _dataset_recommendation_score(dataset):
+    age_days = (timezone.now() - dataset.created_at).total_seconds() / 86400 if dataset.created_at else 0
+    if age_days <= 7:
+        recent_bonus = 60
+    elif age_days <= 30:
+        recent_bonus = 20
+    else:
+        recent_bonus = 0
+
+    return (
+        (dataset.download_count or 0) * 5
+        + (dataset.view_count or 0) * 2
+        + recent_bonus
+    )
+
+
+def _rank_recommendation_candidates(datasets):
+    return sorted(
+        datasets,
+        key=lambda dataset: (
+            _dataset_recommendation_score(dataset),
+            dataset.download_count or 0,
+            dataset.view_count or 0,
+            dataset.created_at,
+        ),
+        reverse=True,
+    )
+
+
 def _file_stats_by_dataset(datasets):
     """One query for file count + total size across all given datasets,
     instead of querying per-dataset (N+1)."""
@@ -243,55 +272,37 @@ def build_discovery_feed(user, limit=20):
     interest_category_ids = list(profile.interests.values_list("id", flat=True)) if profile else []
 
     visible = visible_datasets_queryset().exclude(owner=user)
-    trending = visible.annotate(popularity=F("view_count") + F("download_count")).order_by("-popularity", "-created_at")
+    trending = _rank_recommendation_candidates(list(visible))
 
     if not interest_category_ids:
-        results = list(trending[:limit])
+        results = trending[:limit]
         file_stats = _file_stats_by_dataset(results)
         return {"feed_type": "discovery", "results": [_serialize_feed_item(d, file_stats) for d in results]}
 
-    personalized = visible.filter(metadata__category_id__in=interest_category_ids).order_by("-created_at")
-    personalized_count = personalized.count()
+    personalized = _rank_recommendation_candidates(list(visible.filter(metadata__category_id__in=interest_category_ids)))
+    personalized_count = len(personalized)
 
     if personalized_count < DISCOVERY_MIN_PERSONALIZED_RESULTS:
         seen_ids = set()
         blended = []
-        for d in list(personalized[:limit]) + list(trending[:limit]):
+        for d in personalized + trending:
             if d.id not in seen_ids:
                 seen_ids.add(d.id)
                 blended.append(d)
 
-#         return {
-#             "feed_type": "blended_fallback",
-#             "results": [
-#                 {"id": d.id, "title": d.title, "view_count": d.view_count,
-#                  "download_count": d.download_count, "created_at": d.created_at}
-#                 for d in blended[:limit]
-#             ],
-#         }
-# =======
         results = blended[:limit]
         file_stats = _file_stats_by_dataset(results)
         return {"feed_type": "blended_fallback", "results": [_serialize_feed_item(d, file_stats) for d in results]}
 
-
     personalized_share = limit if len(interest_category_ids) >= 3 else max(1, limit // 2)
-    personalized_slice = list(personalized[:personalized_share])
-    discovery_fill = [d for d in trending[:limit] if d.id not in {p.id for p in personalized_slice}]
+    personalized_slice = personalized[:personalized_share]
+    discovery_fill = [d for d in trending if d.id not in {p.id for p in personalized_slice}]
     combined = personalized_slice + discovery_fill[: limit - len(personalized_slice)]
     file_stats = _file_stats_by_dataset(combined)
 
     return {
         "feed_type": "personalized" if len(interest_category_ids) >= 3 else "partially_personalized",
-
-#         "results": [
-#             {"id": d.id, "title": d.title, "view_count": d.view_count,
-#              "download_count": d.download_count, "created_at": d.created_at}
-#             for d in combined
-#         ],
-
         "results": [_serialize_feed_item(d, file_stats) for d in combined],
-
     }
 
 

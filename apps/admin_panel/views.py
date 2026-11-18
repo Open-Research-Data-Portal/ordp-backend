@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
+from django.db import transaction
 from apps.accounts.permissions import IsReviewerOrAdmin, IsAdminOnly, IsReviewerOnly
 from apps.access_control.services import has_permission
 from apps.datasets.models import Dataset, PendingContentUpdate

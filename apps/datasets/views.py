@@ -8,7 +8,10 @@ from django.http import Http404
 
 from apps.accounts.models import ActivityLog
 from apps.datasets.services.file_validation import FileTypeMismatchError
-from .models import Bookmark, Contributor, DatasetVersion, DatasetWatcher, UploadSession
+from .models import (
+    Bookmark, Contributor, DatasetVersion, DatasetWatcher, UploadSession,
+    ResourceIdentifier,
+)
 from django.shortcuts import get_object_or_404
 from apps.accounts.permissions import CanUploadDatasets
 from apps.notifications.services import notify
@@ -16,6 +19,7 @@ from apps.notifications.models import Notification
 from .services.diffing import compute_diff
 from .serializers import PrepareUploadSerializer
 from django.db import models as django_models
+from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -31,7 +35,7 @@ from .services.storage import (
     upload_fileobj,
     download_to_file,
 )
-from .permissions import IsDatasetOwner, IsDatasetOwnerOrScopedDelete
+from .permissions import IsDatasetOwner, IsDatasetOwnerOrScopedDelete, can_access_private_dataset
 from apps.access_control.services import has_permission as has_scoped_permission
 from .models import PendingContentUpdate
 from .services.revisions import bump_version_and_notify, route_change, request_revision_permission as create_request
@@ -43,6 +47,7 @@ from .serializers import (
     InitUploadSerializer,
     TermsAcceptanceSerializer,
     DatasetVersionSerializer,
+    ResourceIdentifierSerializer,
 )
 
 from apps.metadata.serializers import MetadataSerializer
@@ -935,10 +940,33 @@ def _can_view_dataset_versions(user, dataset):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def dataset_identifiers(request, dataset_id):
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if dataset.visibility == Dataset.Visibility.PRIVATE:
+        allowed = can_access_private_dataset(request.user, dataset)
+    else:
+        from apps.sharing.services import user_can_access_dataset
+        allowed = user_can_access_dataset(request.user, dataset)
+    if not allowed:
+        return Response({"detail": "Not found."}, status=404)
+    identifiers = ResourceIdentifier.objects.filter(
+        Q(dataset=dataset) | Q(release__dataset=dataset)
+    ).select_related("release").order_by("role", "created_at")
+    return Response(ResourceIdentifierSerializer(identifiers, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def dataset_versions(request, dataset_id):
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
     if not _can_view_dataset_versions(request.user, dataset):
         return Response({"detail": "You don't have permission to view versions for this dataset."}, status=403)
+    if dataset.releases.exists():
+        from .v2_views import _release_payload
+        releases = dataset.releases.filter(
+            status__in=["published", "withdrawn"]
+        ).order_by("-major", "-minor", "-patch")
+        return Response([_release_payload(release, include_snapshot=False) for release in releases])
     versions = dataset.versions.select_related("changed_by", "changed_by__profile")
     return Response(DatasetVersionSerializer(versions, many=True).data)
 
@@ -960,6 +988,42 @@ def download_dataset_file(request, dataset_id, file_id):
     if not allowed:
         return Response({"detail": "You don't have permission to download this file."}, status=403)
     return Response({"download_url": presigned_download_url(dataset_file.file_key)})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def view_dataset_file(request, dataset_id, file_id):
+    """Open one file through the dedicated dataset_file.view permission."""
+    from .models import DatasetFile
+    from .services.preview import preview_tabular_file, CSV_FILE_TYPES, JSON_FILE_TYPES
+
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    dataset_file = get_object_or_404(DatasetFile, id=file_id, dataset=dataset)
+    allowed = (
+        dataset.is_owned_by(request.user)
+        or has_scoped_permission(request.user, "dataset_file.view", "dataset_file", dataset_file.id)
+        or has_scoped_permission(request.user, "user.manage")
+        or (
+            dataset.visibility == Dataset.Visibility.PUBLIC
+            and dataset.status == Dataset.Status.PUBLISHED
+        )
+    )
+    if not allowed:
+        return Response({"detail": "You don't have permission to view this file."}, status=403)
+
+    file_type = (dataset_file.file_type or "").lower()
+    response = {
+        "id": str(dataset_file.id),
+        "filename": dataset_file.original_filename,
+        "file_type": dataset_file.file_type,
+        "file_size": dataset_file.file_size,
+        "preview": None,
+    }
+    if file_type in (CSV_FILE_TYPES | JSON_FILE_TYPES):
+        response["preview"] = preview_tabular_file(dataset_file)
+    elif file_type in {"jpg", "jpeg", "png", "gif", "webp", "svg"}:
+        response["file_url"] = presigned_download_url(dataset_file.file_key)
+    return Response(response)
 
 
 @api_view(["POST"])
@@ -1055,7 +1119,25 @@ def update_dataset(request, dataset_id):
     """Owner / dataset.edit can change title/visibility. Contributors with
     edit rights, dataset.edit, or dataset.metadata.edit can change descriptive
     metadata. Content uploads also accept dataset.upload / dataset.version.create."""
-    dataset = get_object_or_404(Dataset, id=dataset_id)
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if dataset.published_release_id:
+        semantic_fields = {
+            "title", "category_id", "geographic_coverage", "temporal_coverage",
+            "instances_represent", "collection_method", "data_preprocessing",
+            "language_ids", "characteristic_ids", "upload_session_id",
+        }
+        blocked = sorted(semantic_fields.intersection(request.data.keys()))
+        if blocked:
+            return Response(
+                {
+                    "detail": (
+                        "Published V2 content cannot be changed through the direct update endpoint. "
+                        "Create a dataset proposal and publish a new immutable release instead."
+                    ),
+                    "proposal_required_fields": blocked,
+                },
+                status=409,
+            )
     is_owner = dataset.is_owned_by(request.user)
     has_explicit_edit = has_scoped_permission(request.user, "dataset.edit", "dataset", dataset.id)
     has_metadata_edit = has_scoped_permission(request.user, "dataset.metadata.edit", "dataset", dataset.id)

@@ -1,8 +1,12 @@
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework import status
 
 from apps.datasets.factories import make_user
 from apps.metadata.models import Category,Metadata
+from apps.search.services import build_discovery_feed
 from .models import Dataset, Contributor, DatasetVersion
 
 
@@ -116,6 +120,85 @@ class FeedTests(APITestCase):
         resp = self.client.get("/api/datasets/dashboard/feed/")
         titles = {d["title"] for d in resp.data}
         self.assertNotIn("My Own Ag DS", titles)
+
+    def test_feed_only_includes_datasets_created_within_last_30_days(self):
+        researcher = make_user("feedresearcher3", "feedresearcher3@aastu.edu.et", role="researcher")
+        researcher.profile.interests.set([self.category])
+        other_owner = make_user("feedowner2", "feedowner2@aastu.edu.et", role="researcher")
+
+        recent_ds = self._dataset_with_category(other_owner, "Recent Ag DS", self.category)
+        old_ds = self._dataset_with_category(other_owner, "Old Ag DS", self.category)
+        Dataset.objects.filter(id=recent_ds.id).update(created_at=timezone.now() - timedelta(days=5))
+        Dataset.objects.filter(id=old_ds.id).update(created_at=timezone.now() - timedelta(days=31))
+
+        self.client.force_authenticate(researcher)
+        resp = self.client.get("/api/datasets/dashboard/feed/")
+        titles = {d["title"] for d in resp.data}
+        self.assertIn("Recent Ag DS", titles)
+        self.assertNotIn("Old Ag DS", titles)
+
+    def test_recent_feed_prioritizes_interest_matches_within_30_days(self):
+        researcher = make_user("recentfeed", "recentfeed@aastu.edu.et", role="researcher")
+        researcher.profile.interests.set([self.category])
+        other_owner = make_user("recentowner", "recentowner@aastu.edu.et", role="researcher")
+
+        matching_low = self._dataset_with_category(other_owner, "Recent Matching Low", self.category)
+        matching_high = self._dataset_with_category(other_owner, "Recent Matching High", self.category)
+        other = self._dataset_with_category(other_owner, "Recent Other DS", self.other_category)
+
+        Dataset.objects.filter(id=matching_low.id).update(
+            created_at=timezone.now() - timedelta(days=3),
+            download_count=20,
+            view_count=50,
+        )
+        Dataset.objects.filter(id=matching_high.id).update(
+            created_at=timezone.now() - timedelta(days=10),
+            download_count=200,
+            view_count=500,
+        )
+        Dataset.objects.filter(id=other.id).update(
+            created_at=timezone.now() - timedelta(days=5),
+            download_count=1000,
+            view_count=5000,
+        )
+
+        self.client.force_authenticate(researcher)
+        resp = self.client.get("/api/datasets/dashboard/feed/")
+        titles = [d["title"] for d in resp.data]
+
+        self.assertIn("Recent Matching High", titles)
+        self.assertIn("Recent Matching Low", titles)
+        self.assertNotIn("Recent Other DS", titles)
+        self.assertLess(titles.index("Recent Matching High"), titles.index("Recent Matching Low"))
+
+    def test_discovery_feed_ranks_interest_matches_by_download_then_view(self):
+        researcher = make_user("discoverer", "discoverer@aastu.edu.et", role="researcher")
+        researcher.profile.interests.set([self.category])
+        owner = make_user("discoverowner", "discoverowner@aastu.edu.et", role="researcher")
+
+        interest_datasets = [
+            self._dataset_with_category(owner, "Ag Dataset 1", self.category),
+            self._dataset_with_category(owner, "Ag Dataset 2", self.category),
+            self._dataset_with_category(owner, "Ag Dataset 3", self.category),
+            self._dataset_with_category(owner, "Low Demand Ag", self.category),
+            self._dataset_with_category(owner, "High Demand Ag", self.category),
+        ]
+        unrelated = self._dataset_with_category(owner, "Health DS", self.other_category)
+
+        low = [d for d in interest_datasets if d.title == "Low Demand Ag"][0]
+        high = [d for d in interest_datasets if d.title == "High Demand Ag"][0]
+
+        Dataset.objects.filter(id=low.id).update(download_count=10, view_count=100)
+        Dataset.objects.filter(id=high.id).update(download_count=200, view_count=50)
+        Dataset.objects.filter(id=unrelated.id).update(download_count=999, view_count=999)
+
+        feed = build_discovery_feed(researcher, limit=10)
+        titles = [item["title"] for item in feed["results"]]
+
+        self.assertIn("High Demand Ag", titles)
+        self.assertIn("Low Demand Ag", titles)
+        self.assertGreater(titles.index("Health DS"), 4)
+        self.assertLess(titles.index("High Demand Ag"), titles.index("Low Demand Ag"))
 
 
 class MyContributionsTests(APITestCase):

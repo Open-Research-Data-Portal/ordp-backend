@@ -21,8 +21,10 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
     SpectacularRedocView,
 )
+from apps.datasets.pid_views import resolve_pid
 
 urlpatterns = [
+    path("id/<str:pid>/", resolve_pid, name="ordp-public-pid-resolver"),
     path("admin/", admin.site.urls),
     path("api/accounts/", include("apps.accounts.urls")),
     path("api/notifications/", include("apps.notifications.urls")),

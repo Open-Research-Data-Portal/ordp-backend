@@ -1,11 +1,37 @@
 from rest_framework.test import APITestCase
 from rest_framework import status
+from unittest.mock import patch
+from django.utils import timezone
 
 from apps.datasets.factories import make_user
-from apps.datasets.models import Dataset
+from apps.datasets.models import Dataset, DatasetFile, StoredObject
 from apps.metadata.models import Category, Metadata, Language
 from apps.access_control.models import UserPermissionGrant
 from .models import DatasetReviewerAssignment
+from apps.access_control.models import UserPermissionGrant
+
+
+def make_reviewer(username, email):
+    reviewer = make_user(username, email, role="reviewer")
+    for code in ("dataset.approve", "dataset.publish", "access_request.review", "access_request.approve", "access_request.reject"):
+        UserPermissionGrant.objects.get_or_create(
+            user=reviewer,
+            permission_id=code,
+            resource_type="platform",
+            granted_by=reviewer,
+        )
+    return reviewer
+
+
+def make_researcher(username, email):
+    researcher = make_user(username, email, role="researcher")
+    UserPermissionGrant.objects.get_or_create(
+        user=researcher,
+        permission_id="dataset.create",
+        resource_type="platform",
+        granted_by=researcher,
+    )
+    return researcher
 
 
 def make_submittable_dataset(owner, title='Workflow DS'):
@@ -33,15 +59,33 @@ def make_submittable_dataset(owner, title='Workflow DS'):
 
     metadata.languages.add(language)
 
+    stored_object = StoredObject.objects.create(
+        dataset=dataset,
+        storage_key=f"objects/{dataset.id}/workflow-test.csv",
+        original_filename="workflow-test.csv",
+        file_type="csv",
+        file_size=4,
+        checksum_sha256="a" * 64,
+        verified_at=timezone.now(),
+    )
+    DatasetFile.objects.create(
+        dataset=dataset,
+        file_key=stored_object.storage_key,
+        original_filename=stored_object.original_filename,
+        file_type="csv",
+        file_size=4,
+        checksum="a" * 64,
+        stored_object=stored_object,
+    )
+
     return dataset
 
 
 def assign_three_reviewers(dataset, prefix):
     reviewers = [
-        make_user(
+        make_reviewer(
             f'{prefix}reviewer{i}',
             f'{prefix}reviewer{i}@aastu.edu.et',
-            role='reviewer',
         )
         for i in range(3)
     ]
@@ -63,6 +107,13 @@ def assign_three_reviewers(dataset, prefix):
 
 
 class ModerationDecisionTests(APITestCase):
+    def setUp(self):
+        patcher = patch(
+            "apps.datasets.services.publication.verify_stored_object_in_storage"
+        )
+        self.verify_storage = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_first_approval_keeps_dataset_pending(self):
         owner = make_user(
             'pwowner',
@@ -139,6 +190,8 @@ class ModerationDecisionTests(APITestCase):
             dataset.moderation_decisions.count(),
             2,
         )
+        self.assertIsNotNone(dataset.published_release_id)
+        self.assertEqual(dataset.published_release.version, "1.0.0")
 
     def test_changes_requested_sets_status_and_requires_reason(self):
         owner = make_user(
@@ -269,10 +322,9 @@ class ModerationDecisionTests(APITestCase):
 
 class ResubmissionAfterChangesRequestedTests(APITestCase):
     def test_owner_can_resubmit_after_changes_requested(self):
-        owner = make_user(
+        owner = make_researcher(
             'resowner',
             'resowner@aastu.edu.et',
-            role='researcher',
         )
 
         dataset = make_submittable_dataset(owner)
@@ -344,10 +396,9 @@ class ResubmissionAfterChangesRequestedTests(APITestCase):
         )
 
     def test_cannot_resubmit_a_published_dataset(self):
-        owner = make_user(
+        owner = make_researcher(
             'psowner',
             'psowner@aastu.edu.et',
-            role='researcher',
         )
 
         dataset = make_submittable_dataset(owner)
@@ -368,10 +419,9 @@ class ResubmissionAfterChangesRequestedTests(APITestCase):
         )
 
     def test_cannot_submit_an_already_pending_dataset(self):
-        owner = make_user(
+        owner = make_researcher(
             'apowner',
             'apowner@aastu.edu.et',
-            role='researcher',
         )
 
         dataset = make_submittable_dataset(owner)
