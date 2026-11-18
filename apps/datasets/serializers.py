@@ -9,6 +9,30 @@ from .models import Dataset, DatasetFile, Contributor, PendingContentUpdate, Dat
 
 from apps.datasets.services.preview import CSV_FILE_TYPES, JSON_FILE_TYPES, preview_tabular_file
 
+IMAGE_FILE_TYPES = {"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp"}
+
+
+def _request_user(serializer):
+    request = serializer.context.get("request")
+    return getattr(request, "user", None) if request else None
+
+
+def file_preview_allowed(file_obj, user):
+    """Public published files stay open. Other files need owner or dataset_file.view."""
+    dataset = file_obj.dataset
+    if (
+        dataset.status == Dataset.Status.PUBLISHED
+        and dataset.visibility == Dataset.Visibility.PUBLIC
+        and not dataset.is_archived
+    ):
+        return True
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if dataset.is_owned_by(user):
+        return True
+    from apps.access_control.services import has_permission
+    return has_permission(user, "dataset_file.view", "dataset_file", file_obj.id)
+
 RECEIVED_DOWNLOAD_ACTIONS = ["owner_download", "contributor_download", "dataset_download", "reviewer_download"]
 SERIES_WINDOW_DAYS = 30
 
@@ -51,16 +75,33 @@ def _delta_pct(dataset_id, actions, window_days=7):
 class DatasetFileSerializer(serializers.ModelSerializer):
     columns = serializers.JSONField(source="feature_names", read_only=True)
     preview_rows = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
+    can_preview = serializers.SerializerMethodField()
 
     class Meta:
         model = DatasetFile
-        fields = ["id", "file_type", "file_size", "checksum", "uploaded_at", "columns", "preview_rows"]
+        fields = [
+            "id", "original_filename", "file_type", "file_size", "checksum", "uploaded_at",
+            "columns", "preview_rows", "preview_url", "can_preview",
+        ]
+
+    def get_can_preview(self, obj):
+        return file_preview_allowed(obj, _request_user(self))
 
     def get_preview_rows(self, obj):
+        if not self.get_can_preview(obj):
+            return None
         file_type = (obj.file_type or "").lower()
         if file_type not in (CSV_FILE_TYPES | JSON_FILE_TYPES):
             return None
         return preview_tabular_file(obj)
+
+    def get_preview_url(self, obj):
+        if not self.get_can_preview(obj):
+            return None
+        if (obj.file_type or "").lower() not in IMAGE_FILE_TYPES:
+            return None
+        return presigned_download_url(obj.file_key)
 
 
 class ContributorSerializer(serializers.ModelSerializer):
@@ -92,6 +133,8 @@ class DatasetSerializer(serializers.ModelSerializer):
     owner_name = serializers.CharField(source="owner.profile.full_name", read_only=True)
     metadata = serializers.SerializerMethodField()
     data_preview = serializers.SerializerMethodField()
+    approve_votes = serializers.SerializerMethodField()
+    ready_to_publish = serializers.SerializerMethodField()
     views_delta_pct = serializers.SerializerMethodField()
     downloads_delta_pct = serializers.SerializerMethodField()
     views_series = serializers.SerializerMethodField()
@@ -127,6 +170,8 @@ class DatasetSerializer(serializers.ModelSerializer):
             "characteristics",
             "metadata",
             "data_preview",
+            "approve_votes",
+            "ready_to_publish",
 
             # Analytics
             "views_delta_pct",
@@ -152,6 +197,27 @@ class DatasetSerializer(serializers.ModelSerializer):
             from apps.metadata.serializers import MetadataSerializer
             return MetadataSerializer(obj.metadata).data
         return None
+    def _may_see_moderation(self, obj):
+        user = _request_user(self)
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        from apps.access_control.services import has_permission
+        return (
+            has_permission(user, "dataset.publish")
+            or has_permission(user, "dataset.approve")
+            or has_permission(user, "user.manage")
+        )
+
+    def get_approve_votes(self, obj):
+        if not self._may_see_moderation(obj):
+            return None
+        return obj.moderation_decisions.filter(decision="approved").count()
+
+    def get_ready_to_publish(self, obj):
+        if obj.status != Dataset.Status.PENDING or not self._may_see_moderation(obj):
+            return False
+        return obj.moderation_decisions.filter(decision="approved").count() >= 2
+
     def get_data_preview(self, obj):
         files = list(obj.files.all())
         if not files:
@@ -162,6 +228,8 @@ class DatasetSerializer(serializers.ModelSerializer):
             None,
         )
         if tabular_file:
+            if not file_preview_allowed(tabular_file, _request_user(self)):
+                return {"kind": "none", "available": False, "reason": "You do not have permission to view this file."}
             return {"kind": "tabular", **preview_tabular_file(tabular_file)}
 
         return {"kind": "unsupported", "available": False, "reason": "No preview available for this file type yet."}

@@ -23,6 +23,7 @@ urlpatterns = [
     path("requests/<uuid:request_id>/", views.access_request_detail),
     path("requests/<uuid:request_id>/review/", views.access_request_review),
     path("resources/", views.discover_resources),
+    path("dataset-files/", views.dataset_files),
     path("resources/<str:resource_type>/<uuid:resource_id>/", views.resource_permissions),
     path("resources/<str:resource_type>/<uuid:resource_id>/matrix/", views.update_resource_matrix),
     path("audit/", views.audit_history),

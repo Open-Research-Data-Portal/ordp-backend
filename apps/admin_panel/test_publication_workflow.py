@@ -4,6 +4,7 @@ from rest_framework import status
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset
 from apps.metadata.models import Category, Metadata, Language
+from apps.access_control.models import UserPermissionGrant
 from .models import DatasetReviewerAssignment
 
 
@@ -46,6 +47,10 @@ def assign_three_reviewers(dataset, prefix):
     ]
 
     for reviewer in reviewers:
+        UserPermissionGrant.objects.create(
+            user=reviewer, permission_id="dataset.approve",
+            resource_type="platform", granted_by=reviewer,
+        )
         DatasetReviewerAssignment.objects.create(
             dataset=dataset,
             reviewer=reviewer,
@@ -126,8 +131,9 @@ class ModerationDecisionTests(APITestCase):
 
         self.assertEqual(
             dataset.status,
-            Dataset.Status.PUBLISHED,
+            Dataset.Status.PENDING,
         )
+        self.assertEqual(resp.data["status"], "ready_to_publish")
 
         self.assertEqual(
             dataset.moderation_decisions.count(),

@@ -6,6 +6,7 @@ from apps.metadata.models import Category, Metadata
 from apps.datasets.models import Dataset
 from apps.datasets.factories import make_user
 from apps.notifications.models import Notification
+from apps.access_control.models import UserPermissionGrant
 from .models import DatasetReviewerAssignment
 
 
@@ -56,6 +57,10 @@ class ModerationTests(APITestCase):
             DatasetReviewerAssignment.objects.create(
                 dataset=self.dataset,
                 reviewer=reviewer,
+            )
+            UserPermissionGrant.objects.create(
+                user=reviewer, permission_id="dataset.approve",
+                resource_type="platform", granted_by=reviewer,
             )
 
         self.dataset.assigned_reviewer = self.reviewers[0]
@@ -140,8 +145,19 @@ class ModerationTests(APITestCase):
 
         self.assertEqual(
             self.dataset.status,
-            Dataset.Status.PUBLISHED,
+            Dataset.Status.PENDING,
         )
+        self.assertEqual(resp.data["status"], "ready_to_publish")
+
+        UserPermissionGrant.objects.create(
+            user=self.reviewers[0], permission_id="dataset.publish",
+            resource_type="platform", granted_by=self.reviewers[0],
+        )
+        self.client.force_authenticate(self.reviewers[0])
+        published = self.client.post(f"/api/admin-panel/{self.dataset.id}/publish/")
+        self.assertEqual(published.status_code, status.HTTP_200_OK)
+        self.dataset.refresh_from_db()
+        self.assertEqual(self.dataset.status, Dataset.Status.PUBLISHED)
 
         self.assertTrue(
             Notification.objects.filter(

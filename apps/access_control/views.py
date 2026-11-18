@@ -9,7 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
-from apps.datasets.models import Dataset, DatasetCollection, ResearchProject
+from apps.datasets.models import Dataset, DatasetCollection, DatasetFile, ResearchProject
 from apps.accounts.models import ActivityLog
 from apps.notifications.models import Notification
 from apps.notifications.services import notify
@@ -74,8 +74,25 @@ def my_resources(request):
     ]
     by_dataset = {}
     for row in grants:
-        entry = by_dataset.setdefault(row["resource_id"], {})
-        entry[row["code"]] = row["sources"]
+        entry = by_dataset.setdefault(row["resource_id"], {"codes": {}, "files": {}})
+        entry["codes"][row["code"]] = row["sources"]
+    file_grants = [
+        row for row in effective_permissions(request.user)
+        if row["resource_type"] == "dataset_file" and row["resource_id"]
+    ]
+    files = DatasetFile.objects.filter(id__in=[row["resource_id"] for row in file_grants]).select_related("dataset")
+    files_by_id = {str(dataset_file.id): dataset_file for dataset_file in files}
+    for row in file_grants:
+        dataset_file = files_by_id.get(row["resource_id"])
+        if not dataset_file or not dataset_file.dataset.is_active:
+            continue
+        entry = by_dataset.setdefault(str(dataset_file.dataset_id), {"codes": {}, "files": {}})
+        file_entry = entry["files"].setdefault(str(dataset_file.id), {
+            "id": str(dataset_file.id),
+            "name": dataset_file.original_filename or dataset_file.file_type or "File",
+            "permissions": [],
+        })
+        file_entry["permissions"].append(row["code"])
     datasets = Dataset.objects.filter(id__in=by_dataset, is_active=True).order_by("title")
     return Response([
         {
@@ -83,11 +100,12 @@ def my_resources(request):
             "title": dataset.title,
             "status": dataset.status,
             "visibility": dataset.visibility,
-            "permissions": sorted(by_dataset[str(dataset.id)]),
+            "permissions": sorted(by_dataset[str(dataset.id)]["codes"]),
             "permission_details": [
                 {"code": code, "sources": sources}
-                for code, sources in sorted(by_dataset[str(dataset.id)].items())
+                for code, sources in sorted(by_dataset[str(dataset.id)]["codes"].items())
             ],
+            "files": list(by_dataset[str(dataset.id)]["files"].values()),
         }
         for dataset in datasets
     ])
@@ -453,10 +471,39 @@ def access_request_review(request, request_id):
         return denied()
     except ValueError as exc:
         return Response({"detail": str(exc)}, status=400)
-    notify(obj.requester, Notification.NotificationType.SYSTEM_ANNOUNCEMENT,
-           f'Your permission request is {obj.get_status_display().lower()}. {obj.review_comment}'.strip(),
-           link_path=f"/access-management/requests/{obj.id}")
     return Response(AccessRequestSerializer(obj).data)
+
+
+RESOURCE_MODELS = {
+    "dataset": Dataset,
+    "dataset_file": DatasetFile,
+    "project": ResearchProject,
+    "collection": DatasetCollection,
+}
+
+
+def _resource_title(obj, resource_type):
+    if resource_type == "dataset":
+        return obj.title
+    if resource_type == "dataset_file":
+        return obj.original_filename or obj.file_type or "File"
+    return obj.name
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def dataset_files(request):
+    if not has_permission(request.user, "user.view"):
+        return denied()
+    dataset = get_object_or_404(Dataset, pk=request.query_params.get("dataset"))
+    return Response([
+        {
+            "id": str(dataset_file.id),
+            "name": dataset_file.original_filename or dataset_file.file_type or "File",
+            "dataset_id": str(dataset.id),
+        }
+        for dataset_file in dataset.files.all()
+    ])
 
 
 @api_view(["GET"])
@@ -464,23 +511,29 @@ def access_request_review(request, request_id):
 def resource_permissions(request, resource_type, resource_id):
     if not has_permission(request.user, "user.view"):
         return denied()
-    if resource_type != "dataset":
-        return Response({"detail": "Only dataset resources are available here."}, status=400)
-    dataset = get_object_or_404(Dataset, pk=resource_id)
+    model = RESOURCE_MODELS.get(resource_type)
+    if not model:
+        return Response({"detail": "This resource type cannot be managed here."}, status=400)
+    resource = get_object_or_404(model, pk=resource_id)
     active = Q(revoked_at__isnull=True) & (Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()))
-    direct = UserPermissionGrant.objects.filter(active, resource_type="dataset", resource_id=dataset.id)
-    groups = GroupPermissionGrant.objects.filter(active, resource_type="dataset", resource_id=dataset.id, group__archived_at__isnull=True)
-    return Response({"resource": {"id": str(dataset.id), "title": dataset.title},
-                     "users": [{"user_id": g.user_id, **grant_data(g)} for g in direct],
-                     "groups": [{"group_id": str(g.group_id), **grant_data(g)} for g in groups]})
+    direct = UserPermissionGrant.objects.filter(active, resource_type=resource_type, resource_id=resource.id)
+    groups = GroupPermissionGrant.objects.filter(
+        active, resource_type=resource_type, resource_id=resource.id, group__archived_at__isnull=True,
+    )
+    return Response({
+        "resource": {"id": str(resource.id), "title": _resource_title(resource, resource_type), "type": resource_type},
+        "users": [{"user_id": g.user_id, **grant_data(g)} for g in direct],
+        "groups": [{"group_id": str(g.group_id), **grant_data(g)} for g in groups],
+    })
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def update_resource_matrix(request, resource_type, resource_id):
-    if resource_type != "dataset":
-        return Response({"detail": "Only dataset permissions are supported."}, status=400)
-    get_object_or_404(Dataset, pk=resource_id)
+    model = RESOURCE_MODELS.get(resource_type)
+    if not model:
+        return Response({"detail": "This resource type cannot be managed here."}, status=400)
+    get_object_or_404(model, pk=resource_id)
     edits = request.data.get("edits")
     if not isinstance(edits, list) or not edits:
         return Response({"detail": "Provide at least one permission change."}, status=400)
@@ -491,9 +544,9 @@ def update_resource_matrix(request, resource_type, resource_id):
     for edit in edits:
         if not isinstance(edit, dict) or edit.get("type") not in ("user", "group") or not isinstance(edit.get("selected"), bool):
             return Response({"detail": "Invalid matrix change."}, status=400)
-        permission = Permission.objects.filter(code=edit.get("permission"), resource_type="dataset").first()
+        permission = Permission.objects.filter(code=edit.get("permission"), resource_type=resource_type).first()
         if not permission:
-            return Response({"detail": "Unknown dataset permission."}, status=400)
+            return Response({"detail": "Unknown permission for this resource."}, status=400)
         try:
             subject = (User.objects.filter(pk=edit.get("id")).first() if edit["type"] == "user"
                        else Group.objects.filter(pk=edit.get("id"), archived_at__isnull=True).first())
@@ -509,7 +562,7 @@ def update_resource_matrix(request, resource_type, resource_id):
             ensure_can_manage(request.user,
                 "user.permission.grant" if edit["type"] == "user" and edit["selected"] else
                 "user.permission.revoke" if edit["type"] == "user" else "group.permission.manage",
-                permission if edit["selected"] else None, "dataset", resource_id)
+                permission if edit["selected"] else None, resource_type, resource_id)
         except PermissionError:
             return denied()
         prepared.append((edit, subject, permission))
@@ -517,29 +570,29 @@ def update_resource_matrix(request, resource_type, resource_id):
         for edit, subject, permission in prepared:
             if edit["type"] == "user":
                 existing = UserPermissionGrant.objects.filter(user=subject, permission=permission,
-                    resource_type="dataset", resource_id=resource_id, revoked_at__isnull=True).filter(
+                    resource_type=resource_type, resource_id=resource_id, revoked_at__isnull=True).filter(
                         Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())).first()
                 if edit["selected"] and not existing:
-                    grant_to_user(request.user, subject, permission, "dataset", resource_id)
+                    grant_to_user(request.user, subject, permission, resource_type, resource_id)
                 elif not edit["selected"] and existing:
                     revoke_user_grant(request.user, existing)
             else:
                 existing = GroupPermissionGrant.objects.filter(group=subject, permission=permission,
-                    resource_type="dataset", resource_id=resource_id, revoked_at__isnull=True).filter(
+                    resource_type=resource_type, resource_id=resource_id, revoked_at__isnull=True).filter(
                         Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())).first()
                 if edit["selected"] and not existing:
                     GroupPermissionGrant.objects.filter(group=subject, permission=permission,
-                        resource_type="dataset", resource_id=resource_id, revoked_at__isnull=True,
+                        resource_type=resource_type, resource_id=resource_id, revoked_at__isnull=True,
                         expires_at__lte=timezone.now()).update(revoked_at=timezone.now())
                     GroupPermissionGrant.objects.create(group=subject, permission=permission,
-                        resource_type="dataset", resource_id=resource_id, granted_by=request.user)
+                        resource_type=resource_type, resource_id=resource_id, granted_by=request.user)
                     audit(request.user, "group.grant", group=subject, permission=permission,
-                          resource_type="dataset", resource_id=resource_id)
+                          resource_type=resource_type, resource_id=resource_id)
                 elif not edit["selected"] and existing:
                     existing.revoked_at = timezone.now()
                     existing.save(update_fields=["revoked_at"])
                     audit(request.user, "group.revoke", group=subject, permission=permission,
-                          resource_type="dataset", resource_id=resource_id)
+                          resource_type=resource_type, resource_id=resource_id)
     return Response({"updated": len(prepared)})
 
 

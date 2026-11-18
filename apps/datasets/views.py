@@ -159,19 +159,24 @@ def init_existing_draft_upload(request, dataset_id):
     """
 
     dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    explicit_upload = (
+        has_scoped_permission(request.user, "dataset.upload", "dataset", dataset.id)
+        or has_scoped_permission(request.user, "dataset.version.create", "dataset", dataset.id)
+    )
     can_upload = (
         dataset.owner_id == request.user.id
-        or has_scoped_permission(request.user, "dataset.upload", "dataset", dataset.id)
+        or explicit_upload
         or CanUploadDatasets().has_permission(request, None)
     )
     if not can_upload:
         return Response({"detail": "You don't have permission to upload to this dataset."}, status=403)
 
-    # Only editable datasets can start/resume an upload.
+    # The old profile flag only resumes drafts. A dataset.upload or
+    # dataset.version.create grant can start a session on the dataset it names.
     if dataset.status not in (
         Dataset.Status.DRAFT,
         Dataset.Status.CHANGES_REQUESTED,
-    ):
+    ) and not (dataset.owner_id == request.user.id or explicit_upload):
         return Response(
             {
                 "detail": (
@@ -877,7 +882,7 @@ def my_datasets(request):
     qs = qs.distinct()
     return Response(DatasetSerializer(
         apply_ordering(qs, order_by) if order_by else qs.order_by("-created_at"),
-        many=True
+        many=True, context={"request": request},
     ).data)
 
 @api_view(["GET"])
@@ -911,7 +916,7 @@ def dataset_detail(request, dataset_id):
             user=request.user, action="dataset_view", target_object=f"Dataset:{dataset.id}",
             ip_address=request.META.get("REMOTE_ADDR", "unknown"),
         )
-    return Response(DatasetSerializer(dataset).data)
+    return Response(DatasetSerializer(dataset, context={"request": request}).data)
 
 def _can_view_dataset_versions(user, dataset):
     if dataset.is_owned_by(user):
@@ -1170,7 +1175,11 @@ def update_dataset(request, dataset_id):
         )
 
     if wants_upload:
-        current_file = dataset.files.latest("uploaded_at")
+        from .models import DatasetFile
+        try:
+            current_file = dataset.files.latest("uploaded_at")
+        except DatasetFile.DoesNotExist:
+            return Response({"detail": "This dataset has no file to replace yet."}, status=400)
         try:
             new_dataset_file = finalize_upload(
                 dataset_id=dataset_id, upload_session_id=request.data["upload_session_id"],
@@ -1362,7 +1371,7 @@ def my_bookmarks(request):
         .prefetch_related("files", "contributors")
         .order_by("-bookmarked_by__created_at")
     )
-    return Response(DatasetSerializer(qs, many=True).data)
+    return Response(DatasetSerializer(qs, many=True, context={"request": request}).data)
 
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated, IsDatasetOwnerOrScopedDelete])
@@ -1492,4 +1501,4 @@ def archived_datasets(request):
         .prefetch_related("files", "contributors")
         .order_by("-archived_at")
     )
-    return Response(DatasetSerializer(qs, many=True).data)
+    return Response(DatasetSerializer(qs, many=True, context={"request": request}).data)
