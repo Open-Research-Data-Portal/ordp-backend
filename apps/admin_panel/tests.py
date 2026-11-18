@@ -186,6 +186,8 @@ class ModerationTests(APITestCase):
         self.assertEqual(published.status_code, status.HTTP_200_OK)
         self.dataset.refresh_from_db()
         self.assertEqual(self.dataset.status, Dataset.Status.PUBLISHED)
+        self.assertIsNotNone(self.dataset.published_release_id)
+        self.assertEqual(self.dataset.published_release.version, "1.0.0")
 
         self.assertTrue(
             Notification.objects.filter(

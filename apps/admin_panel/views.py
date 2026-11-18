@@ -292,19 +292,30 @@ def publish_dataset(request, dataset_id):
     if approve_votes < 2:
         return Response({"detail": "Two approve votes are required before publishing."}, status=400)
 
-    dataset.status = Dataset.Status.PUBLISHED
-    dataset.save(update_fields=["status"])
-    _resolve_thumbnail_suggestions(dataset)
+    from apps.datasets.services.publication import PublicationError, publish_initial_dataset
     from apps.datasets.services.invitations import dispatch_pending_invitations
-    dispatch_pending_invitations(dataset)
-    notify(
-        user=dataset.owner,
-        notification_type=Notification.NotificationType.DATASET_APPROVED,
-        message=f'Your dataset "{dataset.title}" has been published.',
-        dataset=dataset,
-        link_path=f"/datasets/{dataset.id}",
+
+    try:
+        with transaction.atomic():
+            dataset.status = Dataset.Status.PUBLISHED
+            dataset.save(update_fields=["status"])
+            release = publish_initial_dataset(dataset, published_by=request.user)
+            _resolve_thumbnail_suggestions(dataset)
+            dispatch_pending_invitations(dataset)
+            notify(
+                user=dataset.owner,
+                notification_type=Notification.NotificationType.DATASET_APPROVED,
+                message=f'Your dataset "{dataset.title}" has been published.',
+                dataset=dataset,
+                link_path=f"/datasets/{dataset.id}",
+            )
+    except PublicationError as exc:
+        return Response({"detail": str(exc)}, status=400)
+
+    return Response(
+        {"status": "published", "approve_votes": approve_votes, "version": release.version},
+        status=200,
     )
-    return Response({"status": "published", "approve_votes": approve_votes}, status=200)
 
 
 @api_view(["POST"])

@@ -91,9 +91,9 @@ def assign_three_reviewers(dataset, prefix):
     ]
 
     for reviewer in reviewers:
-        UserPermissionGrant.objects.create(
+        UserPermissionGrant.objects.get_or_create(
             user=reviewer, permission_id="dataset.approve",
-            resource_type="platform", granted_by=reviewer,
+            resource_type="platform", defaults={"granted_by": reviewer},
         )
         DatasetReviewerAssignment.objects.create(
             dataset=dataset,
@@ -190,6 +190,13 @@ class ModerationDecisionTests(APITestCase):
             dataset.moderation_decisions.count(),
             2,
         )
+        self.assertIsNone(dataset.published_release_id)
+
+        self.client.force_authenticate(reviewers[0])
+        published = self.client.post(f"/api/admin-panel/{dataset.id}/publish/")
+        self.assertEqual(published.status_code, status.HTTP_200_OK)
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.status, Dataset.Status.PUBLISHED)
         self.assertIsNotNone(dataset.published_release_id)
         self.assertEqual(dataset.published_release.version, "1.0.0")
 
