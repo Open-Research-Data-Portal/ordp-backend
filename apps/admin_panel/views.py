@@ -60,6 +60,7 @@ def moderation_queue(request):
         ModerationQueueItemSerializer(
             qs.order_by("created_at"),
             many=True,
+            context={"request": request},
         ).data
     )
 @api_view(["GET"])

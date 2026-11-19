@@ -907,7 +907,9 @@ def dataset_detail(request, dataset_id):
         for code in ("dataset.view", "dataset.edit", "dataset.delete", "dataset.download")
     )
 
-    if dataset.visibility == Dataset.Visibility.PRIVATE and not (is_owner or has_scoped_access):
+    if dataset.visibility == Dataset.Visibility.PRIVATE and not (
+        is_owner or has_scoped_access or is_reviewer_or_admin or can_access_private_dataset(user, dataset)
+    ):
         return Response({"detail": "Not found."}, status=404)
 
     if dataset.is_archived and not (is_owner or is_reviewer_or_admin or has_scoped_access):
