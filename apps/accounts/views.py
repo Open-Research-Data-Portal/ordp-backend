@@ -5,6 +5,7 @@ from django.db.models import Q
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
+from drf_spectacular.utils import extend_schema
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -97,6 +98,7 @@ def get_client_ip(request):
 class LoginView(APIView):
     permission_classes = []
 
+    @extend_schema(request=LoginSerializer)
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
