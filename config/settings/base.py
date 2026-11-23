@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "apps.metadata",
     "apps.search",
     "apps.sharing",
+    "apps.ai_integration",
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
@@ -89,17 +90,20 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+db_engine = config("POSTGRES_ENGINE", default="django.db.backends.postgresql")
+db_options = {}
+if "postgresql" in db_engine:
+    db_options["sslmode"] = config("POSTGRES_SSLMODE", default="prefer")
+
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
+        "ENGINE": db_engine,
         "NAME": config("POSTGRES_DB", default="ordp"),
         "USER": config("POSTGRES_USER", default="ordp"),
         "PASSWORD": config("POSTGRES_PASSWORD", default="ordpaastu"),
         "HOST": config("POSTGRES_HOST", default="db"),
         "PORT": config("POSTGRES_PORT", default="5432"),
-        "OPTIONS": {
-            "sslmode": config("POSTGRES_SSLMODE", default="prefer"),
-        },
+        "OPTIONS": db_options,
     }
 }
 
@@ -198,3 +202,6 @@ PASSWORD_RESET_TIMEOUT = 86400  # 24 hours in seconds
 VERSION_BUMP_THRESHOLD_PCT = float(os.environ.get("VERSION_BUMP_THRESHOLD_PCT", 15.0))
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
+ORDP_WORKER_TOKEN = config("ORDP_WORKER_TOKEN", default="changeme-worker-token")
+OBJECT_STORAGE_INTERNAL_URL = config("OBJECT_STORAGE_INTERNAL_URL", default="")
+
