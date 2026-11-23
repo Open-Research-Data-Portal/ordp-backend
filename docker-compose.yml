@@ -23,5 +23,18 @@ services:
     depends_on:
       - db
 
+  ai-worker:
+    build:
+      context: ./ai_worker
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - ORDP_WORKER_TOKEN=${ORDP_WORKER_TOKEN:-changeme-worker-token}
+      - AI_BACKEND_URL=http://django:8000
+      - AI_WORKER_ID=ai-worker-compose
+    depends_on:
+      - django
+
 volumes:
   postgres_data:
