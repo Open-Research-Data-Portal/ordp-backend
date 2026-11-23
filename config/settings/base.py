@@ -90,20 +90,17 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-db_engine = config("POSTGRES_ENGINE", default="django.db.backends.postgresql")
-db_options = {}
-if "postgresql" in db_engine:
-    db_options["sslmode"] = config("POSTGRES_SSLMODE", default="prefer")
-
 DATABASES = {
     "default": {
-        "ENGINE": db_engine,
+        "ENGINE": "django.db.backends.postgresql",
         "NAME": config("POSTGRES_DB", default="ordp"),
         "USER": config("POSTGRES_USER", default="ordp"),
         "PASSWORD": config("POSTGRES_PASSWORD", default="ordpaastu"),
-        "HOST": config("POSTGRES_HOST", default="db"),
+        "HOST": config("POSTGRES_HOST", default="localhost"),
         "PORT": config("POSTGRES_PORT", default="5432"),
-        "OPTIONS": db_options,
+        "OPTIONS": {
+            "sslmode": config("POSTGRES_SSLMODE", default="prefer"),
+        },
     }
 }
 
