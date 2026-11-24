@@ -74,6 +74,8 @@ def _release_payload(release, *, include_snapshot=True):
     for entry in release.files.select_related("stored_object").order_by("display_order", "id"):
         obj = entry.stored_object
         files.append({
+            "id": str(entry.id),
+            "stored_object_id": str(entry.stored_object_id),
             "logical_file_id": str(entry.logical_file_id),
             "filename": obj.original_filename,
             "file_type": obj.file_type,
@@ -200,6 +202,8 @@ def _proposal_payload(proposal):
     for item in proposal.files.select_related("stored_object").order_by("display_order", "id"):
         obj = item.stored_object
         files.append({
+            "id": str(item.id),
+            "stored_object_id": str(item.stored_object_id),
             "logical_file_id": str(item.logical_file_id),
             "filename": obj.original_filename,
             "file_type": obj.file_type,

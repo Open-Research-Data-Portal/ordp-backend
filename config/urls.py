@@ -28,5 +28,6 @@ urlpatterns = [
     path("api/search/", include("apps.search.urls")),
     path("api/sharing/", include("apps.sharing.urls")),
     path("api/admin-panel/", include("apps.admin_panel.urls")),
+    path("", include("apps.ai_integration.urls")),
 
 ]

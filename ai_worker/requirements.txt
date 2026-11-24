@@ -1,0 +1,7 @@
+# ai_worker dependencies (Free, Open-Source)
+requests==2.32.3
+python-magic==0.4.27
+openpyxl==3.1.5
+pypdf==5.3.1
+python-docx==1.1.2
+pyclamd==0.4.0

@@ -328,6 +328,20 @@ def finalize_upload(
             item_count=item_count,
         )
 
+        # ---------------------------------------------------------
+        # 10b. Enqueue AI file check on commit (Step 12)
+        # ---------------------------------------------------------
+        try:
+            from apps.ai_integration.services.job_service import enqueue_analysis_job
+            transaction.on_commit(lambda so=stored_object: enqueue_analysis_job(so))
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to register AI analysis on_commit for StoredObject %s: %s",
+                stored_object.id,
+                exc,
+            )
+
     # ---------------------------------------------------------
     # 11. Success -> delete temporary upload session
     # ---------------------------------------------------------
