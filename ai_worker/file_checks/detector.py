@@ -96,10 +96,20 @@ def detect_file_type_from_content(file_path: str, filename: str = "") -> tuple[s
             canonical = "hdf5"
             mime = "application/x-hdf"
 
+    ext = os.path.splitext(filename)[1].lstrip(".").lower() if filename else ""
     if not canonical:
         # Fall back to extension guess if unrecognized
-        ext = os.path.splitext(filename)[1].lstrip(".").lower()
         canonical = ext or "unknown"
+    elif canonical == "txt" and ext in ("csv", "tsv", "json", "md"):
+        canonical = ext
+        if ext == "csv":
+            mime = "text/csv"
+        elif ext == "tsv":
+            mime = "text/tab-separated-values"
+        elif ext == "json":
+            mime = "application/json"
+        elif ext == "md":
+            mime = "text/markdown"
 
     return canonical, mime
 
