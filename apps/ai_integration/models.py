@@ -32,7 +32,7 @@ class AnalysisJob(models.Model):
     class Meta:
         ordering = ["created_at"]
         indexes = [
-            models.Index(fields=["status", "run_after", "created_at"]),
+            models.Index(fields=["status", "run_after", "created_at"], name="ai_int_job_status_idx"),
         ]
 
     def __str__(self):
