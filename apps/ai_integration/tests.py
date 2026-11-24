@@ -10,7 +10,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import ActivityLog
-from apps.datasets.models import Dataset, StoredObject, DatasetFile
+from apps.datasets.models import Dataset, StoredObject, DatasetFile, DatasetProposal, DatasetProposalFile, DatasetRelease, DatasetReleaseFile
 from apps.ai_integration.models import AnalysisJob, FileAnalysis
 from apps.ai_integration.services.job_service import (
     enqueue_analysis_job,
@@ -322,6 +322,63 @@ class PublicAnalysisAPITests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["status"], "running")
         self.assertIsNone(resp.data["level"])
+
+    def test_resolve_analysis_via_proposal_and_release_files(self):
+        """V2 files can be queried using DatasetProposalFile.id, logical_file_id, or DatasetReleaseFile.id."""
+        FileAnalysis.objects.create(
+            stored_object=self.stored_obj,
+            checksum_sha256="c" * 64,
+            level="A",
+            detected_type="csv",
+            status="done",
+            coverage="fully_analysed",
+            checks=[{"name": "not_empty", "result": "pass", "detail": ""}],
+            technical={"size_bytes": 512, "sha256": "c" * 64},
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        # 1. DatasetRelease setup
+        release = DatasetRelease.objects.create(
+            dataset=self.dataset,
+            major=1,
+            minor=0,
+            patch=0,
+            created_by=self.owner,
+            status=DatasetRelease.Status.DRAFT,
+        )
+        logical_id = uuid.uuid4()
+        release_file = DatasetReleaseFile.objects.create(
+            release=release,
+            stored_object=self.stored_obj,
+            logical_file_id=logical_id,
+        )
+
+        resp_rel_id = self.client.get(f"/api/files/{release_file.id}/analysis/")
+        self.assertEqual(resp_rel_id.status_code, 200)
+        self.assertEqual(resp_rel_id.data["status"], "done")
+
+        # 2. DatasetProposalFile lookup by proposal file ID and logical_file_id
+        proposal = DatasetProposal.objects.create(
+            dataset=self.dataset,
+            base_release=release,
+            source=DatasetProposal.Source.OWNER_EDIT,
+            submitted_by=self.owner,
+            status=DatasetProposal.Status.DRAFT,
+        )
+        prop_file = DatasetProposalFile.objects.create(
+            proposal=proposal,
+            stored_object=self.stored_obj,
+            logical_file_id=logical_id,
+        )
+
+        resp_prop_id = self.client.get(f"/api/files/{prop_file.id}/analysis/")
+        self.assertEqual(resp_prop_id.status_code, 200)
+        self.assertEqual(resp_prop_id.data["status"], "done")
+        self.assertEqual(resp_prop_id.data["level"], "A")
+
+        resp_logical = self.client.get(f"/api/files/{logical_id}/analysis/")
+        self.assertEqual(resp_logical.status_code, 200)
+        self.assertEqual(resp_logical.data["status"], "done")
 
 
 class UploadResilienceTests(TestCase):
