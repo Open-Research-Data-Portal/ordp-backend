@@ -67,14 +67,14 @@ Each check returns `{ "name": "<check>", "result": "pass" | "warn" | "fail" | "s
 | `POSTGRES_HOST` | `localhost` | PostgreSQL host (use `localhost` for local dev, `db` inside Docker). |
 | `POSTGRES_PORT` | `5432` | PostgreSQL port. |
 | `POSTGRES_SSLMODE` | `prefer` | SSL mode (`disable` for local dev without SSL). |
-| `ORDP_WORKER_TOKEN` | `changeme-worker-token` | Secret Bearer token for worker authentication against internal endpoints. Must match `ORDP_WORKER_TOKEN` in the worker. |
+| `ORDP_WORKER_TOKEN` | `""` (empty) | Secret Bearer token for worker authentication against internal endpoints. Must match `ORDP_WORKER_TOKEN` in the worker. If unset, empty, or set to `changeme-worker-token`, all worker requests are rejected with 401. |
 | `OBJECT_STORAGE_INTERNAL_URL` | `""` | Optional URL prefix rewrite so the AI worker container can reach storage. Set to the internal storage hostname if the presigned URL hostname is unreachable from the worker container (e.g., `http://minio:9000`). |
 
 ### Worker (`ai_worker/config.py`)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ORDP_WORKER_TOKEN` | `changeme-worker-token` | Must match the backend `ORDP_WORKER_TOKEN`. |
+| `ORDP_WORKER_TOKEN` | `""` (empty) | Must match the backend `ORDP_WORKER_TOKEN`. Worker exits immediately on startup if unset, empty, or set to `changeme-worker-token`. |
 | `AI_BACKEND_URL` | `http://django:8000` | Backend base URL for worker API calls. Use `http://localhost:8000` for local dev. |
 | `AI_WORKER_ID` | `ai-worker-1` | Identifier for the running worker instance. |
 | `AI_POLL_INTERVAL_SECONDS` | `5` | Idle sleep duration when no jobs are queued. |
@@ -120,7 +120,7 @@ $env:POSTGRES_DB       = "ordp_dev"
 $env:POSTGRES_USER     = "ordp"
 $env:POSTGRES_PASSWORD = "ordpaastu"
 $env:POSTGRES_SSLMODE  = "disable"
-$env:ORDP_WORKER_TOKEN = "changeme-worker-token"
+$env:ORDP_WORKER_TOKEN = "your-secure-worker-token"
 $env:DJANGO_SETTINGS_MODULE = "config.settings.dev"
 
 # Install dependencies
@@ -145,7 +145,7 @@ pip install -r requirements.txt
 pip install python-magic-bin
 
 # Set environment variables
-$env:ORDP_WORKER_TOKEN    = "changeme-worker-token"
+$env:ORDP_WORKER_TOKEN    = "your-secure-worker-token"
 $env:AI_BACKEND_URL       = "http://localhost:8000"
 $env:AI_WORKER_ID         = "ai-worker-1"
 $env:CLAMAV_ENABLED       = "false"
