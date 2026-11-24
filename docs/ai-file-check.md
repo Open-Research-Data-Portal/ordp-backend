@@ -121,6 +121,7 @@ $env:POSTGRES_USER     = "ordp"
 $env:POSTGRES_PASSWORD = "ordpaastu"
 $env:POSTGRES_SSLMODE  = "disable"
 $env:ORDP_WORKER_TOKEN = "your-secure-worker-token"
+$env:EMAIL_BACKEND     = "django.core.mail.backends.console.EmailBackend"  # Prints verification emails to terminal
 $env:DJANGO_SETTINGS_MODULE = "config.settings.dev"
 
 # Install dependencies
@@ -135,6 +136,11 @@ python manage.py runserver 0.0.0.0:8000
 
 ### 4.2 AI Worker Setup (Windows)
 
+> [!IMPORTANT]
+> Run the worker locally with `cd ai_worker` then `python main.py`. Do **not** run `python -m ai_worker.main` from the repository root because the backend's `config/` package shadows `ai_worker/config.py`.
+>
+> The worker reads `AI_BACKEND_URL` (not `ORDP_API_BASE` or `VITE_API_URL`) and only reads environment variables set in its own terminal session, **not** the backend `.env`.
+
 ```powershell
 cd C:\Internships\ORDP\ordp-backend\ai_worker
 
@@ -144,9 +150,9 @@ pip install -r requirements.txt
 # On Windows, python-magic needs the bundled DLL version:
 pip install python-magic-bin
 
-# Set environment variables
+# Set environment variables in the worker terminal
 $env:ORDP_WORKER_TOKEN    = "your-secure-worker-token"
-$env:AI_BACKEND_URL       = "http://localhost:8000"
+$env:AI_BACKEND_URL       = "http://127.0.0.1:8000"
 $env:AI_WORKER_ID         = "ai-worker-1"
 $env:CLAMAV_ENABLED       = "false"
 
@@ -157,7 +163,19 @@ python main.py
 > [!TIP]
 > On Linux/Mac, install system `libmagic` (`apt install libmagic1` or `brew install libmagic`) instead of `python-magic-bin`.
 
-### 4.3 Running the Django Tests
+### 4.3 Frontend Setup (Windows)
+
+```powershell
+cd C:\Internships\ORDP\ordp-frontend
+
+# Set backend proxy target before starting Vite dev server
+$env:VITE_PROXY_TARGET = "http://127.0.0.1:8000"
+
+npm install
+npm run dev
+```
+
+### 4.4 Running the Django Tests
 
 ```powershell
 cd C:\Internships\ORDP\ordp-backend
