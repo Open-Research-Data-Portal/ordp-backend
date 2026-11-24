@@ -1,11 +1,13 @@
+import uuid
 from urllib.parse import urlparse, urlunparse
 from django.conf import settings
+from django.db import models
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 
-from apps.datasets.models import StoredObject, DatasetFile
+from apps.datasets.models import StoredObject, DatasetFile, DatasetProposalFile, DatasetReleaseFile
 from apps.datasets.services.storage import presigned_download_url
 from apps.datasets.v2_views import _can_read_dataset
 from apps.ai_integration.models import AnalysisJob, FileAnalysis
@@ -114,12 +116,35 @@ class FileAnalysisDetailView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, file_id):
-        # 1. Resolve to StoredObject (supports either StoredObject.id or DatasetFile.id)
-        stored_object = StoredObject.objects.filter(pk=file_id).select_related("dataset").first()
+        # 1. Resolve to StoredObject (supports StoredObject.id, DatasetFile.id,
+        # DatasetProposalFile.id/logical_file_id, or DatasetReleaseFile.id/logical_file_id)
+        try:
+            val_uuid = uuid.UUID(str(file_id))
+        except (ValueError, AttributeError):
+            return Response(
+                {"detail": "Not found.", "code": "NOT_FOUND"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        stored_object = StoredObject.objects.filter(pk=val_uuid).select_related("dataset").first()
         if not stored_object:
-            ds_file = DatasetFile.objects.filter(pk=file_id).select_related("stored_object__dataset").first()
+            ds_file = DatasetFile.objects.filter(pk=val_uuid).select_related("stored_object__dataset").first()
             if ds_file and ds_file.stored_object:
                 stored_object = ds_file.stored_object
+
+        if not stored_object:
+            proposal_file = DatasetProposalFile.objects.filter(
+                models.Q(pk=val_uuid) | models.Q(logical_file_id=val_uuid)
+            ).select_related("stored_object__dataset").first()
+            if proposal_file and proposal_file.stored_object:
+                stored_object = proposal_file.stored_object
+
+        if not stored_object:
+            release_file = DatasetReleaseFile.objects.filter(
+                models.Q(pk=val_uuid) | models.Q(logical_file_id=val_uuid)
+            ).select_related("stored_object__dataset").first()
+            if release_file and release_file.stored_object:
+                stored_object = release_file.stored_object
 
         if not stored_object:
             return Response(
