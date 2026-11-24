@@ -126,12 +126,16 @@ class FileAnalysisDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # 1. Resolve to StoredObject (primary: StoredObject.id; V2: DatasetProposalFile / DatasetReleaseFile; legacy: DatasetFile)
         stored_object = StoredObject.objects.filter(pk=val_uuid).select_related("dataset").first()
+
+        # Legacy (V1): Fallback lookup for legacy DatasetFile IDs (retained for backward compatibility with older datasets)
         if not stored_object:
             ds_file = DatasetFile.objects.filter(pk=val_uuid).select_related("stored_object__dataset").first()
             if ds_file and ds_file.stored_object:
                 stored_object = ds_file.stored_object
 
+        # V2: Lookup via DatasetProposalFile (by proposal file ID or logical_file_id)
         if not stored_object:
             proposal_file = DatasetProposalFile.objects.filter(
                 models.Q(pk=val_uuid) | models.Q(logical_file_id=val_uuid)
@@ -139,6 +143,7 @@ class FileAnalysisDetailView(APIView):
             if proposal_file and proposal_file.stored_object:
                 stored_object = proposal_file.stored_object
 
+        # V2: Lookup via DatasetReleaseFile (by release file ID or logical_file_id)
         if not stored_object:
             release_file = DatasetReleaseFile.objects.filter(
                 models.Q(pk=val_uuid) | models.Q(logical_file_id=val_uuid)
