@@ -4,10 +4,12 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 # Ensure parent directory is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("ORDP_WORKER_TOKEN", "test-token-for-tests")
 
 from file_checks.runner import run_checks
 from file_checks.scanner import DisabledScanner
@@ -168,6 +170,17 @@ class WorkerFileChecksTests(unittest.TestCase):
         self.assertEqual(malware_check["result"], "skipped")
         self.assertEqual(res["status"], "done")
         self.assertEqual(res["coverage"], "fully_analysed")
+
+    def test_config_exits_on_empty_or_placeholder_token(self):
+        """Worker Config exits with sys.exit if ORDP_WORKER_TOKEN is empty or placeholder."""
+        from config import Config
+        with mock.patch.dict(os.environ, {"ORDP_WORKER_TOKEN": ""}):
+            with self.assertRaises(SystemExit):
+                Config()
+
+        with mock.patch.dict(os.environ, {"ORDP_WORKER_TOKEN": "changeme-worker-token"}):
+            with self.assertRaises(SystemExit):
+                Config()
 
 
 if __name__ == "__main__":
