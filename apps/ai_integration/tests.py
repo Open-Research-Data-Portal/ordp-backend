@@ -188,6 +188,40 @@ class InternalAIWorkerAPITests(APITestCase):
         resp2 = self.client.get("/internal/ai-jobs/next/")
         self.assertEqual(resp2.status_code, 401)
 
+    def test_unset_token_returns_401_even_with_header(self):
+        """Unset or empty ORDP_WORKER_TOKEN rejects requests even when a Bearer token header is sent."""
+        with override_settings(ORDP_WORKER_TOKEN=""):
+            resp = self.client.get(
+                "/internal/ai-jobs/next/",
+                HTTP_AUTHORIZATION=f"Bearer {TEST_WORKER_TOKEN}",
+            )
+            self.assertEqual(resp.status_code, 401)
+
+    def test_placeholder_token_returns_401(self):
+        """When ORDP_WORKER_TOKEN equals the default placeholder, all requests return 401."""
+        with override_settings(ORDP_WORKER_TOKEN="changeme-worker-token"):
+            resp = self.client.get(
+                "/internal/ai-jobs/next/",
+                HTTP_AUTHORIZATION="Bearer changeme-worker-token",
+            )
+            self.assertEqual(resp.status_code, 401)
+
+    def test_empty_bearer_value_returns_401(self):
+        """Empty Bearer value in header returns 401."""
+        resp = self.client.get(
+            "/internal/ai-jobs/next/",
+            HTTP_AUTHORIZATION="Bearer ",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_correct_token_works(self):
+        """A correct token authenticates successfully."""
+        resp = self.client.get(
+            "/internal/ai-jobs/next/",
+            HTTP_AUTHORIZATION=f"Bearer {TEST_WORKER_TOKEN}",
+        )
+        self.assertIn(resp.status_code, [200, 204])
+
     def test_claim_next_and_post_result_is_idempotent(self):
         """Worker claims job (200), posts result (200), and duplicate posts are idempotent."""
         job = enqueue_analysis_job(self.stored_obj)
