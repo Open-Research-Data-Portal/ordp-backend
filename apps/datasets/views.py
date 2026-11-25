@@ -1586,3 +1586,12 @@ def archived_datasets(request):
         .order_by("-archived_at")
     )
     return Response(DatasetSerializer(qs, many=True, context={"request": request}).data)
+
+
+def local_storage_download_view(request, object_key):
+    cache_path = os.path.join(settings.BASE_DIR, "media", "storage", object_key)
+    if not os.path.exists(cache_path):
+        from django.http import Http404
+        raise Http404("File not found in local cache.")
+    from django.http import FileResponse
+    return FileResponse(open(cache_path, "rb"), content_type="application/octet-stream")
