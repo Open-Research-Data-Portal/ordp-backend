@@ -63,7 +63,7 @@ Each check returns `{ "name": "<check>", "result": "pass" | "warn" | "fail" | "s
 |---|---|---|
 | `POSTGRES_DB` | `ordp` | PostgreSQL database name. |
 | `POSTGRES_USER` | `ordp` | PostgreSQL username. |
-| `POSTGRES_PASSWORD` | `ordpaastu` | PostgreSQL password. |
+| `POSTGRES_PASSWORD` | `""` | PostgreSQL password. |
 | `POSTGRES_HOST` | `localhost` | PostgreSQL host (use `localhost` for local dev, `db` inside Docker). |
 | `POSTGRES_PORT` | `5432` | PostgreSQL port. |
 | `POSTGRES_SSLMODE` | `prefer` | SSL mode (`disable` for local dev without SSL). |
@@ -111,14 +111,14 @@ cd C:\Internships\ORDP\ordp-backend
 
 # Create the ordp user and ordp_dev database (run once)
 # In a psql session as postgres superuser:
-#   CREATE USER ordp WITH CREATEDB PASSWORD 'ordpaastu';
+#   CREATE USER ordp WITH CREATEDB PASSWORD '<your-postgres-password>';
 #   CREATE DATABASE ordp_dev OWNER ordp;
 
 # Set environment variables (PowerShell)
 $env:POSTGRES_HOST     = "localhost"
 $env:POSTGRES_DB       = "ordp_dev"
 $env:POSTGRES_USER     = "ordp"
-$env:POSTGRES_PASSWORD = "ordpaastu"
+$env:POSTGRES_PASSWORD = "<your-postgres-password>"
 $env:POSTGRES_SSLMODE  = "disable"
 $env:ORDP_WORKER_TOKEN = "your-secure-worker-token"
 $env:EMAIL_BACKEND     = "django.core.mail.backends.console.EmailBackend"  # Prints verification emails to terminal
@@ -183,7 +183,7 @@ cd C:\Internships\ORDP\ordp-backend
 $env:POSTGRES_HOST     = "localhost"
 $env:POSTGRES_DB       = "ordp_dev"
 $env:POSTGRES_USER     = "ordp"
-$env:POSTGRES_PASSWORD = "ordpaastu"   # use your actual ordp user password
+$env:POSTGRES_PASSWORD = "<your-postgres-password>"   # use your actual ordp user password
 $env:POSTGRES_SSLMODE  = "disable"
 $env:ORDP_WORKER_TOKEN = "test-token-for-tests"
 $env:DJANGO_SETTINGS_MODULE = "config.settings.dev"
