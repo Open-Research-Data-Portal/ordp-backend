@@ -6,6 +6,7 @@ urlpatterns = [
     path("queue/", views.moderation_queue, name="moderation-queue"),
     path("my-reviews/", views.my_reviews, name="my-reviews"),
     path("<uuid:dataset_id>/decide/", views.moderate_dataset, name="moderation-decide"),
+    path("<uuid:dataset_id>/publish/", views.publish_dataset, name="dataset-publish"),
     path("content-updates/queue/", views.content_update_queue, name="content-update-queue"),
     path("datasets/<uuid:dataset_id>/thumbnail-suggestion/", views.suggest_thumbnail, name="suggest-thumbnail"),
     path("datasets/<uuid:dataset_id>/request-deletion/", views.request_dataset_deletion, name="request-dataset-deletion"),

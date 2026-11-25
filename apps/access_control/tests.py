@@ -6,8 +6,9 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.datasets.models import Dataset
+from apps.datasets.models import Dataset, DatasetFile, ResearchProject
 from apps.accounts.models import ActivityLog, UserRole
+from apps.notifications.models import Notification
 from .models import AccessRequest, AccessRequestPermission, Group, GroupMembership, GroupPermissionGrant, Permission, PermissionAuditLog, UserPermissionGrant
 from .services import effective_permissions, grant_to_user, has_permission, review_request, revoke_user_grant
 
@@ -584,3 +585,62 @@ class PermissionSystemTests(TestCase):
             user=self.users[0], permission_id="user.manage", resource_type="platform", granted_by=self.manager,
         )
         self.assertTrue(IsAdminOnly().has_permission(request, None))
+
+    def test_review_notifies_the_requester(self):
+        requester = self.users[0]
+        self.datasets[0].status = Dataset.Status.PUBLISHED
+        self.datasets[0].save(update_fields=["status"])
+        self.client.force_authenticate(requester)
+        created = self.client.post("/api/access-control/requests/", {
+            "resource_type": "dataset", "resource_id": str(self.datasets[0].id),
+            "permissions": ["dataset.view", "dataset.edit"],
+            "justification": "I need this dataset for my study",
+        }, format="json")
+        self.assertEqual(created.status_code, 201)
+        self.client.force_authenticate(self.manager)
+        reviewed = self.client.post(f"/api/access-control/requests/{created.data['id']}/review/", {
+            "decisions": [
+                {"permission": "dataset.view", "decision": "approved"},
+                {"permission": "dataset.edit", "decision": "rejected", "reason": "Not needed"},
+            ],
+            "comment": "View only",
+        }, format="json")
+        self.assertEqual(reviewed.status_code, 200)
+        notice = Notification.objects.get(user=requester)
+        self.assertIn("partially approved", notice.message)
+        self.assertIn("View only", notice.message)
+        self.assertEqual(notice.link_path, f"/access-management/requests/{created.data['id']}")
+
+    def test_private_file_preview_requires_view_permission(self):
+        dataset = self.datasets[0]
+        dataset.visibility = Dataset.Visibility.PRIVATE
+        dataset.status = Dataset.Status.PUBLISHED
+        dataset.save(update_fields=["visibility", "status"])
+        dataset_file = DatasetFile.objects.create(
+            dataset=dataset, file_key="datasets/hidden.bin", original_filename="hidden.bin",
+            file_type="bin", file_size=12, checksum="abc",
+        )
+        grant_to_user(self.manager, self.users[0], Permission.objects.get(pk="dataset.edit"), "dataset", dataset.id)
+        self.client.force_authenticate(self.users[0])
+        hidden = self.client.get(f"/api/datasets/{dataset.id}/")
+        self.assertEqual(hidden.status_code, 200)
+        self.assertIsNone(hidden.data["files"][0]["preview_rows"])
+        self.assertFalse(hidden.data["files"][0]["can_preview"])
+        grant_to_user(
+            self.manager, self.users[0], Permission.objects.get(pk="dataset_file.view"),
+            "dataset_file", dataset_file.id,
+        )
+        opened = self.client.get(f"/api/datasets/{dataset.id}/")
+        self.assertTrue(opened.data["files"][0]["can_preview"])
+
+    def test_project_matrix_grants_project_view(self):
+        project = ResearchProject.objects.create(name="Matrix Lab", created_by=self.manager)
+        self.client.force_authenticate(self.manager)
+        saved = self.client.post(f"/api/access-control/resources/project/{project.id}/matrix/", {
+            "edits": [{"type": "user", "id": self.users[0].id, "permission": "project.view", "selected": True}],
+        }, format="json")
+        self.assertEqual(saved.status_code, 200)
+        self.assertTrue(has_permission(self.users[0], "project.view", "project", project.id))
+        listed = self.client.get(f"/api/access-control/resources/project/{project.id}/")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.data["resource"]["type"], "project")

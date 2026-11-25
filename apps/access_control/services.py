@@ -3,6 +3,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.datasets.models import Dataset, DatasetCollection, DatasetFile, ResearchProject
+from apps.notifications.models import Notification
+from apps.notifications.services import notify
 from apps.accounts.models import UserRole
 from .models import (
     AccessRequest, AccessRequestPermission, Group, GroupMembership,
@@ -278,6 +280,26 @@ def revoke_user_grant(actor, grant, reason=""):
           metadata={"reason": reason, "grant_id": str(grant.id)})
 
 
+def notify_request_decision(access_request):
+    """Tell the requester the outcome. Every decision path uses this."""
+    labels = {
+        AccessRequest.Status.APPROVED: "approved",
+        AccessRequest.Status.PARTIAL: "partially approved",
+        AccessRequest.Status.REJECTED: "rejected",
+    }
+    outcome = labels.get(access_request.status, access_request.get_status_display().lower())
+    comment = (access_request.review_comment or "").strip()
+    message = f"Your permission request was {outcome}."
+    if comment:
+        message = f"{message} {comment}"
+    notify(
+        access_request.requester,
+        Notification.NotificationType.SYSTEM_ANNOUNCEMENT,
+        message,
+        link_path=f"/access-management/requests/{access_request.id}",
+    )
+
+
 def can_review_access_requests(user):
     return (
         has_permission(user, "access_request.review")
@@ -321,6 +343,7 @@ def review_request(actor, access_request, decisions, comment="", membership_deci
         access_request.save(update_fields=["status", "review_comment", "reviewed_by", "reviewed_at"])
         audit(actor, "request.review", user=access_request.requester, group=access_request.group,
               metadata={"request_id": str(access_request.id), "status": access_request.status})
+        notify_request_decision(access_request)
         return access_request
     items = {item.permission_id: item for item in access_request.items.select_related("permission")}
     if set(decisions) != set(items):
@@ -393,4 +416,5 @@ def review_request(actor, access_request, decisions, comment="", membership_deci
     audit(actor, "request.review", user=access_request.requester,
           resource_type=access_request.resource_type, resource_id=access_request.resource_id,
           metadata={"request_id": str(access_request.id), "status": access_request.status})
+    notify_request_decision(access_request)
     return access_request

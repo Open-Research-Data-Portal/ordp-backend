@@ -6,6 +6,7 @@ from django.utils import timezone
 from apps.datasets.factories import make_user
 from apps.datasets.models import Dataset, DatasetFile, StoredObject
 from apps.metadata.models import Category, Metadata, Language
+from apps.access_control.models import UserPermissionGrant
 from .models import DatasetReviewerAssignment
 from apps.access_control.models import UserPermissionGrant
 
@@ -90,6 +91,10 @@ def assign_three_reviewers(dataset, prefix):
     ]
 
     for reviewer in reviewers:
+        UserPermissionGrant.objects.get_or_create(
+            user=reviewer, permission_id="dataset.approve",
+            resource_type="platform", defaults={"granted_by": reviewer},
+        )
         DatasetReviewerAssignment.objects.create(
             dataset=dataset,
             reviewer=reviewer,
@@ -177,13 +182,21 @@ class ModerationDecisionTests(APITestCase):
 
         self.assertEqual(
             dataset.status,
-            Dataset.Status.PUBLISHED,
+            Dataset.Status.PENDING,
         )
+        self.assertEqual(resp.data["status"], "ready_to_publish")
 
         self.assertEqual(
             dataset.moderation_decisions.count(),
             2,
         )
+        self.assertIsNone(dataset.published_release_id)
+
+        self.client.force_authenticate(reviewers[0])
+        published = self.client.post(f"/api/admin-panel/{dataset.id}/publish/")
+        self.assertEqual(published.status_code, status.HTTP_200_OK)
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.status, Dataset.Status.PUBLISHED)
         self.assertIsNotNone(dataset.published_release_id)
         self.assertEqual(dataset.published_release.version, "1.0.0")
 

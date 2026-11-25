@@ -1,4 +1,5 @@
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F
@@ -59,6 +60,7 @@ def moderation_queue(request):
         ModerationQueueItemSerializer(
             qs.order_by("created_at"),
             many=True,
+            context={"request": request},
         ).data
     )
 @api_view(["GET"])
@@ -131,11 +133,7 @@ def moderate_dataset(request, dataset_id):
     ).exists()
 
     can_approve = has_permission(request.user, "dataset.approve")
-    can_publish = (
-        decision == ModerationDecision.Decision.APPROVED
-        and has_permission(request.user, "dataset.publish")
-    )
-    if not assigned and not can_approve and not can_publish:
+    if not assigned and not can_approve:
         return Response(
             {"detail": "You are not assigned to review this dataset."},
             status=403,
@@ -182,50 +180,9 @@ def moderate_dataset(request, dataset_id):
 )
 
     if approve_votes >= 2:
-        dataset.status = Dataset.Status.PUBLISHED
-        dataset.save(update_fields=["status"])
-
-        # A successful V1 moderation decision must also establish the first
-        # immutable V2 release. If the legacy file manifest cannot be verified,
-        # undo this approval vote and keep the dataset pending for remediation.
-        from apps.datasets.services.publication import (
-            PublicationError, publish_initial_dataset,
-        )
-        try:
-            publish_initial_dataset(dataset, published_by=request.user)
-        except (PublicationError, OSError, ValueError) as exc:
-            dataset.status = Dataset.Status.PENDING
-            dataset.save(update_fields=["status"])
-            ModerationDecision.objects.filter(
-                dataset=dataset, reviewer=request.user
-            ).delete()
-            return Response(
-                {
-                    "detail": (
-                        "The dataset passed the reviewer vote threshold, but its initial "
-                        "V2 release could not be created. Verify/backfill its stored files "
-                        f"before approving again. Reason: {exc}"
-                    )
-                },
-                status=409,
-            )
-
-        _resolve_thumbnail_suggestions(dataset)
-
-        from apps.datasets.services.invitations import dispatch_pending_invitations
-        dispatch_pending_invitations(dataset)
-
-        notify(
-            user=dataset.owner,
-            notification_type=Notification.NotificationType.DATASET_APPROVED,
-            message=f'Your dataset "{dataset.title}" has been published.',
-            dataset=dataset,
-            link_path=f"/datasets/{dataset.id}",
-        )
-
         return Response(
             {
-                "status": "approved",
+                "status": "ready_to_publish",
                 "approve_votes": approve_votes,
                 "reject_votes": reject_votes,
                 "votes_cast": votes_cast,
@@ -318,6 +275,49 @@ def moderate_dataset(request, dataset_id):
     {"detail": "Your review decision has been submitted successfully."},
     status=200,
 )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def publish_dataset(request, dataset_id):
+    """Two approve votes make a dataset ready. Publishing still requires dataset.publish."""
+    dataset = get_object_or_404(Dataset, id=dataset_id, is_active=True)
+    if not has_permission(request.user, "dataset.publish"):
+        return Response({"detail": "You do not have permission to publish datasets."}, status=403)
+    if dataset.status == Dataset.Status.PUBLISHED:
+        return Response({"status": "published", "detail": "This dataset is already published."})
+    if dataset.status != Dataset.Status.PENDING:
+        return Response({"detail": "Only a dataset that is ready to publish can be published."}, status=400)
+    approve_votes = ModerationDecision.objects.filter(
+        dataset=dataset, decision=ModerationDecision.Decision.APPROVED,
+    ).count()
+    if approve_votes < 2:
+        return Response({"detail": "Two approve votes are required before publishing."}, status=400)
+
+    from apps.datasets.services.publication import PublicationError, publish_initial_dataset
+    from apps.datasets.services.invitations import dispatch_pending_invitations
+
+    try:
+        with transaction.atomic():
+            dataset.status = Dataset.Status.PUBLISHED
+            dataset.save(update_fields=["status"])
+            release = publish_initial_dataset(dataset, published_by=request.user)
+            _resolve_thumbnail_suggestions(dataset)
+            dispatch_pending_invitations(dataset)
+            notify(
+                user=dataset.owner,
+                notification_type=Notification.NotificationType.DATASET_APPROVED,
+                message=f'Your dataset "{dataset.title}" has been published.',
+                dataset=dataset,
+                link_path=f"/datasets/{dataset.id}",
+            )
+    except PublicationError as exc:
+        return Response({"detail": str(exc)}, status=400)
+
+    return Response(
+        {"status": "published", "approve_votes": approve_votes, "version": release.version},
+        status=200,
+    )
+
 
 @api_view(["POST"])
 @permission_classes([IsReviewerOrAdmin])

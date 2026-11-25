@@ -16,6 +16,11 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularSwaggerView,
+    SpectacularRedocView,
+)
 from apps.datasets.pid_views import resolve_pid
 
 urlpatterns = [
@@ -30,4 +35,7 @@ urlpatterns = [
     path("api/admin-panel/", include("apps.admin_panel.urls")),
     path("", include("apps.ai_integration.urls")),
     path("api/access-control/", include("apps.access_control.urls")),
+        path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
+    path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
 ]
