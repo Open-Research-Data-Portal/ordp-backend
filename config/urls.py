@@ -29,5 +29,5 @@ urlpatterns = [
     path("api/sharing/", include("apps.sharing.urls")),
     path("api/admin-panel/", include("apps.admin_panel.urls")),
     path("", include("apps.ai_integration.urls")),
-
+    path("api/access-control/", include("apps.access_control.urls")),
 ]

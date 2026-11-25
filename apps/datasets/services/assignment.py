@@ -54,9 +54,22 @@ def assign_reviewers(dataset):
         .values_list("user_id", flat=True)
     )
 
+    from apps.access_control.models import GroupPermissionGrant, UserPermissionGrant
+    from django.db.models import Q
+    from django.utils import timezone
+
+    live = Q(revoked_at__isnull=True) & (Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()))
+    approve_user_ids = set(UserPermissionGrant.objects.filter(
+        live, permission_id="dataset.approve", resource_type="platform",
+    ).values_list("user_id", flat=True))
+    approve_user_ids |= set(GroupPermissionGrant.objects.filter(
+        live, permission_id="dataset.approve", resource_type="platform",
+        group__archived_at__isnull=True,
+    ).values_list("group__memberships__user_id", flat=True))
+
     base = (
         UserProfile.objects
-        .filter(roles__role=UserRole.RoleChoice.REVIEWER)
+        .filter(Q(roles__role=UserRole.RoleChoice.REVIEWER) | Q(user_id__in=approve_user_ids))
         .exclude(user_id=dataset.owner_id)
         .exclude(user_id__in=coauthor_user_ids)
         .exclude(user_id__in=major_change_user_ids)
@@ -156,9 +169,22 @@ def top_up_reviewers(dataset):
 
     category = getattr(getattr(dataset, "metadata", None), "category", None)
 
+    from apps.access_control.models import GroupPermissionGrant, UserPermissionGrant
+    from django.db.models import Q
+    from django.utils import timezone
+
+    live = Q(revoked_at__isnull=True) & (Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()))
+    approve_user_ids = set(UserPermissionGrant.objects.filter(
+        live, permission_id="dataset.approve", resource_type="platform",
+    ).values_list("user_id", flat=True))
+    approve_user_ids |= set(GroupPermissionGrant.objects.filter(
+        live, permission_id="dataset.approve", resource_type="platform",
+        group__archived_at__isnull=True,
+    ).values_list("group__memberships__user_id", flat=True))
+
     base = (
         UserProfile.objects
-        .filter(roles__role=UserRole.RoleChoice.REVIEWER)
+        .filter(Q(roles__role=UserRole.RoleChoice.REVIEWER) | Q(user_id__in=approve_user_ids))
         .exclude(user_id=dataset.owner_id)
         .exclude(user_id__in=already_assigned)
         .distinct()
