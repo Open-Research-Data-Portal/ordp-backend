@@ -3,6 +3,8 @@ import hashlib
 import shutil
 
 from django.conf import settings
+from django.db import transaction
+from .file_integrity import upload_immutable_object, create_stored_object_record
 
 from apps.notifications.services import notify
 from apps.notifications.models import Notification
@@ -13,6 +15,7 @@ from .file_validation import (
     validate_file_matches_declared_type,
     FileTypeMismatchError,
 )
+
 
 
 class UploadTooLargeError(Exception):
@@ -263,14 +266,15 @@ def finalize_upload(
     # 9. Push assembled file to storage
     # ---------------------------------------------------------
 
-    object_key = (
-        f"datasets/{dataset.id}/{original_filename}"
-    )
-
+    # Upload once to a brand-new unique key and verify it in storage.
+    # No DB transaction is open during this (it can take minutes).
     try:
-        push_to_storage(
-            assembled_path,
-            object_key,
+        object_id, storage_key = upload_immutable_object(
+            local_path=assembled_path,
+            dataset_id=dataset.id,
+            original_filename=original_filename,
+            expected_size=total_size,
+            expected_checksum=checksum,
         )
 
     except Exception as exc:
@@ -288,21 +292,41 @@ def finalize_upload(
         raise
 
     # ---------------------------------------------------------
-    # 10. Create DatasetFile
+    # 10. Create StoredObject (V2) + DatasetFile (V1 compat)
     # ---------------------------------------------------------
+    # Both rows are created together, and both point at the SAME
+    # uploaded object. If either insert fails, neither exists.
 
-    dataset_file = DatasetFile.objects.create(
-        dataset=dataset,
-        file_key=object_key,
-        original_filename=original_filename,
-        file_type=declared_file_type,
-        file_size=total_size,
-        checksum=checksum,
-        is_structured=is_structured,
-        column_count=column_count,
-        feature_names=feature_names or [],
-        item_count=item_count,
-    )
+    with transaction.atomic():
+        locked_dataset = Dataset.objects.select_for_update().get(pk=dataset_id)
+        stored_object = create_stored_object_record(
+            object_id=object_id,
+            storage_key=storage_key,
+            dataset=locked_dataset,
+            original_filename=original_filename,
+            file_type=declared_file_type,
+            file_size=total_size,
+            checksum=checksum,
+            uploaded_by=uploader,
+            is_structured=is_structured,
+            column_count=column_count,
+            feature_names=feature_names,
+            item_count=item_count,
+        )
+
+        dataset_file = DatasetFile.objects.create(
+            dataset=locked_dataset,
+            stored_object=stored_object,
+            file_key=stored_object.storage_key,
+            original_filename=original_filename,
+            file_type=declared_file_type,
+            file_size=total_size,
+            checksum=checksum,
+            is_structured=is_structured,
+            column_count=column_count,
+            feature_names=feature_names or [],
+            item_count=item_count,
+        )
 
     # ---------------------------------------------------------
     # 11. Success -> delete temporary upload session

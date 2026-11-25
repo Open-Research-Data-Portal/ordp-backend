@@ -3,6 +3,7 @@ from django.test import override_settings
 from rest_framework.test import APITestCase
 from rest_framework import status
 
+from apps.access_control.models import UserPermissionGrant
 from apps.datasets.factories import make_user
 from apps.datasets.models import (
     Dataset, DatasetFile, Contributor, RevisionRequest, PendingContentUpdate,  PermissionLevel
@@ -20,6 +21,18 @@ def make_published_dataset(owner, title="Editing DS"):
     category = Category.objects.create(name=f"{title} Cat", status=Category.Status.APPROVED)
     Metadata.objects.create(dataset=dataset, description="test", category=category)
     return dataset
+
+
+def grant_reviewer_authority(user):
+    """V2: IsReviewerOnly resolves via platform grants, not UserRole alone."""
+    UserPermissionGrant.objects.get_or_create(
+        user=user,
+        permission_id="dataset.approve",
+        resource_type="platform",
+        resource_id=None,
+        revoked_at=None,
+        defaults={"granted_by": user},
+    )
 
 
 class RequestRevisionPermissionTests(APITestCase):
@@ -109,6 +122,8 @@ class RevisionRequestVotingTests(APITestCase):
         Dataset.objects.filter(id=self.dataset.id).update(visibility=Dataset.Visibility.RESTRICTED)
         self.dataset.refresh_from_db()
         self.reviewers = [make_user(f"rrvreviewer{i}", f"rrvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)]
+        for reviewer in self.reviewers:
+            grant_reviewer_authority(reviewer)
 
         self.client.force_authenticate(self.requester)
         resp = self.client.post(
@@ -143,6 +158,7 @@ class RevisionRequestVotingTests(APITestCase):
             self.client.force_authenticate(reviewer)
             self.client.post(f"/api/admin-panel/revision-requests/{self.request_id}/vote/", {"vote": "approve"})
         late_reviewer = make_user("rrvlate", "rrvlate@aastu.edu.et", role="reviewer")
+        grant_reviewer_authority(late_reviewer)
         self.client.force_authenticate(late_reviewer)
         resp = self.client.post(f"/api/admin-panel/revision-requests/{self.request_id}/vote/", {"vote": "reject"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -169,10 +185,17 @@ class ProposeRevisionPermissionTests(APITestCase):
         outsider = make_user("prpoutsider2", "prpoutsider2@aastu.edu.et", role="researcher")
         outsider.profile.academia = ""
         outsider.profile.terms_accepted = False
+        outsider.profile.can_upload_datasets = False
         outsider.profile.save()
 
         dataset = make_published_dataset(owner)
         RevisionRequest.objects.create(dataset=dataset, requester=outsider, reason="test", status="approved")
+        # Bypass CanUploadDatasets (which itself requires a complete profile) so the
+        # propose_revision profile gate is what we exercise.
+        UserPermissionGrant.objects.create(
+            user=outsider, permission_id="dataset.version.create", resource_type="dataset",
+            resource_id=dataset.id, granted_by=owner,
+        )
 
         self.client.force_authenticate(outsider)
         resp = self.client.post(f"/api/datasets/{dataset.id}/propose-revision/", {"submitter_message": "fix"})
@@ -228,6 +251,8 @@ class ContentUpdateVotingTests(APITestCase):
         self.owner = make_user("cuvowner", "cuvowner@aastu.edu.et")
         self.dataset = make_published_dataset(self.owner, "CUV DS")
         self.reviewers = [make_user(f"cuvreviewer{i}", f"cuvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)]
+        for reviewer in self.reviewers:
+            grant_reviewer_authority(reviewer)
         self.update = PendingContentUpdate.objects.create(
             dataset=self.dataset, source=PendingContentUpdate.Source.OWNER_EDIT, submitted_by=self.owner,
             new_file_key="new-key", diff_percentage=90.0, change_summary={}, proposed_metadata={},

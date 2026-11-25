@@ -1,6 +1,7 @@
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.permissions import BasePermission
 from .models import Contributor, Dataset, PendingContentUpdate, RevisionRequest
+from apps.access_control.services import has_permission as has_scoped_permission
 
 
 def can_access_private_dataset(user, dataset):
@@ -76,6 +77,9 @@ class IsDatasetOwnerOrContributor(BasePermission):
         if Dataset.objects.filter(id=dataset_id, owner=request.user).exists():
             return True
 
+        if has_scoped_permission(request.user, "dataset.edit", "dataset", dataset_id):
+            return True
+
         contributor = Contributor.objects.filter(dataset_id=dataset_id, user=request.user).first()
 
         if contributor and contributor.can_edit():
@@ -83,3 +87,17 @@ class IsDatasetOwnerOrContributor(BasePermission):
 
         self.message = "You don't have direct edit access to this dataset. Submit a revision request instead."
         return False
+
+
+class IsDatasetOwnerOrScopedDelete(BasePermission):
+    message = "Access denied. You don't have permission to delete this dataset."
+
+    def has_permission(self, request, view):
+        dataset_id = view.kwargs.get("dataset_id")
+        if not dataset_id:
+            return False
+        dataset = Dataset.objects.filter(id=dataset_id, is_active=True).first()
+        return bool(dataset and (
+            dataset.is_owned_by(request.user)
+            or has_scoped_permission(request.user, "dataset.delete", "dataset", dataset.id)
+        ))
