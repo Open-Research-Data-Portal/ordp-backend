@@ -23,6 +23,7 @@ urlpatterns = [
     path("<uuid:dataset_id>/propose-revision/", views.propose_revision, name="propose-revision"),
     path("revision-requests/<uuid:request_id>/decide/", views.decide_revision_request, name="revision-request-decide"),
     path("<uuid:dataset_id>/versions/", views.dataset_versions, name="dataset-versions"),
+    path("storage/local/<path:object_key>", views.local_storage_download_view, name="local-storage-download"),
     path(
         "<uuid:dataset_id>/files/<uuid:file_id>/download/",
         views.download_dataset_file,
