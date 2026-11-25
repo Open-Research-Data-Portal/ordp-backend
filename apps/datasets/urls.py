@@ -3,6 +3,7 @@ from . import views
 from . import dashboard_views
 
 urlpatterns = [
+    path("licensing/options/", views.licensing_options, name="licensing-options"),
     path("upload/init/", views.init_upload, name="upload-init"),
     path(
         "<uuid:dataset_id>/upload/init/",

@@ -148,6 +148,9 @@ class Dataset(models.Model):
     )
     is_archived = models.BooleanField(default=False)
     archived_at = models.DateTimeField(null=True, blank=True)
+    license = models.CharField(max_length=64, default="CC-BY-4.0", blank=True)
+    license_rights_confirmed = models.BooleanField(default=False)
+    license_custom_terms = models.TextField(blank=True)
     published_release = models.ForeignKey(
         "datasets.DatasetRelease",
         null=True, blank=True,
@@ -1723,3 +1726,45 @@ class OutboxEvent(models.Model):
         self.payload = sanitize_pid_json(self.payload)
         self.last_error = sanitize_pid_text(self.last_error)
         return super().save(*args, **kwargs)
+
+
+class CustomLicense(models.Model):
+    """Admin-defined dataset license option extending the built-in catalog."""
+
+    key = models.CharField(max_length=64, unique=True)
+    short_name = models.CharField(max_length=64)
+    name = models.CharField(max_length=128)
+    full_name = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    url = models.URLField(blank=True)
+    is_restricted = models.BooleanField(default=False)
+    badge_color = models.CharField(max_length=32, default="slate")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_licenses",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "key"]
+
+    def to_catalog_dict(self):
+        return {
+            "key": self.key,
+            "short_name": self.short_name,
+            "name": self.name,
+            "full_name": self.full_name or self.name,
+            "description": self.description,
+            "url": self.url,
+            "is_restricted": self.is_restricted,
+            "badge_color": self.badge_color or "slate",
+            "is_custom": True,
+            "is_active": self.is_active,
+        }
+
+    def __str__(self):
+        return f"{self.key} ({self.name})"

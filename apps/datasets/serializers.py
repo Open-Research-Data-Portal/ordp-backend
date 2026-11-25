@@ -136,6 +136,7 @@ class DatasetSerializer(serializers.ModelSerializer):
     views_series = serializers.SerializerMethodField()
     downloads_series = serializers.SerializerMethodField()
     archive_status = serializers.SerializerMethodField()
+    license_info = serializers.SerializerMethodField()
     class Meta:
         model = Dataset
         fields = [
@@ -159,6 +160,12 @@ class DatasetSerializer(serializers.ModelSerializer):
             "thumbnail_url_expires_at",
             "view_count",
             "download_count",
+            # Licensing
+            "license",
+            "license_info",
+            "license_rights_confirmed",
+            "license_custom_terms",
+
             # Dataset metadata
             "category",
             "description",
@@ -185,6 +192,10 @@ class DatasetSerializer(serializers.ModelSerializer):
             "is_archived",
             "archived_at",
         ]
+
+    def get_license_info(self, obj):
+        from apps.datasets.licensing import get_license_info
+        return get_license_info(obj.license)
 
     def _published_metadata_snapshot(self, obj):
         release = getattr(obj, "published_release", None)
@@ -408,6 +419,9 @@ class InitUploadSerializer(serializers.Serializer):
         allow_null=True,
         default=Dataset.Visibility.RESTRICTED,
     )
+    license = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    license_rights_confirmed = serializers.BooleanField(required=False, default=False)
+    license_custom_terms = serializers.CharField(required=False, allow_blank=True)
 
 
 class PrepareUploadSerializer(serializers.Serializer):
@@ -424,6 +438,9 @@ class PrepareUploadSerializer(serializers.Serializer):
 
 class TermsAcceptanceSerializer(serializers.Serializer):
     terms_accepted = serializers.BooleanField()
+    license = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    license_rights_confirmed = serializers.BooleanField(required=False)
+    license_custom_terms = serializers.CharField(required=False, allow_blank=True)
 
 
 
