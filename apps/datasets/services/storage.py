@@ -22,6 +22,14 @@ def storage_client():
 
 
 def push_to_storage(local_path, object_key):
+    if getattr(settings, "DEBUG", False):
+        import shutil
+        cache_path = os.path.join(settings.BASE_DIR, "media", "storage", object_key)
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        try:
+            shutil.copy2(local_path, cache_path)
+        except Exception:
+            pass
     storage_client().upload_file(local_path, settings.OBJECT_STORAGE_BUCKET, object_key)
     return object_key
 
@@ -37,6 +45,12 @@ def presigned_download_url(object_key, expires_seconds=3600):
     parsed = urlparse(object_key or "")
     if parsed.scheme in {"http", "https"}:
         return object_key
+
+    if getattr(settings, "DEBUG", False):
+        cache_path = os.path.join(settings.BASE_DIR, "media", "storage", object_key)
+        if os.path.exists(cache_path):
+            base_url = getattr(settings, "FRONTEND_URL", "http://127.0.0.1:8000").replace(":5173", ":8000")
+            return f"{base_url}/api/datasets/storage/local/{object_key}"
 
     return storage_client().generate_presigned_url(
         "get_object",
