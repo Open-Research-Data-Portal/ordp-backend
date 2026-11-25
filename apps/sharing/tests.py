@@ -1,11 +1,19 @@
+from unittest.mock import patch
+
 from rest_framework.test import APITestCase
 from rest_framework import status
+from django.utils import timezone
 
 from apps.accounts.models import UserProfile
 from apps.datasets.factories import make_user, make_college
-from apps.datasets.models import Dataset, Contributor, PendingContentUpdate, PendingContentUpdateVote
+from apps.datasets.models import (
+    Dataset, DatasetFile, DatasetRelease, DatasetReleaseFile, StoredObject, Contributor,
+    PendingContentUpdate, PendingContentUpdateVote,
+)
 from apps.datasets.services.revisions import resolve_content_update_votes, route_change
+from apps.datasets.services.publication import publish_initial_dataset, withdraw_release
 from apps.notifications.models import Notification
+from apps.access_control.models import AccessRequest, UserPermissionGrant
 from .models import SharePermission, DatasetAccessRequest
 
 
@@ -108,6 +116,145 @@ class FreeDownloadTests(APITestCase):
         dataset.refresh_from_db()
         self.assertEqual(dataset.download_count, 2)
 
+    def test_release_download_uses_requested_release_manifest_not_current_v1_file(self):
+        owner = make_user("releasefdowner", "releasefdowner@aastu.edu.et")
+        dataset = make_dataset_with_version(owner)
+        old_object = StoredObject.objects.create(
+            dataset=dataset,
+            storage_key=f"objects/{dataset.id}/old.csv",
+            original_filename="old.csv",
+            file_type="csv",
+            file_size=5,
+            checksum_sha256="a" * 64,
+        )
+        new_object = StoredObject.objects.create(
+            dataset=dataset,
+            storage_key=f"objects/{dataset.id}/new.csv",
+            original_filename="new.csv",
+            file_type="csv",
+            file_size=5,
+            checksum_sha256="b" * 64,
+        )
+        legacy_file = DatasetFile.objects.create(
+            dataset=dataset,
+            file_key=new_object.storage_key,
+            original_filename="new.csv",
+            file_type="csv",
+            file_size=5,
+            checksum="b" * 64,
+            stored_object=new_object,
+        )
+        old_release = DatasetRelease.objects.create(
+            dataset=dataset,
+            major=1,
+            minor=0,
+            patch=0,
+            status=DatasetRelease.Status.DRAFT,
+            metadata_snapshot={"schema_version": 1, "title": dataset.title},
+        )
+        current_release = DatasetRelease.objects.create(
+            dataset=dataset,
+            major=1,
+            minor=1,
+            patch=0,
+            status=DatasetRelease.Status.DRAFT,
+            metadata_snapshot={"schema_version": 1, "title": dataset.title},
+            base_release=old_release,
+        )
+        logical_id = legacy_file.id
+        DatasetReleaseFile.objects.create(
+            release=old_release, stored_object=old_object, logical_file_id=logical_id
+        )
+        DatasetReleaseFile.objects.create(
+            release=current_release, stored_object=new_object, logical_file_id=logical_id
+        )
+        old_release.status = DatasetRelease.Status.PUBLISHED
+        old_release.save(update_fields=["status"])
+        current_release.status = DatasetRelease.Status.PUBLISHED
+        current_release.save(update_fields=["status"])
+        dataset.published_release = current_release
+        dataset.save(update_fields=["published_release"])
+        self.client.force_authenticate(owner)
+        with patch(
+            "apps.sharing.views.presigned_download_url",
+            side_effect=lambda key: f"signed:{key}",
+        ):
+            response = self.client.get(
+                f"/api/sharing/{dataset.id}/releases/{old_release.id}/download/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["release"], "1.0.0")
+        self.assertEqual(
+            response.data["files"],
+            [{
+                "logical_file_id": str(logical_id),
+                "filename": "old.csv",
+                "download_url": f"signed:{old_object.storage_key}",
+            }],
+        )
+
+        withdraw_release(
+            current_release, owner, "Later release withdrawn for correction."
+        )
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.published_release_id, old_release.id)
+        self.assertEqual(dataset.current_version.id, old_object.id)
+        previous_response = self.client.get(
+            f"/api/sharing/{dataset.id}/releases/{old_release.id}/download/"
+        )
+        withdrawn_response = self.client.get(
+            f"/api/sharing/{dataset.id}/releases/{current_release.id}/download/"
+        )
+        self.assertEqual(previous_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(withdrawn_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_withdrawn_initial_release_is_unavailable_through_both_download_paths(self):
+        owner = make_user("withdrawn-release-owner", "withdrawn-release-owner@aastu.edu.et")
+        dataset = Dataset.objects.create(
+            title="Withdrawn release",
+            owner=owner,
+            visibility=Dataset.Visibility.RESTRICTED,
+            status=Dataset.Status.PUBLISHED,
+        )
+        stored_object = StoredObject.objects.create(
+            dataset=dataset,
+            storage_key=f"objects/{dataset.id}/withdrawn.csv",
+            original_filename="withdrawn.csv",
+            file_type="csv",
+            file_size=5,
+            checksum_sha256="a" * 64,
+            verified_at=timezone.now(),
+        )
+        legacy_file = DatasetFile.objects.create(
+            dataset=dataset,
+            file_key=stored_object.storage_key,
+            original_filename="withdrawn.csv",
+            file_type="csv",
+            file_size=5,
+            checksum="a" * 64,
+            stored_object=stored_object,
+        )
+        with patch(
+            "apps.datasets.services.publication.verify_stored_object_in_storage"
+        ):
+            release = publish_initial_dataset(dataset, owner)
+        withdraw_release(release, owner, "Initial release withdrawn for correction.")
+        dataset.refresh_from_db()
+        self.assertIsNone(dataset.published_release_id)
+        self.assertIsNone(dataset.current_version)
+        self.assertTrue(DatasetFile.objects.filter(pk=legacy_file.pk).exists())
+
+        self.client.force_authenticate(owner)
+        current_response = self.client.get(
+            f"/api/sharing/{dataset.id}/download/"
+        )
+        release_response = self.client.get(
+            f"/api/sharing/{dataset.id}/releases/{release.id}/download/"
+        )
+        self.assertEqual(current_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(release_response.status_code, status.HTTP_404_NOT_FOUND)
+
 
 class ViewCounterTests(APITestCase):
     def test_view_increments_counter_and_is_separate_from_download(self):
@@ -141,125 +288,59 @@ class PublicInstitutionalShareTests(APITestCase):
 
 
 class RestrictedShareVotingTests(APITestCase):
+    """Legacy share vote/owner-decision endpoints are retired (410).
+    Restricted requests now create V2 AccessRequest rows under /api/access-control/.
+    """
+
     def setUp(self):
         self.owner = make_user("rsvowner", "rsvowner@aastu.edu.et")
         self.requester = make_user("rsvreq", "rsvreq@aastu.edu.et")
         self.dataset = make_dataset_with_version(self.owner, "Restricted DS")
-        self.reviewers = [
-            make_user(f"rsvreviewer{i}", f"rsvreviewer{i}@aastu.edu.et", role="reviewer") for i in range(3)
-        ]
-
-    def _submit_request(self, purpose_type="read"):
-        self.client.force_authenticate(self.requester)
-        resp = self.client.post(f"/api/sharing/{self.dataset.id}/request-share/",
-                                 {"purpose": "research", "justification": "Needed for my thesis.",
-                                  "purpose_type": purpose_type})
-        return resp.data["request_id"]
 
     def test_without_justification_is_blocked(self):
         self.client.force_authenticate(self.requester)
         resp = self.client.post(f"/api/sharing/{self.dataset.id}/request-share/", {"purpose": "research"})
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_stays_pending_below_quorum(self):
-        request_id = self._submit_request()
-        self.client.force_authenticate(self.reviewers[0])
-        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
-        self.assertEqual(resp.data["status"], "pending")
-    def test_majority_approve_grants_access(self):
-        request_id = self._submit_request()
-        for reviewer in self.reviewers[:2]:
-            self.client.force_authenticate(reviewer)
-            self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
-        self.client.force_authenticate(self.reviewers[2])
-        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "reject"})
-        self.assertEqual(resp.data["status"], "pending")
-
-        self.client.force_authenticate(self.owner)
-        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
-        self.assertEqual(resp.data["status"], "approved")  #
-
-        access_request = DatasetAccessRequest.objects.get(id=request_id)
+    def test_restricted_request_creates_v2_access_request(self):
         self.client.force_authenticate(self.requester)
-        claim_resp = self.client.post(f"/api/sharing/claim-access/{access_request.claim_token}/")
-        self.assertEqual(claim_resp.status_code, status.HTTP_200_OK)
+        resp = self.client.post(
+            f"/api/sharing/{self.dataset.id}/request-share/",
+            {
+                "purpose": "research",
+                "justification": "Needed for my thesis.",
+                "purpose_type": "read",
+            },
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["status"], "pending")
+        self.assertTrue(AccessRequest.objects.filter(id=resp.data["request_id"], requester=self.requester).exists())
+        self.assertFalse(
+            SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists()
+        )
 
-        self.assertTrue(SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists())
-        dl_resp = self.client.get(f"/api/sharing/{self.dataset.id}/download/")
-        self.assertEqual(dl_resp.status_code, status.HTTP_200_OK)
+    def test_legacy_vote_endpoint_returns_410(self):
+        self.client.force_authenticate(self.requester)
+        resp = self.client.post(
+            "/api/sharing/access-requests/00000000-0000-0000-0000-000000000001/vote/",
+            {"vote": "approve"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_410_GONE)
+        self.assertIn("access-control", resp.data["detail"])
 
-    def test_majority_reject_blocks_access(self):
-        request_id = self._submit_request()
-        for i, reviewer in enumerate(self.reviewers):
-            self.client.force_authenticate(reviewer)
-            self.client.post(f"/api/sharing/access-requests/{request_id}/vote/",
-                              {"vote": "approve" if i == 0 else "reject"})
-        self.assertFalse(SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists())
-
-    def test_edit_purpose_approved_sets_notice(self):
-        request_id = self._submit_request(purpose_type="edit")
-        for reviewer in self.reviewers:
-            self.client.force_authenticate(reviewer)
-            self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
+    def test_legacy_owner_decision_endpoint_returns_410(self):
         self.client.force_authenticate(self.owner)
-        self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
-        self.dataset.refresh_from_db()
-        self.assertTrue(self.dataset.edit_in_progress_notice)
+        resp = self.client.post(
+            "/api/sharing/access-requests/00000000-0000-0000-0000-000000000001/owner-decision/",
+            {"decision": "approve"},
+        )
+        self.assertEqual(resp.status_code, status.HTTP_410_GONE)
+        self.assertIn("access-control", resp.data["detail"])
 
-    def test_read_purpose_approved_does_not_set_notice(self):
-        request_id = self._submit_request(purpose_type="read")
-        for reviewer in self.reviewers:
-            self.client.force_authenticate(reviewer)
-            self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
-        self.dataset.refresh_from_db()
-        self.assertFalse(self.dataset.edit_in_progress_notice)
-
-    def test_reviewer_can_change_their_vote(self):
-        request_id = self._submit_request()
-        self.client.force_authenticate(self.reviewers[0])
-        self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "reject"})
-        self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
-        access_request = DatasetAccessRequest.objects.get(id=request_id)
-        self.assertEqual(access_request.votes.count(), 1)  # updated, not duplicated
-        self.assertEqual(access_request.votes.first().vote, "approve")
-
-    def test_non_reviewer_cannot_vote(self):
-        request_id = self._submit_request()
-        outsider = make_user("rsvoutsider", "rsvoutsider@aastu.edu.et")
-        self.client.force_authenticate(outsider)
-        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_resolved_request_rejects_further_votes(self):
-        request_id = self._submit_request()
-        for reviewer in self.reviewers:
-            self.client.force_authenticate(reviewer)
-            self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
+    def test_legacy_queue_endpoint_returns_410(self):
         self.client.force_authenticate(self.owner)
-        self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
-
-        late_reviewer = make_user("rsvlatereviewer", "rsvlatereviewer@aastu.edu.et", role="reviewer")
-        self.client.force_authenticate(late_reviewer)
-        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "reject"})
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-
-
-    def test_owner_rejection_blocks_access_even_with_committee_majority(self):
-        request_id = self._submit_request()
-        for reviewer in self.reviewers:
-            self.client.force_authenticate(reviewer)
-            self.client.post(f"/api/sharing/access-requests/{request_id}/vote/", {"vote": "approve"})
-
-        self.client.force_authenticate(self.owner)
-        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "reject"})
-        self.assertEqual(resp.data["status"], "rejected")
-        self.assertFalse(SharePermission.objects.filter(dataset=self.dataset, shared_with_user=self.requester).exists())
-
-    def test_non_owner_cannot_record_owner_decision(self):
-        request_id = self._submit_request()
-        self.client.force_authenticate(self.requester)  # not the owner
-        resp = self.client.post(f"/api/sharing/access-requests/{request_id}/owner-decision/", {"decision": "approve"})
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        resp = self.client.get("/api/sharing/access-requests/queue/")
+        self.assertEqual(resp.status_code, status.HTTP_410_GONE)
 
 
 class CoauthorInvitationTests(APITestCase):
@@ -305,7 +386,12 @@ class CoauthorInvitationTests(APITestCase):
         resp = self.client.post(f"/api/sharing/{dataset.id}/invite-coauthor/", {"email": "casinvitee@aastu.edu.et", "permission": "view"})
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 
-        self.assertFalse(SharePermission.objects.filter(dataset=dataset, shared_with_user=invitee).exists())
+        self.assertFalse(
+            UserPermissionGrant.objects.filter(
+                user=invitee, permission_id="dataset.view", resource_type="dataset", resource_id=dataset.id,
+                revoked_at__isnull=True,
+            ).exists()
+        )
 
         from apps.datasets.models import DatasetInvitation
         invitation = DatasetInvitation.objects.get(dataset=dataset, invited_email="casinvitee@aastu.edu.et")
@@ -316,7 +402,18 @@ class CoauthorInvitationTests(APITestCase):
         self.assertEqual(accept_resp.status_code, status.HTTP_200_OK)
         self.assertEqual(accept_resp.data["contributor_type"], "co_author")
 
-        self.assertTrue(SharePermission.objects.filter(dataset=dataset, shared_with_user=invitee).exists())
+        self.assertTrue(
+            UserPermissionGrant.objects.filter(
+                user=invitee, permission_id="dataset.view", resource_type="dataset", resource_id=dataset.id,
+                revoked_at__isnull=True,
+            ).exists()
+        )
+        self.assertTrue(
+            UserPermissionGrant.objects.filter(
+                user=invitee, permission_id="dataset.download", resource_type="dataset", resource_id=dataset.id,
+                revoked_at__isnull=True,
+            ).exists()
+        )
 
         from apps.datasets.models import Contributor
         contributor = Contributor.objects.get(dataset=dataset, user=invitee)

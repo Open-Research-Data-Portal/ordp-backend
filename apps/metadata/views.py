@@ -2,6 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 
 from apps.datasets.models import Dataset
 from .models import Keyword, Metadata, Category,Language, DatasetCharacteristic
@@ -33,8 +34,22 @@ def _metadata_defaults(dataset):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def attach_metadata(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    dataset = get_object_or_404(
+        Dataset.objects.select_for_update(), id=dataset_id, owner=request.user
+    )
+    if dataset.published_release_id:
+        return Response(
+            {
+                "detail": (
+                    "Metadata for a V2-published dataset must be changed through a proposal "
+                    "or an audited correction endpoint."
+                ),
+                "proposal_endpoint": f"/api/datasets/{dataset.id}/proposals/",
+            },
+            status=409,
+        )
 
     category_id = request.data.get("category_id")
     other_category = (request.data.get("other_category") or "").strip()
@@ -110,8 +125,17 @@ def list_languages(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def set_dataset_languages(request, dataset_id):
-    dataset = get_object_or_404(Dataset, id=dataset_id, owner=request.user)
+    dataset = get_object_or_404(
+        Dataset.objects.select_for_update(), id=dataset_id, owner=request.user
+    )
+    if dataset.published_release_id:
+        return Response(
+            {"detail": "Language changes for V2 datasets must be included in a release proposal.",
+             "proposal_endpoint": f"/api/datasets/{dataset.id}/proposals/"},
+            status=409,
+        )
     language_ids = request.data.getlist("language_ids") if hasattr(request.data, "getlist") else request.data.get("language_ids", [])
     other_languages = request.data.getlist("other_languages") if hasattr(request.data, "getlist") else request.data.get("other_languages", [])
 
@@ -141,15 +165,22 @@ def list_characteristics(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def set_dataset_characteristics(request, dataset_id):
     dataset = get_object_or_404(
-        Dataset,
+        Dataset.objects.select_for_update(),
         id=dataset_id,
         owner=request.user,
     )
+    if dataset.published_release_id:
+        return Response(
+            {"detail": "Characteristic changes for V2 datasets must be included in a release proposal.",
+             "proposal_endpoint": f"/api/datasets/{dataset.id}/proposals/"},
+            status=409,
+        )
 
     metadata = get_object_or_404(
-        Metadata,
+        Metadata.objects.select_for_update(),
         dataset=dataset,
     )
 

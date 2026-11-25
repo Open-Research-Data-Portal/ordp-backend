@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
+from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import ActivityLog
@@ -9,6 +10,7 @@ from apps.notifications.models import Notification
 from ..models import (
     DatasetFile, PendingContentUpdate, DatasetVersion, Dataset,
     RevisionRequest, RevisionRequestVote, PendingContentUpdateVote, DatasetWatcher, Contributor,
+    StoredObject,
 )
 
 User = get_user_model()
@@ -25,7 +27,9 @@ def _reviewers():
 def _apply_metadata(dataset, proposed_metadata):
     if not proposed_metadata:
         return
-    metadata = dataset.metadata
+    from apps.metadata.models import Metadata
+
+    metadata = Metadata.objects.select_for_update().get(dataset_id=dataset.pk)
     for field, change in proposed_metadata.items():
         setattr(metadata, field, change["new"])
     metadata.save()
@@ -73,14 +77,16 @@ def _grant_contributor_status(dataset, user):
     means later revisions from the same person are a no-op here."""
     if dataset.owner_id == user.id:
         return
-    Contributor.objects.get_or_create(
-        dataset=dataset, user=user,
-        defaults={
-            "name": user.profile.full_name,
-            "contributor_type": Contributor.ContributorType.CONTRIBUTOR,
-            "order": dataset.contributors.count() + 1,
-        },
-    )
+    with transaction.atomic():
+        dataset = Dataset.objects.select_for_update().get(pk=dataset.pk)
+        Contributor.objects.get_or_create(
+            dataset=dataset, user=user,
+            defaults={
+                "name": user.profile.full_name,
+                "contributor_type": Contributor.ContributorType.CONTRIBUTOR,
+                "order": dataset.contributors.count() + 1,
+            },
+        )
 def bump_version_and_notify(dataset, changed_by):
     dataset.version += 1
     dataset.save(update_fields=["version"])
@@ -90,8 +96,16 @@ def bump_version_and_notify(dataset, changed_by):
 
 
 
+class V2ReleaseRequiredError(RuntimeError):
+    """Raised when a legacy mutation path is used for a V2-released dataset."""
+
+
 def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage,
                   change_summary, proposed_metadata, approved_by_owner=None, ip_address="0.0.0.0"):
+    if dataset.published_release_id:
+        raise V2ReleaseRequiredError(
+            "V2 datasets must be changed through DatasetProposal and DatasetRelease publication."
+        )
     if diff_percentage >= settings.VERSION_BUMP_THRESHOLD_PCT:
         update = PendingContentUpdate.objects.create(
             dataset=dataset, source=source, submitted_by=submitted_by,
@@ -107,7 +121,7 @@ def route_change(*, dataset, source, submitted_by, new_file_key, diff_percentage
             )
         return {"status": "pending_review", "pending_update_id": update.id}
 
-    DatasetFile.objects.filter(dataset=dataset).update(file_key=new_file_key)
+    _update_legacy_file_key(dataset, new_file_key)
     _apply_metadata(dataset, proposed_metadata)
     ActivityLog.log(
         user=submitted_by,
@@ -251,6 +265,22 @@ def consume_revision_permission(dataset, user):
     ).update(used=True)
 
 
+def _update_legacy_file_key(dataset, file_key):
+    with transaction.atomic():
+        locked_dataset = Dataset.objects.select_for_update().get(pk=dataset.pk)
+        files = DatasetFile.objects.select_for_update().filter(dataset=locked_dataset)
+        matching_object = StoredObject.objects.filter(
+            dataset=locked_dataset,
+            storage_key=file_key,
+        ).first()
+        if files.count() == 1:
+            files.update(file_key=file_key, stored_object=matching_object)
+        else:
+            # A V1 update replaces one dataset-level file key across all legacy rows.
+            # Do not leave those rows linked to objects whose keys no longer match.
+            files.update(file_key=file_key, stored_object=None)
+
+
 
 
 def resolve_content_update_votes(update: PendingContentUpdate):
@@ -285,20 +315,27 @@ def resolve_content_update_votes(update: PendingContentUpdate):
 
 
 def _apply_pending_content_update(update):
-    DatasetFile.objects.filter(dataset=update.dataset).update(file_key=update.new_file_key)
-    _apply_metadata(update.dataset, update.proposed_metadata)
-    bump_version_and_notify(update.dataset, changed_by=update.submitted_by)
-    DatasetVersion.objects.create(
-        dataset=update.dataset, version_number=update.dataset.version, file_key=update.new_file_key,
-        source=update.source, changed_by=update.submitted_by, change_summary=update.change_summary,
-        diff_percentage=update.diff_percentage,
-    )
-    _grant_contributor_status(update.dataset, update.submitted_by)
-    update.status = PendingContentUpdate.Status.APPROVED
-    update.decided_at = timezone.now()
-    update.save(update_fields=["status", "decided_at"])
-    notify(
-        user=update.submitted_by, notification_type=Notification.NotificationType.DATASET_APPROVED,
-        message=f'Your content update to "{update.dataset.title}" was approved and is now live.',
-        dataset=update.dataset,
-    )
+    with transaction.atomic():
+        dataset = Dataset.objects.select_for_update().get(pk=update.dataset_id)
+        if dataset.published_release_id:
+            raise V2ReleaseRequiredError(
+                "V2 datasets cannot be mutated by the legacy PendingContentUpdate workflow."
+            )
+        update.dataset = dataset
+        _update_legacy_file_key(dataset, update.new_file_key)
+        _apply_metadata(dataset, update.proposed_metadata)
+        bump_version_and_notify(dataset, changed_by=update.submitted_by)
+        DatasetVersion.objects.create(
+            dataset=dataset, version_number=dataset.version, file_key=update.new_file_key,
+            source=update.source, changed_by=update.submitted_by, change_summary=update.change_summary,
+            diff_percentage=update.diff_percentage,
+        )
+        _grant_contributor_status(dataset, update.submitted_by)
+        update.status = PendingContentUpdate.Status.APPROVED
+        update.decided_at = timezone.now()
+        update.save(update_fields=["status", "decided_at"])
+        notify(
+            user=update.submitted_by, notification_type=Notification.NotificationType.DATASET_APPROVED,
+            message=f'Your content update to "{dataset.title}" was approved and is now live.',
+            dataset=dataset,
+        )
