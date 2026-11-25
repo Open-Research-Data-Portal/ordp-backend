@@ -1,24 +1,51 @@
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework.permissions import BasePermission
-from .models import UserProfile
+
+from apps.accounts.models import UserRole
+from apps.access_control.services import has_permission
 
 
 class HasRole(BasePermission):
+    """Legacy role gate. Prefer HasPlatformPermission after V2 cutover."""
     allowed_roles = []
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-
         try:
             profile = getattr(request.user, "profile", None)
         except ObjectDoesNotExist:
             return False
-
         if not profile:
             return False
-
         return profile.has_role(*self.allowed_roles)
+
+
+class HasPlatformPermission(BasePermission):
+    """Require a V2 platform permission code."""
+    code = None
+    message = "You do not have permission to perform this action."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        code = self.code or getattr(view, "required_permission", None)
+        if not code:
+            return False
+        return has_permission(request.user, code)
+
+
+class HasAnyPlatformPermission(BasePermission):
+    codes = []
+    message = "You do not have permission to perform this action."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        codes = self.codes or getattr(view, "required_permissions", [])
+        return any(has_permission(request.user, code) for code in codes)
+
+
 class CanUploadDatasets(BasePermission):
     message = "You do not have permission to upload datasets."
 
@@ -26,38 +53,49 @@ class CanUploadDatasets(BasePermission):
         if not request.user or not request.user.is_authenticated:
             self.message = "You must be logged in to upload datasets."
             return False
-
         try:
             profile = getattr(request.user, "profile", None)
         except ObjectDoesNotExist:
             self.message = "No profile is associated with this account."
             return False
-
         if not profile:
             self.message = "No profile is associated with this account."
             return False
-
         if not profile.is_profile_complete():
             self.message = "Complete your profile before uploading datasets."
             return False
+        # Upload authority is now represented by the scoped permission system.
+        # The profile flag is retained for historical data and is migrated by
+        # access_control.0006; it must not grant access on its own anymore.
+        if has_permission(request.user, "dataset.create"):
+            return True
+        self.message = "You do not currently have permission to upload datasets."
+        return False
 
-        if not profile.can_upload_datasets:
-            self.message = "You do not currently have permission to upload datasets."
+
+class IsAdminOnly(HasPlatformPermission):
+    """V2 cutover: platform user managers replace legacy admin role gates."""
+    code = "user.manage"
+    message = "Admin permission required."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
             return False
-
-        return True
-class IsAdminOnly(HasRole):
-    allowed_roles = ["admin"]
-
-
-class IsReviewerOrAdmin(HasRole):
-    allowed_roles = ["reviewer", "admin"]
-
-class IsReviewerOnly(HasRole):
-    """The reviewer committee, specifically — excludes admin. Use this for
-    anything that's a committee vote/decision (revision requests, content
-    updates). IsReviewerOrAdmin stays as-is for admin-panel views that are
-    genuinely meant to be reviewer-or-admin (e.g. general dashboards)."""
-    allowed_roles = ["reviewer"]
+        if request.user.is_superuser or request.user.is_staff:
+            return True
+        if UserRole.objects.filter(
+            profile__user=request.user, role=UserRole.RoleChoice.ADMIN
+        ).exists():
+            return True
+        return super().has_permission(request, view)
 
 
+class IsReviewerOrAdmin(HasAnyPlatformPermission):
+    codes = ["dataset.approve", "dataset.publish", "access_request.review", "user.manage"]
+    message = "Reviewer or admin permission required."
+
+
+class IsReviewerOnly(HasAnyPlatformPermission):
+    """Committee review authority without requiring user.manage."""
+    codes = ["dataset.approve", "access_request.review", "access_request.approve"]
+    message = "Reviewer permission required."
