@@ -763,10 +763,10 @@ def accept_terms_and_submit(request, dataset_id):
     if serializer.validated_data.get("license_custom_terms") is not None:
         dataset.license_custom_terms = serializer.validated_data["license_custom_terms"]
 
-    from apps.datasets.licensing import get_system_default_license, LICENSE_CATALOG
+    from apps.datasets.licensing import get_system_default_license, is_valid_license
     if not dataset.license:
         dataset.license = get_system_default_license()
-    if dataset.license not in LICENSE_CATALOG:
+    if not is_valid_license(dataset.license):
         return Response({"detail": f"Invalid license '{dataset.license}'. Please choose an approved license."}, status=400)
     if not dataset.license_rights_confirmed:
         return Response({"detail": "You must confirm that you hold the legal rights or authorization to apply this license."}, status=400)

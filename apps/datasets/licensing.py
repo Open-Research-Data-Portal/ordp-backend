@@ -65,19 +65,38 @@ LICENSE_CATALOG = {
 }
 
 
+def get_all_licenses_map(include_inactive=False):
+    """Return built-in licenses merged with admin-created CustomLicense records."""
+    catalog = {k: {**v, "is_custom": False, "is_active": True} for k, v in LICENSE_CATALOG.items()}
+    try:
+        from apps.datasets.models import CustomLicense
+        qs = CustomLicense.objects.all() if include_inactive else CustomLicense.objects.filter(is_active=True)
+        for custom in qs:
+            if custom.key not in catalog:
+                catalog[custom.key] = custom.to_catalog_dict()
+    except Exception:
+        pass
+    return catalog
+
+
+def is_valid_license(license_key):
+    return bool(license_key and license_key in get_all_licenses_map())
+
+
 def get_supported_licenses():
-    return list(LICENSE_CATALOG.values())
+    return list(get_all_licenses_map().values())
 
 
 def get_license_info(license_key):
-    return LICENSE_CATALOG.get(license_key) or LICENSE_CATALOG.get(DEFAULT_LICENSE_KEY)
+    catalog = get_all_licenses_map(include_inactive=True)
+    return catalog.get(license_key) or catalog.get(DEFAULT_LICENSE_KEY)
 
 
 def get_system_default_license():
     try:
         from apps.admin_panel.models import SystemSetting
         setting = SystemSetting.objects.filter(key="default_dataset_license").first()
-        if setting and setting.value in LICENSE_CATALOG:
+        if setting and setting.value in get_all_licenses_map():
             return setting.value
     except Exception:
         pass

@@ -1585,16 +1585,17 @@ def dataset_archive_history(request, dataset_id):
 def admin_licensing_settings(request):
     from apps.admin_panel.models import SystemSetting
     from apps.datasets.licensing import (
+        get_all_licenses_map,
         get_supported_licenses,
         get_system_default_license,
-        LICENSE_CATALOG,
     )
 
     if request.method == "POST":
         default_license = request.data.get("default_license")
-        if not default_license or default_license not in LICENSE_CATALOG:
+        all_licenses = get_all_licenses_map()
+        if not default_license or default_license not in all_licenses:
             return Response(
-                {"detail": f"Invalid default license. Must be one of: {', '.join(LICENSE_CATALOG.keys())}"},
+                {"detail": f"Invalid default license. Must be one of: {', '.join(all_licenses.keys())}"},
                 status=400,
             )
 
@@ -1618,6 +1619,7 @@ def admin_licensing_settings(request):
             "message": "Default license updated successfully.",
             "default_license": setting.value,
             "supported_licenses": get_supported_licenses(),
+            "all_licenses": list(get_all_licenses_map(include_inactive=True).values()),
             "updated_at": setting.updated_at,
         }, status=200)
 
@@ -1626,5 +1628,175 @@ def admin_licensing_settings(request):
     return Response({
         "default_license": get_system_default_license(),
         "supported_licenses": get_supported_licenses(),
+        "all_licenses": list(get_all_licenses_map(include_inactive=True).values()),
         "updated_at": setting.updated_at if setting else None,
+    }, status=200)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAdminOnly])
+def admin_licensing_custom_licenses(request):
+    from django.utils.text import slugify
+    from apps.datasets.licensing import (
+        get_all_licenses_map,
+        get_supported_licenses,
+        get_system_default_license,
+    )
+    from apps.datasets.models import CustomLicense
+
+    if request.method == "GET":
+        return Response({
+            "supported_licenses": get_supported_licenses(),
+            "all_licenses": list(get_all_licenses_map(include_inactive=True).values()),
+            "default_license": get_system_default_license(),
+        }, status=200)
+
+    name = (request.data.get("name") or "").strip()
+    if not name:
+        return Response({"detail": "License 'name' is required."}, status=400)
+
+    raw_key = (request.data.get("key") or "").strip()
+    if not raw_key:
+        raw_key = slugify(name).upper()[:64]
+    else:
+        raw_key = raw_key.upper()
+
+    if not raw_key or len(raw_key) > 64:
+        return Response({"detail": "License 'key' must be 1 to 64 characters."}, status=400)
+
+    all_licenses = get_all_licenses_map(include_inactive=True)
+    if raw_key in all_licenses or CustomLicense.objects.filter(key__iexact=raw_key).exists():
+        return Response({"detail": f"A license with key '{raw_key}' already exists."}, status=400)
+
+    short_name = (request.data.get("short_name") or "").strip() or name[:64]
+    full_name = (request.data.get("full_name") or "").strip() or name
+    description = (request.data.get("description") or "").strip()
+    url = (request.data.get("url") or "").strip()
+    is_restricted = bool(request.data.get("is_restricted", False))
+    badge_color = (request.data.get("badge_color") or "slate").strip() or "slate"
+
+    custom = CustomLicense.objects.create(
+        key=raw_key,
+        short_name=short_name[:64],
+        name=name[:128],
+        full_name=full_name[:255],
+        description=description,
+        url=url,
+        is_restricted=is_restricted,
+        badge_color=badge_color[:32],
+        created_by=request.user,
+    )
+
+    ActivityLog.log(
+        user=request.user,
+        action="admin_created_license",
+        target_object=f"License:{custom.key}",
+        ip_address=get_client_ip(request),
+        extra={"key": custom.key, "name": custom.name},
+    )
+
+    return Response({
+        "message": "License added successfully.",
+        "license": custom.to_catalog_dict(),
+        "supported_licenses": get_supported_licenses(),
+        "all_licenses": list(get_all_licenses_map(include_inactive=True).values()),
+        "default_license": get_system_default_license(),
+    }, status=201)
+
+
+@api_view(["PATCH", "PUT", "DELETE"])
+@permission_classes([IsAdminOnly])
+def admin_licensing_custom_license_detail(request, license_key):
+    from apps.admin_panel.models import SystemSetting
+    from apps.datasets.licensing import (
+        DEFAULT_LICENSE_KEY,
+        LICENSE_CATALOG,
+        get_all_licenses_map,
+        get_supported_licenses,
+        get_system_default_license,
+    )
+    from apps.datasets.models import CustomLicense
+
+    if license_key in LICENSE_CATALOG:
+        return Response({"detail": "Built-in licenses cannot be modified or deleted."}, status=400)
+
+    custom = CustomLicense.objects.filter(key__iexact=license_key).first()
+    if not custom:
+        return Response({"detail": "Custom license not found."}, status=404)
+
+    if request.method in ("PATCH", "PUT"):
+        def _as_bool(val):
+            if isinstance(val, bool):
+                return val
+            return str(val).strip().lower() not in {"false", "0", "no", "off", ""}
+
+        if "name" in request.data:
+            name = (request.data.get("name") or "").strip()
+            if not name:
+                return Response({"detail": "License 'name' cannot be empty."}, status=400)
+            custom.name = name[:128]
+        if "short_name" in request.data:
+            short_name = (request.data.get("short_name") or "").strip()
+            custom.short_name = (short_name or custom.name)[:64]
+        if "full_name" in request.data:
+            full_name = (request.data.get("full_name") or "").strip()
+            custom.full_name = (full_name or custom.name)[:255]
+        if "description" in request.data:
+            custom.description = (request.data.get("description") or "").strip()
+        if "url" in request.data:
+            custom.url = (request.data.get("url") or "").strip()
+        if "is_restricted" in request.data:
+            custom.is_restricted = _as_bool(request.data.get("is_restricted"))
+        if "badge_color" in request.data:
+            custom.badge_color = ((request.data.get("badge_color") or "slate").strip() or "slate")[:32]
+        if "is_active" in request.data:
+            custom.is_active = _as_bool(request.data.get("is_active"))
+
+        custom.save()
+
+        if not custom.is_active:
+            setting = SystemSetting.objects.filter(key="default_dataset_license").first()
+            if setting and setting.value == custom.key:
+                setting.value = DEFAULT_LICENSE_KEY
+                setting.updated_by = request.user
+                setting.save()
+
+        ActivityLog.log(
+            user=request.user,
+            action="admin_updated_license",
+            target_object=f"License:{custom.key}",
+            ip_address=get_client_ip(request),
+            extra={"key": custom.key, "name": custom.name, "is_active": custom.is_active},
+        )
+
+        return Response({
+            "message": "Custom license updated successfully.",
+            "license": custom.to_catalog_dict(),
+            "supported_licenses": get_supported_licenses(),
+            "all_licenses": list(get_all_licenses_map(include_inactive=True).values()),
+            "default_license": get_system_default_license(),
+        }, status=200)
+
+    deleted_key = custom.key
+    custom.delete()
+
+    setting = SystemSetting.objects.filter(key="default_dataset_license").first()
+    if setting and setting.value == deleted_key:
+        setting.value = DEFAULT_LICENSE_KEY
+        setting.updated_by = request.user
+        setting.save()
+
+    ActivityLog.log(
+        user=request.user,
+        action="admin_deleted_license",
+        target_object=f"License:{deleted_key}",
+        ip_address=get_client_ip(request),
+        extra={"key": deleted_key},
+    )
+
+    return Response({
+        "message": "Custom license removed.",
+        "supported_licenses": get_supported_licenses(),
+        "all_licenses": list(get_all_licenses_map(include_inactive=True).values()),
+        "default_license": get_system_default_license(),
     }, status=200)
